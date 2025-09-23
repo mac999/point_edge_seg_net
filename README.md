@@ -1,4 +1,4 @@
-# PointEdgeSegNet: 3D Point Cloud Semantic Segmentation
+# PointEdgeSegNet: Lightweight 3D Point Cloud Semantic Segmentation
 
 ## Overview
 
@@ -291,6 +291,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
