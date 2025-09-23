@@ -84,7 +84,7 @@ The preprocessing script will:
 
 ### Supported Classes
 
-The model supports 13 semantic classes:
+The model supports 13 semantic classes: In addition, you can customize the classes.
 - ceiling
 - floor  
 - wall
@@ -279,6 +279,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
