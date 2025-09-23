@@ -68,7 +68,7 @@ cd point_unet
 
 ### Stanford 3D Indoor Spaces Dataset (S3DIS)
 
-1. Download the S3DIS dataset from Stanford Vision Lab
+1. Download the S3DIS dataset from [Stanford Vision Lab](https://cvgl.stanford.edu/resources.html) and [point cloud storage](https://sdss.redivis.com/datasets/9q3m-9w5pa1a2h/files)
 2. Extract the dataset to `./s3dis_v1.2_aligned/` directory
 3. Run data preprocessing:
 
@@ -279,6 +279,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
