@@ -213,7 +213,43 @@ for block_file in tqdm(all_block_files, desc="Categorizing blocks"):
 				train_block_files.append(block_file)
 				break
 
+def validate_block_files(file_list):
+	"""Validate block files and remove corrupted ones"""
+	valid_files = []
+	corrupted_files = []
+	
+	print("Validating block files...")
+	for file_path in tqdm(file_list, desc="Checking files"):
+		try:
+			data = torch.load(file_path, weights_only=False)
+			# Basic validation checks
+			if (hasattr(data, 'x') and hasattr(data, 'pos') and 
+				hasattr(data, 'y') and hasattr(data, 'valid_mask')):
+				valid_files.append(file_path)
+			else:
+				corrupted_files.append(file_path)
+		except Exception as e:
+			print(f"Corrupted file found: {file_path} - {e}")
+			corrupted_files.append(file_path)
+	
+	# Remove corrupted files
+	for corrupted_file in corrupted_files:
+		try:
+			os.remove(corrupted_file)
+			print(f"Removed corrupted file: {corrupted_file}")
+		except Exception as e:
+			print(f"Failed to remove {corrupted_file}: {e}")
+	
+	print(f"Valid files: {len(valid_files)}, Removed corrupted files: {len(corrupted_files)}")
+	return valid_files
+
 # Split training blocks into 8:2 using train_test_split
+# Validate block files before using them
+print("Validating training block files...")
+train_block_files = validate_block_files(train_block_files)
+print("Validating test block files...")
+test_block_files = validate_block_files(test_block_files)
+
 train_files, val_files = train_test_split(train_block_files, test_size=0.2, random_state=42)
 
 print(f"Total training blocks: {len(train_files)}")
@@ -269,6 +305,7 @@ def train(epoch):
 	total_loss, correct_nodes, total_nodes = 0, 0, 0
 	for batch_idx, data in enumerate(pbar):
 		if data is None: 
+			print(f"Warning: Skipping corrupted batch {batch_idx} in training")
 			continue
 		data = data.to(device)
 		optimizer.zero_grad()
@@ -311,6 +348,7 @@ def validate(loader):
 	with torch.no_grad():
 		for batch_idx, data in enumerate(pbar):
 			if data is None: 
+				print(f"Warning: Skipping corrupted batch {batch_idx} in {loader_name.lower()}")
 				continue
 			data = data.to(device)
 			out = model(data)
