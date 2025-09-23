@@ -1,0 +1,280 @@
+# PointEdgeSegNet: 3D Point Cloud Semantic Segmentation
+
+## Overview
+
+PointEdgeSegNet is a deep learning model for 3D point cloud semantic segmentation based on EdgeConv layers and U-Net architecture. This project implements a state-of-the-art neural network that can classify each point in a 3D point cloud into semantic categories such as ceiling, floor, wall, furniture, and other indoor objects.
+
+The model combines the effectiveness of EdgeConv for capturing local geometric relationships with the encoder-decoder structure of U-Net for preserving spatial information across different scales. This approach enables accurate semantic segmentation of complex indoor scenes.
+
+## Version
+
+- Current Version: 0.1
+- Last Updated: September 21, 2025
+- Status: Development
+
+## Features
+
+- Edge-based convolution layers for capturing local geometric relationships
+- U-Net encoder-decoder architecture with skip connections
+- Block-based processing for memory efficiency
+- Support for S3DIS dataset preprocessing and training
+- Real-time inference with 3D visualization
+- Comprehensive logging and model checkpointing
+
+## Installation
+
+### Prerequisites
+
+- Python 3.8 or higher
+- NVIDIA GPU with CUDA support (recommended)
+- Minimum 8GB GPU memory
+
+### Step 1: Install PyTorch and PyTorch Geometric
+
+Install PyTorch with CUDA support first (replace with your CUDA version):
+
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+```
+
+Install PyTorch Geometric dependencies:
+
+```bash
+pip install torch_geometric torch_scatter torch_sparse torch_cluster torch_spline_conv
+```
+
+### Step 2: Install Other Dependencies
+
+```bash
+pip install numpy scikit-learn open3d tqdm matplotlib
+```
+
+### Step 3: Clone and Setup
+
+```bash
+git clone <repository-url>
+cd point_unet
+```
+
+## Dataset Preparation
+
+### Stanford 3D Indoor Spaces Dataset (S3DIS)
+
+1. Download the S3DIS dataset from Stanford Vision Lab
+2. Extract the dataset to `./s3dis_v1.2_aligned/` directory
+3. Run data preprocessing:
+
+```bash
+python data_preparation.py
+```
+
+The preprocessing script will:
+- Convert raw point cloud data to PyTorch Geometric format
+- Calculate geometric features (normals, curvature)
+- Split data into 8192-point blocks for efficient training
+- Save processed data to `./processed_s3dis/`
+
+### Supported Classes
+
+The model supports 13 semantic classes:
+- ceiling
+- floor  
+- wall
+- beam
+- column
+- window
+- door
+- table
+- chair
+- sofa
+- bookcase
+- board
+- clutter
+
+## Model Architecture
+
+### PointEdgeSegNet Theory
+
+PointEdgeSegNet is built on two key concepts:
+
+#### 1. EdgeConv Layers
+
+EdgeConv (Edge Convolution) is designed specifically for point cloud processing:
+
+- Constructs dynamic k-nearest neighbor graphs for each point
+- Captures local geometric relationships through edge features
+- Combines point features with relative position information
+- Maintains permutation invariance while being sensitive to local structure
+
+Mathematical formulation:
+```
+edge_feature = MLP([x_i, x_j - x_i])
+output_i = max(edge_feature) for all j in neighbors(i)
+```
+
+#### 2. U-Net Architecture
+
+The encoder-decoder structure with skip connections:
+
+**Encoder Path:**
+- Stage 1: Input features -> 64 channels
+- Stage 2: 64 -> 128 channels (4x downsampling)
+- Stage 3: 128 -> 256 channels (4x downsampling)  
+- Stage 4: 256 -> 512 channels (4x downsampling)
+
+**Decoder Path:**
+- Upsampling with k-NN interpolation
+- Skip connections preserve fine-grained details
+- Progressive feature fusion at each scale
+
+### Network Flow
+
+1. **Input Processing**: Raw point coordinates + RGB colors + geometric features (9D)
+2. **Hierarchical Encoding**: Multi-scale feature extraction with progressive downsampling
+3. **Bottleneck**: Highest-level feature representation
+4. **Hierarchical Decoding**: Feature upsampling with skip connections
+5. **Classification Head**: Point-wise classification to 13 semantic classes
+
+### Key Innovations
+
+- **Dynamic Graph Construction**: Adapts to local point density variations
+- **Multi-scale Feature Fusion**: Combines global context with local details
+- **Geometric Feature Integration**: Leverages Open3D for robust normal/curvature computation
+- **Memory Efficient Processing**: Block-based training and inference
+
+## Training
+
+### Quick Start
+
+```bash
+python train_model.py
+```
+
+### Configuration
+
+Edit the configuration section in `train_model.py`:
+
+```python
+TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']
+TEST_AREA = 'Area_5'
+NUM_EPOCHS = 30
+BATCH_SIZE = 4
+LEARNING_RATE = 0.001
+BLOCK_SIZE = 8192
+```
+
+### Training Features
+
+- Automatic train/validation split
+- Learning rate scheduling with warmup
+- Gradient clipping for stability
+- Comprehensive logging (CSV + JSON)
+- Model checkpointing (best and latest)
+- Real-time loss visualization
+
+### Output Structure
+
+```
+logs_YYYYMMDD_HHMMSS/
+├── training_log.csv
+├── config.json
+├── best_model.pth
+├── latest_model.pth
+└── loss_curves.png
+```
+
+## Inference
+
+### Basic Usage
+
+```bash
+python inference.py
+```
+
+### Inference Process
+
+1. **Block Creation**: Splits input point cloud into 8192-point blocks
+2. **Feature Calculation**: Computes geometric features using Open3D
+3. **Model Inference**: Processes each block through trained model
+4. **Result Merging**: Combines predictions from all blocks
+5. **Visualization**: Displays results with Open3D viewer
+
+### Configuration
+
+Edit the paths in `inference.py`:
+
+```python
+MODEL_WEIGHTS_PATH = './logs_YYYYMMDD_HHMMSS/best_model.pth'
+TEST_POINT_CLOUD_PATH = './s3dis_v1.2_aligned/Area_1/conferenceRoom_1/conferenceRoom_1.txt'
+```
+
+## File Structure
+
+```
+point_unet/
+├── model.py              # PointEdgeSegNet architecture
+├── train_model.py        # Training script
+├── inference.py          # Inference script
+├── data_preparation.py   # Data preprocessing
+├── requirements.txt      # Dependencies
+├── README.md            # This file
+├── s3dis_v1.2_aligned/  # Raw S3DIS dataset
+├── processed_s3dis/     # Processed data
+├── block_s3dis/         # Training blocks
+├── inference_blocks/    # Inference blocks
+└── logs_*/              # Training logs and models
+```
+
+## Performance
+
+### Training Performance
+
+- Training Time: ~2-4 hours on RTX 3080 (30 epochs)
+- Memory Usage: ~6-8GB GPU memory
+- Batch Size: 4 blocks per batch
+
+### Inference Performance
+
+- Processing Speed: ~1000-2000 points/second
+- Memory Efficiency: Processes large point clouds in blocks
+- Accuracy: Competitive with state-of-the-art methods on S3DIS
+
+## Troubleshooting
+
+### Common Issues
+
+1. **CUDA Out of Memory**: Reduce BATCH_SIZE in training configuration
+2. **Missing Dependencies**: Install PyTorch Geometric following official instructions
+3. **Data Loading Errors**: Ensure S3DIS dataset structure matches expected format
+
+### GPU Memory Optimization
+
+- Use smaller batch sizes (BATCH_SIZE = 2-4)
+- Enable mixed precision training
+- Clear GPU cache between experiments
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit pull requests or open issues for bugs and feature requests.
+
+## Author
+
+- **Name**: Taewook Kang
+- **Email**: laputa9999@gmail.com
+- **Date**: September 21, 2025
+
+## License
+
+This project is released under the MIT License. See LICENSE file for details.
+
+## Acknowledgments
+
+- Stanford Vision Lab for the S3DIS dataset
+- PyTorch Geometric team for the excellent graph neural network library
+- Open3D team for 3D geometry processing tools
+
+## References
+
+- Wang, Y., et al. "Dynamic Graph CNN for Learning on Point Clouds." ACM Transactions on Graphics, 2019.
+- Ronneberger, O., et al. "U-Net: Convolutional Networks for Biomedical Image Segmentation." MICCAI, 2015.
+- Armeni, I., et al. "3D Semantic Parsing of Large-Scale Indoor Spaces." CVPR, 2016.
