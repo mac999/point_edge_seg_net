@@ -6,6 +6,14 @@ PointEdgeSegNet is a deep learning model for 3D point cloud semantic segmentatio
 
 The model combines the effectiveness of EdgeConv for capturing local geometric relationships with the encoder-decoder structure of U-Net for preserving spatial information across different scales. This approach enables accurate semantic segmentation of complex indoor scenes.
 
+<p align="center">
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img1.png" height="300"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img2.png" height="300"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img3.png" height="300"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img4.png" height="300"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img5.png" height="300"></img>
+</p>
+
 ## Version
 
 - 0.1: September 21, 2025. Development status
@@ -269,3 +277,4 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
