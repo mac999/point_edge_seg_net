@@ -84,20 +84,32 @@ The preprocessing script will:
 
 ### Supported Classes
 
-The model supports 13 semantic classes: In addition, you can customize the classes.
-- ceiling
-- floor  
-- wall
-- beam
-- column
-- window
-- door
-- table
-- chair
-- sofa
-- bookcase
-- board
-- clutter
+The model supports 13 semantic classes with their corresponding visualization colors:
+
+| Class ID | Class Name | RGB Color | Color Name | Hex Code |
+|----------|------------|-----------|------------|----------|
+| 0 | ceiling | (233, 229, 107) | Light Yellow | #E9E56B |
+| 1 | floor | (95, 156, 196) | Light Blue | #5F9CC4 |
+| 2 | wall | (179, 116, 81) | Brown | #B37451 |
+| 3 | beam | (241, 149, 131) | Light Coral | #F19583 |
+| 4 | column | (81, 163, 163) | Teal | #51A3A3 |
+| 5 | window | (223, 160, 168) | Light Pink | #DFA0A8 |
+| 6 | door | (142, 86, 114) | Dark Pink | #8E5672 |
+| 7 | table | (153, 223, 138) | Light Green | #99DF8A |
+| 8 | chair | (149, 149, 241) | Light Purple | #9595F1 |
+| 9 | sofa | (107, 229, 233) | Cyan | #6BE5E9 |
+| 10 | bookcase | (233, 107, 229) | Magenta | #E96BE5 |
+| 11 | board | (107, 233, 107) | Bright Green | #6BE96B |
+| 12 | clutter | (160, 160, 160) | Gray | #A0A0A0 |
+
+### Color Scheme Design
+
+The color scheme is designed for optimal visual distinction:
+- **Structural elements** (ceiling, floor, wall): Natural tones (yellow, blue, brown)
+- **Architectural features** (beam, column, window, door): Warm and cool contrasts
+- **Furniture** (table, chair, sofa, bookcase): Vibrant colors for easy identification
+- **Functional items** (board): Bright green for visibility
+- **Miscellaneous** (clutter): Neutral gray
 
 ## Model Architecture
 
@@ -279,6 +291,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
