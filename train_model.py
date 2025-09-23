@@ -269,7 +269,7 @@ class BlockDataset(torch.utils.data.Dataset):
 		try:
 			return torch.load(self.file_list[idx], weights_only=False)
 		except Exception as e:
-			print(f"Error loading file {self.file_list[idx]}: {e}")
+			print(f"Error loading file {self.file_list[idx]}: {e}") # TBD. error handling
 			return None
 
 def collate_fn(batch):
@@ -289,6 +289,17 @@ val_dataset = BlockDataset(val_files)
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, collate_fn=collate_fn)
 val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
 
+# DataLoader 검증
+print(f"Training dataset size: {len(train_dataset)}")
+print(f"Validation dataset size: {len(val_dataset)}")
+print(f"Training batches: {len(train_loader)}")
+print(f"Validation batches: {len(val_loader)}")
+
+if len(train_loader) == 0:
+	raise ValueError("Training loader is empty! Check your data files.")
+if len(val_loader) == 0:
+	raise ValueError("Validation loader is empty! Check your data files.")
+
 model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES).to(device)
 optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 # Set ignore_index=-1 to ignore labels (-1) of padded points
@@ -301,12 +312,22 @@ scheduler = optim.lr_scheduler.ReduceLROnPlateau(
 
 def train(epoch):
 	model.train()
+	
+	# DataLoader 유효성 검사
+	if len(train_loader) == 0:
+		print("Warning: Training loader is empty!")
+		return 0.0, 0.0
+	
 	pbar = tqdm(train_loader, desc=f'Epoch {epoch:02d}/{NUM_EPOCHS} [Training]')
 	total_loss, correct_nodes, total_nodes = 0, 0, 0
+	valid_batches = 0
+	
 	for batch_idx, data in enumerate(pbar):
 		if data is None: 
 			print(f"Warning: Skipping corrupted batch {batch_idx} in training")
 			continue
+			
+		valid_batches += 1
 		data = data.to(device)
 		optimizer.zero_grad()
 		out = model(data)
@@ -332,24 +353,40 @@ def train(epoch):
 		
 		# More detailed progress bar information
 		current_acc = correct_nodes / total_nodes if total_nodes > 0 else 0
-		current_loss = total_loss / (batch_idx + 1)
+		current_loss = total_loss / valid_batches if valid_batches > 0 else 0
 		pbar.set_postfix({
 			'Loss': f'{current_loss:.4f}',
 			'Acc': f'{current_acc:.4f}',
 			'Batch': f'{batch_idx+1}/{len(train_loader)}'
 		})
-	return total_loss / len(train_loader), correct_nodes / total_nodes
+	
+	# Handle case where no valid batches were processed
+	if valid_batches == 0:
+		print("Warning: No valid batches were processed in training!")
+		return 0.0, 0.0
+		
+	return total_loss / valid_batches, correct_nodes / total_nodes
 
 def validate(loader):
 	model.eval()
 	loader_name = 'Validation' if loader == val_loader else 'Test'
+	
+	# DataLoader 유효성 검사
+	if len(loader) == 0:
+		print(f"Warning: {loader_name} loader is empty!")
+		return 0.0, 0.0
+	
 	pbar = tqdm(loader, desc=f'[{loader_name}]')
 	correct_nodes, total_nodes, total_loss = 0, 0, 0.0
+	valid_batches = 0
+	
 	with torch.no_grad():
 		for batch_idx, data in enumerate(pbar):
 			if data is None: 
 				print(f"Warning: Skipping corrupted batch {batch_idx} in {loader_name.lower()}")
 				continue
+				
+			valid_batches += 1
 			data = data.to(device)
 			out = model(data)
 			
@@ -368,14 +405,19 @@ def validate(loader):
 			
 			# More detailed progress bar information
 			current_acc = correct_nodes / total_nodes if total_nodes > 0 else 0
-			current_loss = total_loss / (batch_idx + 1)
+			current_loss = total_loss / valid_batches if valid_batches > 0 else 0
 			pbar.set_postfix({
 				'Loss': f'{current_loss:.4f}',
 				'Acc': f'{current_acc:.4f}',
 				'Batch': f'{batch_idx+1}/{len(loader)}'
 			})
 	
-	avg_loss = total_loss / len(loader) if len(loader) > 0 else 0
+	# Handle case where no valid batches were processed
+	if valid_batches == 0:
+		print(f"Warning: No valid batches were processed in {loader_name.lower()}!")
+		return 0.0, 0.0
+	
+	avg_loss = total_loss / valid_batches
 	accuracy = correct_nodes / total_nodes if total_nodes > 0 else 0
 	return avg_loss, accuracy
 
