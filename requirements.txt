@@ -1,0 +1,23 @@
+# requirements.txt
+
+# --- Core Deep Learning Libraries ---
+# IMPORTANT: These PyTorch & PyG related libraries should be installed manually
+# using the specific commands for your CUDA version first.
+# The versions listed here are for reference.
+torch==2.7.1+cu118
+torchvision
+torchaudio
+torch_geometric
+torch_scatter
+torch_sparse
+torch_cluster
+torch_spline_conv
+
+# --- Data Processing and Machine Learning ---
+numpy>=1.21.0
+scikit-learn>=1.0.0
+open3d>=0.17.0
+
+# --- Utilities and Visualization ---
+tqdm>=4.60.0
+matplotlib>=3.5.0
