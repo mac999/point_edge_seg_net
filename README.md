@@ -24,6 +24,7 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 - Large-scale point cloud training and segmentation
 - Edge-based convolution layers for capturing local geometric relationships
 - U-Net encoder-decoder architecture with skip connections
+- Lightweight Model Architecture
 - Block-based processing for memory efficiency. Here, the concept of a block refers to a unit of point cloud file that divides a large number of point clouds, such as 100 million, into units that enable model learning and prediction within VRAM.
 - Support for S3DIS dataset preprocessing and training
 - Inference with 3D visualization of Large-scale point cloud file
@@ -213,7 +214,7 @@ python inference.py
 
 ### Inference Process
 
-1. **Block Creation**: Splits input point cloud into 8192-point blocks
+1. **Block Creation**: Splits input point cloud into 8192-point blocks (you can customize it)
 2. **Feature Calculation**: Computes geometric features using Open3D
 3. **Model Inference**: Processes each block through trained model
 4. **Result Merging**: Combines predictions from all blocks
@@ -249,7 +250,7 @@ point_unet/
 
 ### Training Performance
 
-- Training Time: ~2-4 hours on RTX 3080 (30 epochs)
+- Training Time: ~2-4 hours on RTX 3080
 - Memory Usage: ~6-8GB GPU memory
 - Batch Size: 4 blocks per batch
 
@@ -257,7 +258,6 @@ point_unet/
 
 - Processing Speed: ~1000-2000 points/second
 - Memory Efficiency: Processes large point clouds in blocks
-- Accuracy: Competitive with state-of-the-art methods on S3DIS
 
 ## Troubleshooting
 
@@ -291,6 +291,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
