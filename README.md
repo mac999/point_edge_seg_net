@@ -24,7 +24,7 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 - Large-scale point cloud training and segmentation
 - Edge-based convolution layers for capturing local geometric relationships
 - U-Net encoder-decoder architecture with skip connections
-- Block-based processing for memory efficiency
+- Block-based processing for memory efficiency. Here, the concept of a block refers to a unit of point cloud file that divides a large number of point clouds, such as 100 million, into units that enable model learning and prediction within VRAM.
 - Support for S3DIS dataset preprocessing and training
 - Real-time inference with 3D visualization
 - Comprehensive logging and model checkpointing
@@ -291,6 +291,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
