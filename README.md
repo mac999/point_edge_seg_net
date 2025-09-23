@@ -8,9 +8,7 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 
 ## Version
 
-- Current Version: 0.1
-- Last Updated: September 21, 2025
-- Status: Development
+- 0.1: September 21, 2025. Development status
 
 ## Features
 
@@ -261,7 +259,6 @@ Contributions are welcome! Please feel free to submit pull requests or open issu
 
 - **Name**: Taewook Kang
 - **Email**: laputa9999@gmail.com
-- **Date**: September 21, 2025
 
 ## License
 
@@ -272,9 +269,3 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
-
-## References
-
-- Wang, Y., et al. "Dynamic Graph CNN for Learning on Point Clouds." ACM Transactions on Graphics, 2019.
-- Ronneberger, O., et al. "U-Net: Convolutional Networks for Biomedical Image Segmentation." MICCAI, 2015.
-- Armeni, I., et al. "3D Semantic Parsing of Large-Scale Indoor Spaces." CVPR, 2016.
