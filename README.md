@@ -11,7 +11,8 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img3.png" height="150"></img>
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img1.png" height="150"></img></br>
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img5.png" height="200"></img>
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img2.png" height="200"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img2.png" height="200"></img></br>
+input and output segmentation results from PointEdgeSegNet
 </p>
 
 ## Version
@@ -277,6 +278,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
