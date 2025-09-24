@@ -17,7 +17,8 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img8.png" height="115"></img>
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img7.png" height="115"></img></br>
 </p>
-<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model(Val acc 73.7% at Epoch 30)</p>
+<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model(Val acc 73.7% at Epoch 30)
+</p>
 
 ## Version
 
@@ -34,6 +35,10 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 - Support for S3DIS dataset preprocessing and training
 - Inference with 3D visualization of Large-scale point cloud file
 - Comprehensive logging and model checkpointing
+
+<p align="center">
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/graph1.png" height="200"></img></br>
+</p>
 
 ## Installation
 
@@ -409,5 +414,6 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
