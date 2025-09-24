@@ -40,6 +40,12 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/graph2.png" height="300"></br>Loss and Acc performance. Train and Val dataset = S3DIS v1.2 aligned (Area1)</img></br>
 </p>
 
+## Next plan
+has 
+- Diagnoise and visualize model related to weight, bais and gradient of loss in epoch.
+- Customization about classes and features 
+- LiDAR point cloud train example etc
+
 ## Installation
 
 ### Prerequisites
@@ -414,6 +420,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
