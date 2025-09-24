@@ -43,7 +43,8 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 ## Next plan
 has 
 - Diagnoise and visualize model related to weight, bais and gradient of loss in epoch.
-- Customization about classes and features 
+- Customization about classes and features
+- Finetuning
 - LiDAR point cloud train example etc
 
 ## Installation
@@ -420,6 +421,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
