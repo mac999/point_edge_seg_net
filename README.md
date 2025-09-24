@@ -167,6 +167,119 @@ The encoder-decoder structure with skip connections:
 - **Geometric Feature Integration**: Leverages Open3D for robust normal/curvature computation
 - **Memory Efficient Processing**: Block-based training and inference
 
+## Run
+
+### Data Preparation
+
+First, prepare your dataset:
+
+```bash
+# Basic data preparation (uses default paths)
+python data_preparation.py
+
+# Custom data preparation with specific areas
+python data_preparation.py --input_path ./s3dis_v1.2_aligned --output_path ./processed_s3dis --areas Area_1 Area_2 Area_3
+```
+
+### Training
+
+Basic training with default settings:
+
+```bash
+# Train with default configuration
+python train_model.py
+
+# Train with custom parameters
+python train_model.py --num_epochs 50 --batch_size 8 --learning_rate 0.0005
+
+# Train with specific areas and paths
+python train_model.py --train_areas Area_1 Area_2 Area_3 --test_area Area_4 --num_epochs 25
+
+# Full custom training example
+python train_model.py \
+    --processed_data_path ./custom_processed \
+    --block_data_path ./custom_blocks \
+    --train_areas Area_1 Area_2 Area_3 Area_4 Area_6 \
+    --test_area Area_5 \
+    --num_epochs 30 \
+    --batch_size 4 \
+    --learning_rate 0.001 \
+    --block_size 8192
+```
+
+### Inference
+
+Basic inference with default model:
+
+```bash
+# Basic inference (uses default model and test file)
+python inference.py
+
+# Inference with custom model and input
+python inference.py --model_weights ./logs/20250924_053221/best_model.pth --input_cloud ./sample/area_6_conferenceRoom_1.txt
+
+# Inference without visualization (for batch processing)
+python inference.py --no_visualization
+
+# Full custom inference example  
+python inference.py \
+    --model_weights ./custom_logs/best_model.pth \
+    --input_cloud ./data/large_scene.txt \
+    --block_path ./block_s3dis \
+    --no_vis
+```
+
+### Common Run Scenarios
+
+**Scenario 1: Quick Test Run**
+```bash
+# Minimal training for testing (5 epochs)
+python train_model.py --num_epochs 5 --batch_size 2
+
+# Quick inference test
+python inference.py --no_visualization
+```
+
+**Scenario 2: Production Training**
+```bash
+# Full training with optimal settings
+python train_model.py --num_epochs 50 --batch_size 8 --learning_rate 0.0005
+```
+
+**Scenario 3: Batch Processing**
+```bash
+# Process multiple files without visualization
+for file in ./test_scenes/*.txt; do
+    python inference.py --input_cloud "$file" --no_vis
+done
+```
+
+**Scenario 4: Memory-Constrained Training**
+```bash
+# Reduce memory usage with smaller batch size and block size
+python train_model.py --batch_size 2 --block_size 4096
+```
+
+### Available Arguments
+
+**train_model.py arguments:**
+- `--processed_data_path`: Path to processed data directory
+- `--block_data_path`: Path to block data storage
+- `--train_areas`: Training areas (space-separated list)
+- `--test_area`: Test area name
+- `--num_epochs`: Number of training epochs
+- `--batch_size`: Batch size for training
+- `--learning_rate`: Learning rate for optimizer
+- `--num_features`: Number of input features (default: 9)
+- `--num_classes`: Number of output classes (default: 13)
+- `--block_size`: Size of point cloud blocks (default: 8192)
+
+**inference.py arguments:**
+- `-m, --model_weights`: Path to trained model weights (.pth)
+- `-i, --input_cloud`: Path to input point cloud file (.txt)
+- `-b, --block_path`: Directory for temporary inference blocks
+- `--no_visualization, --no_vis`: Skip 3D visualization
+
 ## Training
 
 ### Quick Start
@@ -295,27 +408,3 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
