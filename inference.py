@@ -4,7 +4,7 @@
 # Purpose: Loads a trained model to perform segmentation on a new point cloud file.
 # Dependencies: torch, torch_geometric, numpy, open3d
 
-import torch, numpy as np, open3d as o3d, os
+import torch, numpy as np, open3d as o3d, os, argparse
 from model import PointEdgeSegNet
 from data_preparation import calculate_features_with_open3d
 from torch_geometric.data import Data, Batch
@@ -12,10 +12,9 @@ from torch_geometric.loader import DataLoader
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-# Configuration
-MODEL_WEIGHTS_PATH = './logs_20250923_143646/best_model.pth'
-# Specify the path to the point cloud file to test. (e.g., conferenceRoom_1.txt from S3DIS Area_5)
-TEST_POINT_CLOUD_PATH = './s3dis_v1.2_aligned/Area_1/conferenceRoom_1/conferenceRoom_1.txt'
+# Configuration Constants
+DEFAULT_MODEL_WEIGHTS_PATH = './logs/20250924_053221/best_model.pth'
+DEFAULT_TEST_POINT_CLOUD_PATH = './sample/area_6_conferenceRoom_1.txt'
 INFERENCE_BLOCK_PATH = './inference_blocks'  # Directory to save block files
 BLOCK_SIZE = 8192  # Same block size as training
 NUM_FEATURES = 9
@@ -144,39 +143,80 @@ def run_inference_on_blocks(model, block_files, device):
     
     return merged_predictions
 
-# Model loading
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES)
-model.load_state_dict(torch.load(MODEL_WEIGHTS_PATH, map_location=device))
-model = model.to(device)
-model.eval()
+def parse_arguments():
+    parser = argparse.ArgumentParser(description='PointEdgeSegNet Inference')
+    
+    parser.add_argument('--model_weights', '-m', default=DEFAULT_MODEL_WEIGHTS_PATH,
+                       help='Path to model weights (.pth)')
+    parser.add_argument('--input_cloud', '-i', default=DEFAULT_TEST_POINT_CLOUD_PATH,
+                       help='Path to input point cloud (.txt)')
+    parser.add_argument('--block_path', '-b', default=INFERENCE_BLOCK_PATH,
+                       help='Directory for inference blocks')
+    parser.add_argument('--no_visualization', '--no_vis', action='store_true',
+                       help='Skip visualization')
+    
+    return parser.parse_args()
 
-# Step 1: Create inference blocks
-block_files, original_coords = create_inference_blocks(
-    TEST_POINT_CLOUD_PATH, 
-    INFERENCE_BLOCK_PATH, 
-    BLOCK_SIZE
-)
+def main():
+    """Main inference function"""
+    # Parse command line arguments
+    args = parse_arguments()
+    
+    # Print configuration
+    print("PointEdgeSegNet Inference")
+    print(f"Model weights: {args.model_weights}")
+    print(f"Input point cloud: {args.input_cloud}")
+    print(f"Block directory: {args.block_path}")
+    print(f"Visualization: {'Disabled' if args.no_visualization else 'Enabled'}")
+    
+    # Model loading
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
+    model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES)
+    model.load_state_dict(torch.load(args.model_weights, map_location=device))
+    model = model.to(device)
+    model.eval()
+    print("Model loaded successfully!")
+    
+    # Step 1: Create inference blocks
+    block_files, original_coords = create_inference_blocks(
+        args.input_cloud, 
+        args.block_path, 
+        BLOCK_SIZE
+    )
+    
+    # Step 2: Run inference on blocks
+    pred_labels = run_inference_on_blocks(model, block_files, device)
+    
+    # Load original points for visualization
+    print("Loading original point cloud for visualization...")
+    original_points = np.loadtxt(args.input_cloud)
+    
+    # Save results (optional)
+    output_file = args.input_cloud.replace('.txt', '_segmented.txt')
+    segmented_points = np.column_stack([original_points, pred_labels])
+    np.savetxt(output_file, segmented_points, fmt='%.6f %.6f %.6f %d %d %d %d')
+    print(f"Segmentation results saved to: {output_file}")
+    
+    # 3D visualization (if not disabled)
+    if not args.no_visualization:
+        print("Visualizing results...")
+        
+        # Use the original coordinates and points for visualization
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(original_coords)
+        pred_colors = class_colors[pred_labels]
+        pcd.colors = o3d.utility.Vector3dVector(pred_colors)
+        
+        original_pcd = o3d.geometry.PointCloud()
+        original_pcd.points = o3d.utility.Vector3dVector(original_coords)
+        original_pcd.colors = o3d.utility.Vector3dVector(original_points[:, 3:6] / 255.0)
+        
+        o3d.visualization.draw_geometries([pcd], window_name="Predicted Segmentation (Press Q to close)")
+        o3d.visualization.draw_geometries([original_pcd], window_name="Original Colors (Press Q to close)")
+    
+    print("Inference completed successfully!")
 
-# Step 2: Run inference on blocks
-pred_labels = run_inference_on_blocks(model, block_files, device)
-
-# Load original points for visualization
-print("Loading original point cloud for visualization...")
-original_points = np.loadtxt(TEST_POINT_CLOUD_PATH)
-
-# 3D visualization (Open3D)
-print("Visualizing results...")
-
-# Use the original coordinates and points for visualization
-pcd = o3d.geometry.PointCloud()
-pcd.points = o3d.utility.Vector3dVector(original_coords)
-pred_colors = class_colors[pred_labels]
-pcd.colors = o3d.utility.Vector3dVector(pred_colors)
-
-original_pcd = o3d.geometry.PointCloud()
-original_pcd.points = o3d.utility.Vector3dVector(original_coords)
-original_pcd.colors = o3d.utility.Vector3dVector(original_points[:, 3:6] / 255.0)
-
-o3d.visualization.draw_geometries([pcd], window_name="Predicted Segmentation (Press Q to close)")
-o3d.visualization.draw_geometries([original_pcd], window_name="Original Colors (Press Q to close)")
+if __name__ == '__main__':
+    main()

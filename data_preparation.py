@@ -3,21 +3,17 @@
 # Date: 2025-09-21
 # Purpose: Pre-processes the S3DIS dataset based on the specified Annotation structure.
 # Dependencies: numpy, torch, torch_geometric, open3d, tqdm
-import os, numpy as np, torch, open3d as o3d, glob, warnings
+import os, numpy as np, torch, open3d as o3d, glob, warnings, argparse
 from torch_geometric.data import Data
 from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Configuration
-# S3DIS original dataset path
-S3DIS_PATH = './s3dis_v1.2_aligned'
-# Preprocessed data storage path
-SAVE_PATH = './processed_s3dis'
-# Specify areas to process
-AREAS_TO_PROCESS = ['Area_1'] 
-# Number of points to sample per block
-NUM_POINTS_PER_BLOCK = 8192
+S3DIS_PATH = './s3dis_v1.2_aligned' # S3DIS original dataset path
+SAVE_PATH = './processed_s3dis' 	# Preprocessed data storage path
+AREAS_TO_PROCESS = ['Area_1'] 		# Specify areas to process
+NUM_POINTS_PER_BLOCK = 8192 		# Number of points to sample per block
 
 # Class name and integer label mapping
 class_names = [
@@ -137,9 +133,19 @@ def process_area(area_path, save_path):
 			room_name = os.path.basename(room_folder)
 			torch.save(data, os.path.join(area_save_path, f"{room_name}.pt"))
 
-if __name__ == '__main__':
-	print(f"Starting data preparation for {len(AREAS_TO_PROCESS)} areas...")
-	for area in tqdm(AREAS_TO_PROCESS, desc="Processing areas"):
-		area_path = os.path.join(S3DIS_PATH, area)
-		process_area(area_path, SAVE_PATH)
+def main():
+	parser = argparse.ArgumentParser(description='S3DIS Dataset Preprocessing')
+	parser.add_argument('--s3dis_path', default=S3DIS_PATH, help='S3DIS dataset path')
+	parser.add_argument('--save_path', default=SAVE_PATH, help='Output directory')
+	parser.add_argument('--areas', nargs='+', default=AREAS_TO_PROCESS, help='Areas to process')
+	parser.add_argument('--num_points', type=int, default=NUM_POINTS_PER_BLOCK, help='Number of points per block')
+	args = parser.parse_args()
+	
+	print(f"Starting data preparation for {len(args.areas)} areas...")
+	for area in tqdm(args.areas, desc="Processing areas"):
+		area_path = os.path.join(args.s3dis_path, area)
+		process_area(area_path, args.save_path)
 	print("\nData preparation finished.")
+
+if __name__ == '__main__':
+	main()

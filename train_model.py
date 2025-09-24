@@ -4,7 +4,7 @@
 # Purpose: Trains and validates the PointEdgeSegNet model.
 # Dependencies: torch, torch_geometric, matplotlib, scikit-learn, tqdm
 
-import os, torch, torch.optim as optim, json, csv
+import os, torch, torch.optim as optim, json, csv, argparse
 import matplotlib.pyplot as plt
 from torch_geometric.loader import DataLoader
 from glob import glob
@@ -29,7 +29,7 @@ PROCESSED_DATA_PATH = './processed_s3dis'
 BLOCK_DATA_PATH = './block_s3dis'  # Block data storage path
 TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']
 TEST_AREA = 'Area_5'
-NUM_EPOCHS = 30
+NUM_EPOCHS = 50
 BATCH_SIZE = 4  # Increased from 2 to 4 (improved validation stability)
 LEARNING_RATE = 0.001
 NUM_FEATURES = 9 
@@ -43,7 +43,7 @@ WARMUP_EPOCHS = 3  # Learning rate warmup
 def setup_logging():
 	"""Log file setup and initialization"""
 	timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-	log_dir = f"logs_{timestamp}"
+	log_dir = os.path.join("logs", timestamp)
 	os.makedirs(log_dir, exist_ok=True)
 	
 	# CSV log file path
@@ -421,7 +421,7 @@ def validate(loader):
 	accuracy = correct_nodes / total_nodes if total_nodes > 0 else 0
 	return avg_loss, accuracy
 
-if __name__ == '__main__':
+def run_training():
 	# Add freeze_support for Windows multiprocessing support
 	import multiprocessing
 	multiprocessing.freeze_support()
@@ -525,3 +525,43 @@ if __name__ == '__main__':
 	test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
 	test_acc = validate(test_loader)
 	print(f"Final Test Accuracy on {TEST_AREA}: {test_acc:.4f}")
+
+def main():
+	global PROCESSED_DATA_PATH, BLOCK_DATA_PATH, TRAIN_AREAS, TEST_AREA
+	global NUM_EPOCHS, BATCH_SIZE, LEARNING_RATE, NUM_FEATURES, NUM_CLASSES, BLOCK_SIZE
+	
+	parser = argparse.ArgumentParser(description='PointEdgeSegNet Training')
+	parser.add_argument('--processed_data_path', default=PROCESSED_DATA_PATH, help='Processed data path')
+	parser.add_argument('--block_data_path', default=BLOCK_DATA_PATH, help='Block data storage path')
+	parser.add_argument('--train_areas', nargs='+', default=TRAIN_AREAS, help='Training areas')
+	parser.add_argument('--test_area', default=TEST_AREA, help='Test area')
+	parser.add_argument('--num_epochs', type=int, default=NUM_EPOCHS, help='Number of epochs')
+	parser.add_argument('--batch_size', type=int, default=BATCH_SIZE, help='Batch size')
+	parser.add_argument('--learning_rate', type=float, default=LEARNING_RATE, help='Learning rate')
+	parser.add_argument('--num_features', type=int, default=NUM_FEATURES, help='Number of features')
+	parser.add_argument('--num_classes', type=int, default=NUM_CLASSES, help='Number of classes')
+	parser.add_argument('--block_size', type=int, default=BLOCK_SIZE, help='Block size')
+	args = parser.parse_args()
+	
+	# Update global variables
+	PROCESSED_DATA_PATH = args.processed_data_path
+	BLOCK_DATA_PATH = args.block_data_path
+	TRAIN_AREAS = args.train_areas
+	TEST_AREA = args.test_area
+	NUM_EPOCHS = args.num_epochs
+	BATCH_SIZE = args.batch_size
+	LEARNING_RATE = args.learning_rate
+	NUM_FEATURES = args.num_features
+	NUM_CLASSES = args.num_classes
+	BLOCK_SIZE = args.block_size
+	
+	print(f"Training configuration:")
+	print(f"  Epochs: {NUM_EPOCHS}, Batch size: {BATCH_SIZE}, Learning rate: {LEARNING_RATE}")
+	print(f"  Train areas: {TRAIN_AREAS}, Test area: {TEST_AREA}")
+	print(f"  Block size: {BLOCK_SIZE}, Features: {NUM_FEATURES}, Classes: {NUM_CLASSES}")
+	
+	# Start training
+	run_training()
+
+if __name__ == '__main__':
+	main()
