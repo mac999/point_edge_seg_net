@@ -37,7 +37,7 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 - Comprehensive logging and model checkpointing
 
 <p align="center">
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/graph1.png" height="200"></img></br>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/graph2.png" height="300"></img></br>
 </p>
 
 ## Installation
@@ -414,6 +414,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
