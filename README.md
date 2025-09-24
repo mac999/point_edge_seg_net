@@ -12,10 +12,10 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img1.png" height="150"></img></br>
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img5.png" height="200"></img>
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img2.png" height="200"></img></br>
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img9.png" height="110"></img>
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img6.png" height="110"></img>
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img8.png" height="110"></img>
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img7.png" height="110"></img></br>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img9.png" height="115"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img6.png" height="115"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img8.png" height="115"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img7.png" height="115"></img></br>
 </p>
 <p align="center">Figure. Input point cloud and segments in output results using PointEdgeSegNet model</p>
 
@@ -295,6 +295,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
