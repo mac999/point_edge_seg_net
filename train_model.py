@@ -4,7 +4,7 @@
 # Purpose: Trains and validates the PointEdgeSegNet model.
 # Dependencies: torch, torch_geometric, matplotlib, scikit-learn, tqdm
 
-import os, torch, torch.optim as optim, json, csv, argparse
+import os, torch, torch.optim as optim, json, csv, argparse, time
 import matplotlib.pyplot as plt
 from torch_geometric.loader import DataLoader
 from glob import glob
@@ -39,7 +39,7 @@ NUM_CLASSES = 13
 BLOCK_SIZE = 8192  # Number of points per block
 
 # Settings for validation loss stabilization
-GRADIENT_CLIP_VALUE = 1.0  # Gradient clipping
+GRADIENT_CLIP_VALUE = 5.0  # Gradient clipping (increased from 1.0 for better convergence)
 WARMUP_EPOCHS = 3  # Learning rate warmup
 
 # GPU safety settings
@@ -140,7 +140,6 @@ def preprocess_dataset():
 	Split existing processed_s3dis pt files into 8192 point blocks
 	and save them to the block_s3dis folder.
 	"""
-	import time
 	start_time = time.time()
 	
 	print("Starting dataset preprocessing...")
@@ -371,9 +370,10 @@ optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 # Set ignore_index=-1 to ignore labels (-1) of padded points
 criterion = torch.nn.NLLLoss(ignore_index=-1)
 
-# Add learning rate scheduler (validation loss stabilization)
+# Add learning rate scheduler (validation loss stabilization) 
+# More patient scheduler for better convergence
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-	optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-6
+	optimizer, mode='min', factor=0.7, patience=8, min_lr=1e-6
 )
 
 def train(epoch):
@@ -386,8 +386,6 @@ def train(epoch):
 	pbar = tqdm(train_loader, desc=f'Epoch {epoch:02d}/{NUM_EPOCHS} [Training]')
 	total_loss, correct_nodes, total_nodes = 0, 0, 0
 	valid_batches = 0
-	skipped_batches = 0
-	skip_reasons = {'memory': 0, 'gradient': 0, 'numerical': 0, 'runtime': 0}
 	
 	for batch_idx, data in enumerate(pbar):
 		# GPU memory safety check
@@ -397,8 +395,6 @@ def train(epoch):
 			
 		if data is None: 
 			print(f"Warning: Skipping corrupted batch {batch_idx} in training")
-			skipped_batches += 1
-			skip_reasons['memory'] += 1
 			continue
 			
 		valid_batches += 1
@@ -417,18 +413,30 @@ def train(epoch):
 			
 			# Check for numerical instability
 			if not check_numerical_stability(loss, "loss"):
-				print(f"Numerical instability detected at epoch {epoch}, batch {batch_idx}. Skipping batch.")
+				print(f"Numerical instability at epoch {epoch}, batch {batch_idx}\n")
 				torch.cuda.empty_cache()
 				continue
 			
 			loss.backward()
 			
-			# Monitor gradient norm and apply clipping
-			total_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
-			if total_grad_norm > MAX_GRADIENT_NORM:
-				print(f"Large gradient detected: {total_grad_norm:.2f} at epoch {epoch}, batch {batch_idx}")
+			# Monitor gradient norm before clipping
+			grad_norm_before = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
+			
+			# Apply adaptive gradient clipping
+			if grad_norm_before > MAX_GRADIENT_NORM:
+				print(f"Very large gradient detected: {grad_norm_before:.2f}, skipping batch")
 				torch.cuda.empty_cache()
 				continue
+			elif grad_norm_before > GRADIENT_CLIP_VALUE:
+				# Apply clipping only when needed
+				torch.nn.utils.clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
+				if epoch % 5 == 0 and batch_idx % 50 == 0:
+					print(f"Gradient clipped: {grad_norm_before:.2f} -> {GRADIENT_CLIP_VALUE}")
+			
+			if batch_idx % 50 == 0: # Brief pause for GPU cooling
+				time.sleep(5.0)  
+
+			total_grad_norm = grad_norm_before
 			
 			optimizer.step()
 			total_loss += loss.item()
@@ -600,9 +608,10 @@ def run_training():
 			if val_acc > best_val_acc:
 				best_val_acc = val_acc
 				best_epoch = epoch
-				# Save best performance model
+				torch.cuda.synchronize(); 
 				try:
 					torch.save(model.state_dict(), os.path.join(log_dir, 'best_model.pth'))
+					time.sleep(5.0)  # Brief GPU cooling pause
 				except Exception as e:
 					print(f"Failed to save best model: {e}")
 			
