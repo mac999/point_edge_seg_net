@@ -31,20 +31,20 @@ PROCESSED_DATA_PATH = './processed_s3dis'
 BLOCK_DATA_PATH = './block_s3dis'  # Block data storage path
 TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']
 TEST_AREA = 'Area_5'
-NUM_EPOCHS = 50
-BATCH_SIZE = 2  # Reduced from 4 to 2 for memory safety (prevents blue screen)
+NUM_EPOCHS = 30
+BATCH_SIZE = 4  # Reduced from 4 to 2 for memory safety (prevents blue screen)
 LEARNING_RATE = 0.001
 NUM_FEATURES = 9 
 NUM_CLASSES = 13
 BLOCK_SIZE = 8192  # Number of points per block
 
 # Settings for validation loss stabilization
-GRADIENT_CLIP_VALUE = 5.0  # Gradient clipping (increased from 1.0 for better convergence)
+GRADIENT_CLIP_VALUE = 8.0  # Gradient clipping (increased for better learning)
 WARMUP_EPOCHS = 3  # Learning rate warmup
 
 # GPU safety settings
 GPU_MEMORY_THRESHOLD = 0.85  # 85% GPU memory usage threshold
-MAX_GRADIENT_NORM = 10.0     # Maximum gradient norm threshold
+MAX_GRADIENT_NORM = 20.0     # Maximum gradient norm threshold (increased)
 
 def safe_gpu_operation():
 	"""GPU memory safety check and cleanup"""
@@ -371,9 +371,9 @@ optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 criterion = torch.nn.NLLLoss(ignore_index=-1)
 
 # Add learning rate scheduler (validation loss stabilization) 
-# More patient scheduler for better convergence
+# More aggressive scheduler for faster adaptation
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-	optimizer, mode='min', factor=0.7, patience=8, min_lr=1e-6
+	optimizer, mode='min', factor=0.5, patience=4, min_lr=1e-6
 )
 
 def train(epoch):
@@ -434,7 +434,7 @@ def train(epoch):
 					print(f"Gradient clipped: {grad_norm_before:.2f} -> {GRADIENT_CLIP_VALUE}")
 			
 			if batch_idx % 50 == 0: # Brief pause for GPU cooling
-				time.sleep(5.0)  
+				time.sleep(15.0)  
 
 			total_grad_norm = grad_norm_before
 			
