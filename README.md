@@ -38,7 +38,7 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 - Comprehensive logging and model checkpointing
 
 <p align="center">
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/figure_1.png" height="400"></img></br>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/figure_1.png" height="400"></img>
 
 Loss and Acc performance [log](https://github.com/mac999/point_edge_seg_net/tree/main/logs/20250926_131906). Train and Val dataset = S3DIS v1.2 aligned (Area1) 
 </p>
@@ -429,6 +429,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
