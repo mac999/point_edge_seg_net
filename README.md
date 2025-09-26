@@ -22,8 +22,9 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 
 ## Version
 
-- 0.1: 2025/9/21. draft version
+- 0.1: 2025/9/21. draft version.
 - 0.2: 2025/9/24. CLI args, bug fixed.
+- 0.3: 2025/9/26. GPU safety mode was added.
 
 ## Features
 
@@ -425,6 +426,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
