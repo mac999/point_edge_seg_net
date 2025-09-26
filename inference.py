@@ -204,16 +204,16 @@ def main():
         print("Visualizing results...")
         
         # Use the original coordinates and points for visualization
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(original_coords)
+        predict_pcd = o3d.geometry.PointCloud()
+        predict_pcd.points = o3d.utility.Vector3dVector(original_coords)
         pred_colors = class_colors[pred_labels]
-        pcd.colors = o3d.utility.Vector3dVector(pred_colors)
-        
+        predict_pcd.colors = o3d.utility.Vector3dVector(pred_colors)
+        o3d.visualization.draw_geometries([predict_pcd], window_name="Predicted Segmentation (Press Q to close)")
+
         original_pcd = o3d.geometry.PointCloud()
         original_pcd.points = o3d.utility.Vector3dVector(original_coords)
         original_pcd.colors = o3d.utility.Vector3dVector(original_points[:, 3:6] / 255.0)
         
-        o3d.visualization.draw_geometries([pcd], window_name="Predicted Segmentation (Press Q to close)")
         o3d.visualization.draw_geometries([original_pcd], window_name="Original Colors (Press Q to close)")
     
     print("Inference completed successfully!")

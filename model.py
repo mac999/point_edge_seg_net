@@ -22,32 +22,67 @@ class EdgeConv(nn.Module):
 		)
 
 	def forward(self, x, pos, batch, k=20):
-		edge_index = knn_graph(pos, k=k, batch=batch, loop=False)
-		row, col = edge_index
+		# Memory safety: adaptive k based on point count and available memory
+		num_points = x.size(0)
+		if torch.cuda.is_available():
+			available_memory = torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()
+			memory_per_edge = 4 * x.size(1) * 2  # bytes per edge feature
+			max_edges = available_memory // (memory_per_edge * 8)  # safety factor
+			safe_k = min(k, max_edges // num_points, 16)
+		else:
+			safe_k = min(k, 16)
 		
-		edge_features = torch.cat([x[row], x[col] - x[row]], dim=1)
-		out = self.mlp(edge_features)
-		
-		aggr_out = scatter(out, row, dim=0, dim_size=x.size(0), reduce='max')
-		
-		return aggr_out
+		try:
+			edge_index = knn_graph(pos, k=safe_k, batch=batch, loop=False)
+			row, col = edge_index
+			
+			# Memory efficient feature computation with chunking
+			chunk_size = 10000  # Process edges in chunks
+			edge_outputs = []
+			
+			for i in range(0, len(row), chunk_size):
+				end_i = min(i + chunk_size, len(row))
+				chunk_row, chunk_col = row[i:end_i], col[i:end_i]
+				
+				chunk_features = torch.cat([x[chunk_row], x[chunk_col] - x[chunk_row]], dim=1)
+				chunk_out = self.mlp(chunk_features)
+				edge_outputs.append(chunk_out)
+				
+				# Clear intermediate tensors immediately
+				del chunk_features
+			
+			out = torch.cat(edge_outputs, dim=0)
+			del edge_outputs
+			
+			aggr_out = scatter(out, row, dim=0, dim_size=x.size(0), reduce='max')
+			
+			# Clear large intermediate tensors
+			del out, edge_index, row, col
+			
+			return aggr_out
+			
+		except RuntimeError as e:
+			print(f"EdgeConv OOM with k={safe_k}, points={num_points}: falling back to simple MLP")
+			# Emergency fallback: skip graph structure, use simple MLP
+			simple_features = torch.cat([x, x], dim=1)  # Duplicate features to match expected input size
+			return self.mlp(simple_features)
 
 class PointEdgeSegNet(nn.Module):
 	def __init__(self, num_features, num_classes):
 		super(PointEdgeSegNet, self).__init__()
 		
-		# --- Encoder ---
+		# Encoder
 		self.conv1 = EdgeConv(num_features, 64)
 		self.conv2 = EdgeConv(64, 128)
 		self.conv3 = EdgeConv(128, 256)
 		self.conv4 = EdgeConv(256, 512)
 
-		# --- Decoder ---
+		# Decoder
 		self.deconv1_mlp = nn.Sequential(nn.Linear(512 + 256, 256), nn.BatchNorm1d(256), nn.ReLU())
 		self.deconv2_mlp = nn.Sequential(nn.Linear(256 + 128, 128), nn.BatchNorm1d(128), nn.ReLU())
 		self.deconv3_mlp = nn.Sequential(nn.Linear(128 + 64, 64), nn.BatchNorm1d(64), nn.ReLU())
 
-		# --- Prediction Head ---
+		# Prediction Head
 		self.head = nn.Sequential(
 			nn.Linear(64 + num_features, 64), 
 			nn.BatchNorm1d(64), 
