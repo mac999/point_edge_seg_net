@@ -18,9 +18,11 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if torch.cuda.is_available():
 	print(f"GPU available: {torch.cuda.get_device_name(0)}")
 	print(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
-	# Memory efficiency settings
-	torch.backends.cudnn.benchmark = True  # Optimized for fixed size input
+	# Stable memory settings for safety
+	torch.backends.cudnn.deterministic = True  # Ensure reproducible results
+	torch.backends.cudnn.benchmark = False     # Disable for memory stability
 	torch.cuda.empty_cache()  # Clear GPU memory
+	print("GPU safety settings applied: deterministic=True, benchmark=False")
 else:
 	print("CUDA not available, using CPU")
 
@@ -30,7 +32,7 @@ BLOCK_DATA_PATH = './block_s3dis'  # Block data storage path
 TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']
 TEST_AREA = 'Area_5'
 NUM_EPOCHS = 50
-BATCH_SIZE = 4  # Increased from 2 to 4 (improved validation stability)
+BATCH_SIZE = 2  # Reduced from 4 to 2 for memory safety (prevents blue screen)
 LEARNING_RATE = 0.001
 NUM_FEATURES = 9 
 NUM_CLASSES = 13
@@ -39,6 +41,44 @@ BLOCK_SIZE = 8192  # Number of points per block
 # Settings for validation loss stabilization
 GRADIENT_CLIP_VALUE = 1.0  # Gradient clipping
 WARMUP_EPOCHS = 3  # Learning rate warmup
+
+# GPU safety settings
+GPU_MEMORY_THRESHOLD = 0.85  # 85% GPU memory usage threshold
+MAX_GRADIENT_NORM = 10.0     # Maximum gradient norm threshold
+
+def safe_gpu_operation():
+	"""GPU memory safety check and cleanup"""
+	if not torch.cuda.is_available():
+		return True
+	
+	try:
+		memory_allocated = torch.cuda.memory_allocated() / 1024**3
+		memory_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+		memory_usage_ratio = memory_allocated / memory_total
+		
+		if memory_usage_ratio > GPU_MEMORY_THRESHOLD:
+			torch.cuda.empty_cache()
+			memory_after_cleanup = torch.cuda.memory_allocated() / 1024**3
+			print(f"GPU memory cleanup: {memory_allocated:.1f}GB -> {memory_after_cleanup:.1f}GB")
+			
+			# Return False if still above critical threshold after cleanup
+			return (memory_after_cleanup / memory_total) < 0.95
+			
+		return True
+	except Exception as e:
+		print(f"GPU memory check failed: {e}")
+		torch.cuda.empty_cache()
+		return True
+
+def check_numerical_stability(tensor, name="tensor"):
+	"""Check for NaN/Inf values in tensors"""
+	if torch.isnan(tensor).any():
+		print(f"NaN detected in {name}")
+		return False
+	if torch.isinf(tensor).any():
+		print(f"Inf detected in {name}")
+		return False
+	return True
 
 def setup_logging():
 	"""Log file setup and initialization"""
@@ -257,29 +297,55 @@ print(f"Total validation blocks: {len(val_files)}")
 print(f"Total test blocks: {len(test_block_files)}")
 print(f"Block size: {BLOCK_SIZE} points per block")
 
-# Simplified Dataset class (for block data)
+# Improved Dataset class (for block data)
 class BlockDataset(torch.utils.data.Dataset):
 	def __init__(self, file_list):
 		self.file_list = file_list
+		self.error_count = 0
+		self.max_error_rate = 0.1  # Allow up to 10% error rate
 	
 	def __len__(self):
 		return len(self.file_list)
 	
 	def __getitem__(self, idx):
-		try:
-			return torch.load(self.file_list[idx], weights_only=False)
-		except Exception as e:
-			print(f"Error loading file {self.file_list[idx]}: {e}") # TBD. error handling
-			return None
+		max_retries = 3
+		for retry in range(max_retries):
+			try:
+				data = torch.load(self.file_list[idx], weights_only=False)
+				# Basic validation
+				if hasattr(data, 'x') and hasattr(data, 'pos') and hasattr(data, 'y'):
+					return data
+				else:
+					print(f"Invalid data structure in file {self.file_list[idx]}")
+					return None
+			except Exception as e:
+				self.error_count += 1
+				if retry == max_retries - 1:  # Last retry
+					print(f"Error loading file {self.file_list[idx]} after {max_retries} retries: {e}")
+					# Check if error rate is too high
+					if self.error_count / len(self.file_list) > self.max_error_rate:
+						print(f"Warning: High error rate detected ({self.error_count}/{len(self.file_list)})")
+					return None
+				# Wait a bit before retry
+				torch.cuda.empty_cache() if torch.cuda.is_available() else None
+		return None
 
 def collate_fn(batch):
 	# Filter out None objects that caused errors
-	batch = [d for d in batch if d is not None]
-	if not batch:
+	valid_batch = [d for d in batch if d is not None]
+	
+	# Require at least half of the batch to be valid
+	min_batch_size = max(1, len(batch) // 2)
+	if len(valid_batch) < min_batch_size:
+		print(f"Warning: Only {len(valid_batch)}/{len(batch)} valid samples in batch. Skipping batch.")
 		return None
 	
-	from torch_geometric.data import Batch
-	return Batch.from_data_list(batch)
+	try:
+		from torch_geometric.data import Batch
+		return Batch.from_data_list(valid_batch)
+	except Exception as e:
+		print(f"Error creating batch: {e}")
+		return None
 
 
 train_dataset = BlockDataset(train_files)
@@ -313,7 +379,6 @@ scheduler = optim.lr_scheduler.ReduceLROnPlateau(
 def train(epoch):
 	model.train()
 	
-	# DataLoader 유효성 검사
 	if len(train_loader) == 0:
 		print("Warning: Training loader is empty!")
 		return 0.0, 0.0
@@ -321,35 +386,62 @@ def train(epoch):
 	pbar = tqdm(train_loader, desc=f'Epoch {epoch:02d}/{NUM_EPOCHS} [Training]')
 	total_loss, correct_nodes, total_nodes = 0, 0, 0
 	valid_batches = 0
+	skipped_batches = 0
+	skip_reasons = {'memory': 0, 'gradient': 0, 'numerical': 0, 'runtime': 0}
 	
 	for batch_idx, data in enumerate(pbar):
+		# GPU memory safety check
+		if not safe_gpu_operation():
+			print(f"GPU memory critical at epoch {epoch}, batch {batch_idx}. Stopping training.")
+			break
+			
 		if data is None: 
 			print(f"Warning: Skipping corrupted batch {batch_idx} in training")
+			skipped_batches += 1
+			skip_reasons['memory'] += 1
 			continue
 			
 		valid_batches += 1
 		data = data.to(device)
 		optimizer.zero_grad()
-		out = model(data)
 		
-		# Include only valid points in loss calculation
-		valid_mask = data.valid_mask.view(-1)  # Flatten batch dimension
-		valid_out = out[valid_mask]
-		valid_y = data.y[valid_mask]
-		
-		loss = criterion(valid_out, valid_y)
-		loss.backward()
-		
-		# Stabilize training with gradient clipping
-		torch.nn.utils.clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
-		
-		optimizer.step()
-		total_loss += loss.item()
-		
-		# Calculate accuracy (valid points only)
-		pred = valid_out.argmax(dim=-1)
-		correct_nodes += pred.eq(valid_y).sum().item()
-		total_nodes += valid_mask.sum().item()
+		try:
+			out = model(data)
+			
+			# Include only valid points in loss calculation
+			valid_mask = data.valid_mask.view(-1)  # Flatten batch dimension
+			valid_out = out[valid_mask]
+			valid_y = data.y[valid_mask]
+			
+			loss = criterion(valid_out, valid_y)
+			
+			# Check for numerical instability
+			if not check_numerical_stability(loss, "loss"):
+				print(f"Numerical instability detected at epoch {epoch}, batch {batch_idx}. Skipping batch.")
+				torch.cuda.empty_cache()
+				continue
+			
+			loss.backward()
+			
+			# Monitor gradient norm and apply clipping
+			total_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
+			if total_grad_norm > MAX_GRADIENT_NORM:
+				print(f"Large gradient detected: {total_grad_norm:.2f} at epoch {epoch}, batch {batch_idx}")
+				torch.cuda.empty_cache()
+				continue
+			
+			optimizer.step()
+			total_loss += loss.item()
+			
+			# Calculate accuracy (valid points only)
+			pred = valid_out.argmax(dim=-1)
+			correct_nodes += pred.eq(valid_y).sum().item()
+			total_nodes += valid_mask.sum().item()
+			
+		except RuntimeError as e:
+			print(f"Runtime error at epoch {epoch}, batch {batch_idx}: {str(e)}")
+			torch.cuda.empty_cache()
+			continue
 		
 		# More detailed progress bar information
 		current_acc = correct_nodes / total_nodes if total_nodes > 0 else 0
@@ -371,7 +463,6 @@ def validate(loader):
 	model.eval()
 	loader_name = 'Validation' if loader == val_loader else 'Test'
 	
-	# DataLoader 유효성 검사
 	if len(loader) == 0:
 		print(f"Warning: {loader_name} loader is empty!")
 		return 0.0, 0.0
@@ -382,26 +473,43 @@ def validate(loader):
 	
 	with torch.no_grad():
 		for batch_idx, data in enumerate(pbar):
+			# GPU memory safety check during validation
+			if not safe_gpu_operation():
+				print(f"GPU memory critical during {loader_name.lower()} at batch {batch_idx}. Stopping validation.")
+				break
+				
 			if data is None: 
 				print(f"Warning: Skipping corrupted batch {batch_idx} in {loader_name.lower()}")
 				continue
 				
 			valid_batches += 1
-			data = data.to(device)
-			out = model(data)
 			
-			# Include only valid points in loss and accuracy calculation
-			valid_mask = data.valid_mask.view(-1)  # Flatten batch dimension
-			valid_out = out[valid_mask]
-			valid_y = data.y[valid_mask]
-			
-			# Add validation loss calculation
-			loss = criterion(valid_out, valid_y)
-			total_loss += loss.item()
-			
-			pred = valid_out.argmax(dim=-1)
-			correct_nodes += pred.eq(valid_y).sum().item()
-			total_nodes += valid_mask.sum().item()
+			try:
+				data = data.to(device)
+				out = model(data)
+				
+				# Include only valid points in loss and accuracy calculation
+				valid_mask = data.valid_mask.view(-1)  # Flatten batch dimension
+				valid_out = out[valid_mask]
+				valid_y = data.y[valid_mask]
+				
+				# Add validation loss calculation with numerical stability check
+				loss = criterion(valid_out, valid_y)
+				if check_numerical_stability(loss, "validation_loss"):
+					total_loss += loss.item()
+					
+					pred = valid_out.argmax(dim=-1)
+					correct_nodes += pred.eq(valid_y).sum().item()
+					total_nodes += valid_mask.sum().item()
+				else:
+					print(f"Numerical instability in {loader_name.lower()} at batch {batch_idx}")
+					torch.cuda.empty_cache()
+					continue
+					
+			except RuntimeError as e:
+				print(f"Runtime error in {loader_name.lower()} at batch {batch_idx}: {str(e)}")
+				torch.cuda.empty_cache()
+				continue
 			
 			# More detailed progress bar information
 			current_acc = correct_nodes / total_nodes if total_nodes > 0 else 0
@@ -430,56 +538,96 @@ def run_training():
 	log_dir, csv_log_path = setup_logging()
 	print(f"Logging to directory: {log_dir}")
 	
+	# Initial GPU memory check
+	if torch.cuda.is_available():
+		initial_memory = torch.cuda.memory_allocated() / 1024**3
+		total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+		print(f"Initial GPU memory: {initial_memory:.1f}GB / {total_memory:.1f}GB")
+	
 	history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
 	best_val_acc = 0.0
 	best_epoch = 0
+	consecutive_failures = 0
+	max_consecutive_failures = 3
 	
-	print(f"Starting training on {device}...")
+	print(f"Starting training on {device} with safety measures enabled...")
 
 	# Add progress bar showing overall training progress
 	epoch_pbar = tqdm(range(1, NUM_EPOCHS + 1), desc="Training Progress")
 	for epoch in epoch_pbar:
-		train_loss, train_acc = train(epoch)
-		val_loss, val_acc = validate(val_loader)
-		
-		# Get current learning rate
-		current_lr = optimizer.param_groups[0]['lr']
-		
-		# Update scheduler (based on validation loss)
-		old_lr = current_lr
-		scheduler.step(val_loss)
-		new_lr = optimizer.param_groups[0]['lr']
-		
-		# Detect learning rate changes and log output
-		if new_lr != old_lr:
-			print(f"Learning rate reduced from {old_lr:.2e} to {new_lr:.2e}")
-		
-		# Update history
-		history['train_loss'].append(train_loss)
-		history['train_acc'].append(train_acc)
-		history['val_loss'].append(val_loss)
-		history['val_acc'].append(val_acc)
-		
-		# Track best performance
-		if val_acc > best_val_acc:
-			best_val_acc = val_acc
-			best_epoch = epoch
-			# Save best performance model
-			torch.save(model.state_dict(), os.path.join(log_dir, 'best_model.pth'))
-		
-		# Save CSV log
-		log_epoch_metrics(csv_log_path, epoch, train_loss, train_acc, val_loss, val_acc, new_lr)
-		
-		# Update epoch progress bar
-		epoch_pbar.set_postfix({
-			'Train Loss': f'{train_loss:.4f}',
-			'Train Acc': f'{train_acc:.4f}',
-			'Val Loss': f'{val_loss:.4f}',
-			'Val Acc': f'{val_acc:.4f}',
-			'LR': f'{new_lr:.2e}'
-		})
-		
-		print(f'\nEpoch: {epoch:02d}, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, LR: {new_lr:.2e}')
+		try:
+			train_loss, train_acc = train(epoch)
+			
+			# Check if training was successful
+			if train_loss == 0.0 and train_acc == 0.0:
+				consecutive_failures += 1
+				print(f"Training failure at epoch {epoch}. Consecutive failures: {consecutive_failures}")
+				if consecutive_failures >= max_consecutive_failures:
+					print("Maximum consecutive failures reached. Stopping training.")
+					break
+				continue
+			else:
+				consecutive_failures = 0  # Reset failure counter
+			
+			val_loss, val_acc = validate(val_loader)
+			
+			# Check for numerical stability in results
+			if not all(check_numerical_stability(torch.tensor([x]), f"metric_{i}") 
+					  for i, x in enumerate([train_loss, train_acc, val_loss, val_acc])):
+				print(f"Numerical instability in epoch {epoch} results. Skipping epoch.")
+				torch.cuda.empty_cache()
+				continue
+			
+			# Get current learning rate
+			current_lr = optimizer.param_groups[0]['lr']
+			
+			# Update scheduler (based on validation loss)
+			old_lr = current_lr
+			scheduler.step(val_loss)
+			new_lr = optimizer.param_groups[0]['lr']
+			
+			# Detect learning rate changes and log output
+			if new_lr != old_lr:
+				print(f"Learning rate reduced from {old_lr:.2e} to {new_lr:.2e}")
+			
+			# Update history
+			history['train_loss'].append(train_loss)
+			history['train_acc'].append(train_acc)
+			history['val_loss'].append(val_loss)
+			history['val_acc'].append(val_acc)
+			
+			# Track best performance
+			if val_acc > best_val_acc:
+				best_val_acc = val_acc
+				best_epoch = epoch
+				# Save best performance model
+				try:
+					torch.save(model.state_dict(), os.path.join(log_dir, 'best_model.pth'))
+				except Exception as e:
+					print(f"Failed to save best model: {e}")
+			
+			# Save CSV log
+			log_epoch_metrics(csv_log_path, epoch, train_loss, train_acc, val_loss, val_acc, new_lr)
+			
+			# Update epoch progress bar
+			epoch_pbar.set_postfix({
+				'Train Loss': f'{train_loss:.4f}',
+				'Train Acc': f'{train_acc:.4f}',
+				'Val Loss': f'{val_loss:.4f}',
+				'Val Acc': f'{val_acc:.4f}',
+				'LR': f'{new_lr:.2e}'
+			})
+			
+			print(f'\nEpoch: {epoch:02d}, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, LR: {new_lr:.2e}')
+			
+		except Exception as e:
+			print(f"Critical error at epoch {epoch}: {str(e)}")
+			torch.cuda.empty_cache() if torch.cuda.is_available() else None
+			consecutive_failures += 1
+			if consecutive_failures >= max_consecutive_failures:
+				print("Maximum consecutive failures reached due to critical errors. Stopping training.")
+				break
+			continue
 
 	# Save final model and logs
 	torch.save(model.state_dict(), os.path.join(log_dir, 'final_model.pth'))
@@ -521,10 +669,18 @@ def run_training():
 	plt.show()
 
 	print("\n--- Final Test Performance ---")
-	test_dataset = BlockDataset(test_block_files)
-	test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
-	test_acc = validate(test_loader)
-	print(f"Final Test Accuracy on {TEST_AREA}: {test_acc:.4f}")
+	try:
+		# Clean up GPU memory before final test
+		torch.cuda.empty_cache() if torch.cuda.is_available() else None
+		
+		test_dataset = BlockDataset(test_block_files)
+		test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
+		test_loss, test_acc = validate(test_loader)
+		print(f"Final Test Accuracy on {TEST_AREA}: {test_acc:.4f}")
+		print(f"Final Test Loss on {TEST_AREA}: {test_loss:.4f}")
+	except Exception as e:
+		print(f"Error during final test: {str(e)}")
+		print("Skipping final test due to safety concerns.")
 
 def main():
 	global PROCESSED_DATA_PATH, BLOCK_DATA_PATH, TRAIN_AREAS, TEST_AREA
