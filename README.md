@@ -17,7 +17,7 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img8.png" height="115"></img>
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img7.png" height="115"></img></br>
 </p>
-<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model(Val acc 74.79% at Epoch 47, Train dataset = S3DIS v1.2 aligned (Area1))
+<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model(Val acc 74.79% at Epoch 47, Train dataset = S3DIS v1.2 aligned (Area1) only. VRAM = 8GB. 2025.9.25)
 </p>
 
 ## Version
@@ -47,7 +47,11 @@ Loss and Acc performance log(https://github.com/mac999/point_edge_seg_net/tree/m
 </p>
 
 ## Next plan
-has 
+is 
+- Train dataset will be increased. Current, there is limitation to improve accuracy because Area1 in S3DIS was used for train only (2025/9/28).
+- Hyperparameter will be adjusted within VRAM (Current 8 GB. 2025/9/28)
+- Model architecture will be updated
+- Dataset augumentation
 - Diagnoise and visualize model related to weight, bais and gradient of loss in epoch.
 - Customization about classes and features
 - Finetuning
@@ -431,6 +435,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
