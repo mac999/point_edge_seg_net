@@ -48,13 +48,14 @@ Loss and Acc performance log(https://github.com/mac999/point_edge_seg_net/tree/m
 
 ## Next plan
 is 
-- Train dataset will be increased. Current, there is limitation to improve accuracy because Area1 in S3DIS was used for train only (2025/9/28).
-- Hyperparameter will be adjusted within VRAM (Current 8 GB. 2025/9/28)
-- Model architecture will be updated
+- Train dataset development (Current, there is limitation to improve accuracy because Area1 in S3DIS was used for training it only. 2025/9/28).
+- Hyperparameter finetuning considering VRAM (Current 8 GB. 2025/9/28)
+- Deep model architecture 
+- Points grid generation using grid hash spatial indexing
 - Dataset augumentation
 - Diagnoise and visualize model related to weight, bais and gradient of loss in epoch.
 - Customization about classes and features
-- Finetuning
+- Model Finetuning
 - LiDAR point cloud train example etc
 
 ## Installation
@@ -435,6 +436,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
