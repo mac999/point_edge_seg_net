@@ -158,6 +158,11 @@ EdgeConv (Edge Convolution) is designed specifically for point cloud processing:
 - Combines point features with relative position information
 - Maintains permutation invariance while being sensitive to local structure
 
+<p align="center">
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img11.png" height="200"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img10.png" height="200"></img>
+</p>
+
 Mathematical formulation:
 ```
 edge_feature = MLP([x_i, x_j - x_i])
@@ -435,6 +440,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
