@@ -4,9 +4,17 @@
 # IMPORTANT: These PyTorch & PyG related libraries should be installed manually
 # using the specific commands for your CUDA version first.
 # The versions listed here are for reference.
-torchvision
-torchaudio
+--index-url https://download.pytorch.org/whl/cu118
+torch==2.7.1
+torchvision==0.22.1
+torchaudio==2.7.1
+
+--find-links https://data.pyg.org/whl/torch-2.7.1+cu118.html
+torch_cluster
+torch_scatter
+torch_sparse  
 torch_geometric
+# pyg-lib
 
 # --- Data Processing and Machine Learning ---
 numpy
