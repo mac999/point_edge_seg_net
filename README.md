@@ -17,18 +17,28 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img8.png" height="115"></img>
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img7.png" height="115"></img></br>
 </p>
-<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model(Val acc 74.79% at Epoch 47, Train dataset = S3DIS v1.2 aligned (Area1) only. VRAM = 8GB. 2025/9/25)
-</p>
+<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model(Val acc 86.63%, VRAM = 24GB. 2025/10/5)
+</p
 
 ## Version
 
-- 0.1: 2025/9/21. draft version.
+- 0.1: 2025/9/21. Draft version.
 - 0.2: 2025/9/24. CLI args, bug fixed.
 - 0.3: 2025/9/26. GPU safety mode was added.
-- 0.4: 2025/9/28. diagnose was added.
+- 0.4: 2025/9/28. Diagnose was added. Points grid generation using grid hash spatial indexing
+- 0.5: 2025/10/1. Train dataset development (area 1 to 6)
+- 0.6: 2025/10/3. Hyperparameter finetuning (support VRAM 8GB, 24GB)
 <p align="center">
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/layer_gradients_epoch_5.png" height="300"></img></br>
 </p>
+
+### Todo
+- Deep model architecture revision
+- Dataset augumentation
+- Diagnoise and visualize model related to weight, bais and gradient of loss in epoch.
+- Customization about classes and features
+- Model Finetuning
+- LiDAR point cloud train example etc
 
 ## Features
 
@@ -42,20 +52,9 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 - Comprehensive logging and model checkpointing
 
 <p align="center">
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/Figure_2.png" height="400"></img></br>
-Loss and Acc performance log(https://github.com/mac999/point_edge_seg_net/tree/main/logs/20250928_072456). Train and Val dataset = S3DIS v1.2 aligned (Area1) 
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/Figure_4.png" height="400"></img></br>
+Loss and Acc performance log(https://github.com/mac999/point_edge_seg_net/tree/main/logs/20250928_072456). Train and Val dataset = S3DIS v1.2 aligned (Area 1, 2, 3, 4, 6) 
 </p>
-
-## Next plan
-- Train dataset development (Current, there is limitation to improve accuracy because Area1 in S3DIS was used for training it only. 2025/9/28).
-- Hyperparameter finetuning considering VRAM (Current 8 GB. 2025/9/28)
-- Deep model architecture 
-- Points grid generation using grid hash spatial indexing
-- Dataset augumentation
-- Diagnoise and visualize model related to weight, bais and gradient of loss in epoch.
-- Customization about classes and features
-- Model Finetuning
-- LiDAR point cloud train example etc
 
 ## Installation
 
@@ -440,6 +439,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
