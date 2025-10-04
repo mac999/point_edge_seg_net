@@ -29,9 +29,6 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 - 0.4: 2025/9/28. Diagnose was added. Points grid generation using grid hash spatial indexing
 - 0.5: 2025/10/1. Train dataset development (area 1 to 6)
 - 0.6: 2025/10/3. Hyperparameter finetuning (support VRAM 8GB, 24GB)
-<p align="center">
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/layer_gradients_epoch_5.png" height="300"></img></br>
-</p>
 
 The below is todo list.
 - Deep model architecture revision
@@ -440,6 +437,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
