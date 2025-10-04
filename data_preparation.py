@@ -3,16 +3,16 @@
 # Date: 2025-09-21
 # Purpose: Pre-processes the S3DIS dataset based on the specified Annotation structure.
 # Dependencies: numpy, torch, torch_geometric, open3d, tqdm
-import os, numpy as np, torch, open3d as o3d, glob, warnings, argparse
+import os, numpy as np, torch, open3d as o3d, glob, warnings, argparse, shutil
 from torch_geometric.data import Data
 from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Configuration
-S3DIS_PATH = './s3dis_v1.2_aligned' # S3DIS original dataset path
+S3DIS_PATH = 'I:/05.data/s3dis_v1_2_Aligned' # S3DIS original dataset path
 SAVE_PATH = './processed_s3dis' 	# Preprocessed data storage path
-AREAS_TO_PROCESS = ['Area_1'] 		# Specify areas to process
+AREAS_TO_PROCESS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_5', 'Area_6'] 		# Specify areas to process
 NUM_POINTS_PER_BLOCK = 8192 		# Number of points to sample per block
 
 # Class name and integer label mapping
@@ -29,36 +29,21 @@ def calculate_features_with_open3d(points_xyz):
 	pcd = o3d.geometry.PointCloud()
 	pcd.points = o3d.utility.Vector3dVector(points_xyz)
 	
-	# Calculate normal vectors (using k=20 neighbors)
-	pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=20))
-	
-	# Maintain normal direction consistency (towards positive z-axis)
-	pcd.orient_normals_consistent_tangent_plane(20)
+	# Normal estimation
+	pcd.estimate_normals(
+		search_param=o3d.geometry.KDTreeSearchParamKNN(knn=15),
+		fast_normal_computation=True  # 고속 모드 활성화
+	)
 	normals = np.asarray(pcd.normals)
-
-	# Create KD-Tree for neighbor search
-	pcd_tree = o3d.geometry.KDTreeFlann(pcd)
 	
-	curvatures = np.zeros(len(points_xyz))
+	# Geometric features
+	verticality = 1 - np.abs(normals[:, 2])
+	planarity = np.abs(normals[:, 2])
 	
-	# Calculate covariance matrix for each point to estimate curvature
-	for i in tqdm(range(len(points_xyz)), desc="Computing curvatures", leave=False):
-		[k, idx, _] = pcd_tree.search_knn_vector_3d(pcd.points[i], 20)
-		neighbors = np.asarray(pcd.points)[idx, :]
-		
-		# Curvature calculation through PCA
-		centered_neighbors = neighbors - np.mean(neighbors, axis=0)
-		cov_matrix = np.cov(centered_neighbors, rowvar=False)
-		eigenvalues, _ = np.linalg.eigh(cov_matrix)
-		
-		# Define curvature by dividing the smallest eigenvalue by the total sum
-		curvatures[i] = eigenvalues[0] / (np.sum(eigenvalues) + 1e-9)
-
-	# Verticality and planarity
-	verticality = 1 - np.abs(normals[:, 2]) # 0: horizontal, 1: close to vertical
-	planarity = np.zeros(len(points_xyz)) # Initialize to 0 in this example
-
-	# Feature combination: [normals(3), verticality(1), planarity(1), curvature(1)]
+	# Curvature estimation
+	curvatures = np.linalg.norm(normals - np.mean(normals, axis=0), axis=1)
+	curvatures = curvatures / (np.max(curvatures) + 1e-9)  # Normalize curvature
+	
 	geometric_features = np.concatenate([
 		normals,
 		verticality[:, np.newaxis],
@@ -68,9 +53,12 @@ def calculate_features_with_open3d(points_xyz):
 	
 	return geometric_features
 
-def process_area(area_path, save_path):
+def process_area(area_path, args):
+	save_path = args.save_path
 	print(f"Processing {os.path.basename(area_path)}...")
 	area_save_path = os.path.join(save_path, os.path.basename(area_path))
+	if os.path.exists(area_save_path):
+		shutil.rmtree(area_save_path, ignore_errors=True)
 	os.makedirs(area_save_path, exist_ok=True)
 	
 	room_folders = [d for d in glob.glob(os.path.join(area_path, '*')) if os.path.isdir(d)]
@@ -114,7 +102,7 @@ def process_area(area_path, save_path):
 		colors_room = points_room[:, 3:6] / 255.0
 
 		# Calculate geometric features using Open3D
-		print(f"Computing geometric features for {os.path.basename(room_folder)} ({len(coords_room)} points)...")
+		# print(f"Computing geometric features for {os.path.basename(room_folder)} ({len(coords_room)} points)...")
 		geometric_features = calculate_features_with_open3d(coords_room)
 		
 		# Final feature vector combination: [normals(3), verticality(1), planarity(1), curvature(1), colors(3)] = 9 dimensions
@@ -133,18 +121,28 @@ def process_area(area_path, save_path):
 			room_name = os.path.basename(room_folder)
 			torch.save(data, os.path.join(area_save_path, f"{room_name}.pt"))
 
+		if args.visualize:  # Visualization for verification with normal vectors
+			# Keyboard controls. H=help, Q=quit, F=fullscreen, N=toggle normals, W=toggle wireframe, R=reset view, +-=normal vector size, []=view projection scale, L=turn on/off lighting, 0..9=change color
+			pcd = o3d.geometry.PointCloud()
+			pcd.points = o3d.utility.Vector3dVector(coords_room)
+			pcd.colors = o3d.utility.Vector3dVector(colors_room)
+			pcd.normals = o3d.utility.Vector3dVector(geometric_features[:, :3])
+			o3d.visualization.draw_geometries([pcd], point_show_normal=True, window_name=os.path.basename(room_folder))
+			print("Visualization done.")
+
 def main():
 	parser = argparse.ArgumentParser(description='S3DIS Dataset Preprocessing')
 	parser.add_argument('--s3dis_path', default=S3DIS_PATH, help='S3DIS dataset path')
 	parser.add_argument('--save_path', default=SAVE_PATH, help='Output directory')
 	parser.add_argument('--areas', nargs='+', default=AREAS_TO_PROCESS, help='Areas to process')
 	parser.add_argument('--num_points', type=int, default=NUM_POINTS_PER_BLOCK, help='Number of points per block')
+	parser.add_argument('--visualize', type=bool, default=False, help='Visualize point clouds for verification')
 	args = parser.parse_args()
 	
 	print(f"Starting data preparation for {len(args.areas)} areas...")
 	for area in tqdm(args.areas, desc="Processing areas"):
 		area_path = os.path.join(args.s3dis_path, area)
-		process_area(area_path, args.save_path)
+		process_area(area_path, args)
 	print("\nData preparation finished.")
 
 if __name__ == '__main__':
