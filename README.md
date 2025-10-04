@@ -54,7 +54,7 @@ The below is todo list.
 
 <p align="center">
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/Figure_4.png" height="400"></img></br>
-Loss and Acc performance log(https://github.com/mac999/point_edge_seg_net/tree/main/logs/20250928_072456). Train and Val dataset = S3DIS v1.2 aligned (Area 1, 2, 3, 4, 6) 
+Loss and Acc performance log(https://github.com/mac999/point_edge_seg_net/tree/main/logs/20251004_221236). Train and Val dataset = S3DIS v1.2 aligned (Area 1, 2, 3, 4, 6) 
 </p>
 
 ## Installation
@@ -248,7 +248,7 @@ Basic inference with default model:
 python inference.py
 
 # Inference with custom model and input
-python inference.py --model_weights ./logs/20250924_053221/best_model.pth --input_cloud ./sample/area_6_conferenceRoom_1.txt
+python inference.py --model_weights ./logs/20251004_221236/best_model.pth --input_cloud ./sample/area_6_conferenceRoom_1.txt
 
 # Inference without visualization (for batch processing)
 python inference.py --no_visualization
@@ -440,6 +440,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
