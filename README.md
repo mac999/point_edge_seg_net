@@ -20,6 +20,7 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 <p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model(Val acc 86.63%, VRAM = 24GB. 2025/10/5)
 </p
 
+
 ## Version
 
 - 0.1: 2025/9/21. Draft version.
@@ -439,6 +440,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
