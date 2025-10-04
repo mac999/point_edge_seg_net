@@ -4,7 +4,7 @@
 # Purpose: Trains and validates the PointEdgeSegNet model.
 # Dependencies: torch, torch_geometric, matplotlib, scikit-learn, tqdm
 
-import os, torch, torch.optim as optim, json, csv, argparse, time
+import os, torch, torch.optim as optim, json, csv, argparse, time, numpy as np, random
 import matplotlib.pyplot as plt
 from torch_geometric.loader import DataLoader
 from glob import glob
@@ -12,6 +12,9 @@ from model import PointEdgeSegNet
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from datetime import datetime
+from diagnose_kpi_grad import monitor_kpi
+
+random.seed(42)  
 
 # GPU optimization settings (optional)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -32,11 +35,12 @@ BLOCK_DATA_PATH = './block_s3dis'  # Block data storage path
 TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']
 TEST_AREA = 'Area_5'
 NUM_EPOCHS = 30
-BATCH_SIZE = 4  # Reduced from 4 to 2 for memory safety (prevents blue screen)
+BATCH_SIZE = 32 # 24 to 32 for VRAM=24GB, VRAM=8GB. 8 4 to 2 
 LEARNING_RATE = 0.001
 NUM_FEATURES = 9 
 NUM_CLASSES = 13
 BLOCK_SIZE = 8192  # Number of points per block
+block_grid_min_coords = np.array([-50.0, 0.0, 0.0])  # base point for normalization
 
 # Settings for validation loss stabilization
 GRADIENT_CLIP_VALUE = 8.0  # Gradient clipping (increased for better learning)
@@ -140,11 +144,13 @@ def preprocess_dataset():
 	Split existing processed_s3dis pt files into 8192 point blocks
 	and save them to the block_s3dis folder.
 	"""
-	start_time = time.time()
-	
 	print("Starting dataset preprocessing...")
+	if os.path.exists(BLOCK_DATA_PATH):
+		return
 	os.makedirs(BLOCK_DATA_PATH, exist_ok=True)
-	
+
+	start_time = time.time()
+		
 	# Process all area files
 	all_areas = TRAIN_AREAS + [TEST_AREA]
 	block_counter = 0
@@ -161,63 +167,88 @@ def preprocess_dataset():
 			try:
 				# Load original data (set weights_only=False for PyTorch 2.6+ compatibility)
 				data = torch.load(pt_file, weights_only=False)
-				num_points = data.x.shape[0]
-				num_blocks = (num_points + BLOCK_SIZE - 1) // BLOCK_SIZE
 				
-				# Split into 8192 point blocks
-				for i in tqdm(range(0, num_points, BLOCK_SIZE), 
-							 desc=f"Creating blocks from {os.path.basename(pt_file)}", 
-							 leave=False, 
-							 total=num_blocks):
-					end_idx = min(i + BLOCK_SIZE, num_points)
+				# Convert to numpy for spatial processing
+				points = data.pos.numpy()
+				features = data.x.numpy() 
+				labels = data.y.numpy()
+				
+				# Grid Hash spatial partitioning with coordinate range adjustment
+				# S3DIS coordinates: X: -15.609~-15.331, Y: 37.738~39.569, Z: 0.299~2.657
+				grid_resolution = 0.5  # Resolution for narrow coordinate ranges
+				
+				# Normalize coordinates to handle negative values and optimize grid distribution
+				normalized_points = points - block_grid_min_coords
+				grid_coords = np.floor(normalized_points / grid_resolution).astype(np.int32)
+				
+				# Ensure all grid coordinates are non-negative
+				grid_coords = np.maximum(grid_coords, 0)
+				
+				grid_hashes = (grid_coords[:, 0] * 73856093) ^ (grid_coords[:, 1] * 19349663) ^ (grid_coords[:, 2] * 83492791)  # Hash function using large prime numbers for 3D spatial hashing
+				unique_hashes, inverse_indices = np.unique(grid_hashes, return_inverse=True)
+				
+				# Create spatial blocks with guaranteed BLOCK_SIZE
+				for hash_idx, grid_hash in enumerate(unique_hashes):
+					point_indices = np.where(inverse_indices == hash_idx)[0]
+					if len(point_indices) < BLOCK_SIZE * 0.1:
+						continue
 					
-					# Extract current block
-					block_x = data.x[i:end_idx]
-					block_pos = data.pos[i:end_idx]
-					block_y = data.y[i:end_idx]
-					
-					current_block_size = block_x.shape[0]
-					
-					# Apply padding if needed
-					if current_block_size < BLOCK_SIZE:
-						padding_size = BLOCK_SIZE - current_block_size
+					for start_idx in range(0, len(point_indices), BLOCK_SIZE):
+						end_idx = min(start_idx + BLOCK_SIZE, len(point_indices))
+						raw_indices = point_indices[start_idx:end_idx]
+						original_size = len(raw_indices)
 						
-						# Feature vector padding (fill with zeros)
-						padding_x = torch.zeros(padding_size, block_x.shape[1], dtype=block_x.dtype)
-						block_x = torch.cat([block_x, padding_x], dim=0)
-						
-						# Position padding (fill with last point position)
-						if current_block_size > 0:
-							last_pos = block_pos[-1:].repeat(padding_size, 1)
+						# Always create EXACTLY BLOCK_SIZE indices
+						if original_size < BLOCK_SIZE:
+							padding_needed = BLOCK_SIZE - original_size
+							if original_size > 0:
+								padding_indices = np.random.choice(raw_indices, padding_needed, replace=True)
+								final_indices = np.concatenate([raw_indices, padding_indices])
+							else:
+								continue
 						else:
-							last_pos = torch.zeros(padding_size, 3, dtype=block_pos.dtype)
-						block_pos = torch.cat([block_pos, last_pos], dim=0)
+							final_indices = raw_indices[:BLOCK_SIZE]
+							original_size = min(original_size, BLOCK_SIZE)
 						
-						# Label padding (fill with ignore_index value -1)
-						padding_y = torch.full((padding_size,), -1, dtype=block_y.dtype)
-						block_y = torch.cat([block_y, padding_y], dim=0)
+						# Verify BLOCK_SIZE constraint
+						assert len(final_indices) == BLOCK_SIZE, f"Block size mismatch: {len(final_indices)} != {BLOCK_SIZE}"
+						
+						# Extract features with EXACT BLOCK_SIZE
+						block_x = torch.FloatTensor(features[final_indices])
+						block_pos = torch.FloatTensor(points[final_indices])
+						block_y = torch.LongTensor(labels[final_indices])
+						
+						# Handle padding labels (set padded points to ignore_index=-1)
+						if original_size < BLOCK_SIZE:
+							block_y[original_size:] = -1  # ignore_index for loss
+						
+						# Generate valid point mask
+						valid_mask = torch.ones(BLOCK_SIZE, dtype=torch.bool)
+						if original_size < BLOCK_SIZE:
+							valid_mask[original_size:] = False
+						
+						# Final size verification
+						assert block_x.shape[0] == BLOCK_SIZE and block_pos.shape[0] == BLOCK_SIZE and block_y.shape[0] == BLOCK_SIZE
 					
-					# Generate valid point mask
-					valid_mask = torch.ones(BLOCK_SIZE, dtype=torch.bool)
-					if current_block_size < BLOCK_SIZE:
-						valid_mask[current_block_size:] = False
-					
-					# Create torch_geometric Data object
-					from torch_geometric.data import Data
-					block_data = Data(
-						x=block_x,
-						pos=block_pos,
-						y=block_y,
-						valid_mask=valid_mask,
-						num_valid_points=current_block_size,
-						area=area  # Store which area this block came from
-					)
-					
-					# Save block
-					block_filename = f"block_{block_counter:06d}_{area}.pt"
-					torch.save(block_data, os.path.join(BLOCK_DATA_PATH, block_filename))
-					block_counter += 1
-					
+						# Create torch_geometric Data object
+						from torch_geometric.data import Data
+						block_data = Data(
+							x=block_x,
+							pos=block_pos,
+							y=block_y,
+							valid_mask=valid_mask,
+							num_valid_points=original_size,
+							area=area  # Store which area this block came from
+						)
+						
+						# Save block
+						block_filename = f"block_{block_counter:012d}_{area}.pt"
+						torch.save(block_data, os.path.join(BLOCK_DATA_PATH, block_filename))
+						block_counter += 1
+
+						if block_counter % 100 == 0: # Brief pause for GPU cooling
+							time.sleep(10.0)  
+		
 			except Exception as e:
 				print(f"Error processing file {pt_file}: {e}")
 				continue
@@ -228,29 +259,6 @@ def preprocess_dataset():
 	print(f"Total blocks created: {block_counter}")
 	print(f"Average time per block: {preprocessing_time/block_counter:.4f} seconds")
 	return block_counter
-
-# Data loader preparation
-# Run preprocessing if block data doesn't exist
-if not os.path.exists(BLOCK_DATA_PATH) or len(glob(os.path.join(BLOCK_DATA_PATH, '*.pt'))) == 0:
-	print("Block data not found. Running preprocessing...")
-	preprocess_dataset()
-
-# Separate block files by area
-all_block_files = glob(os.path.join(BLOCK_DATA_PATH, '*.pt'))
-train_block_files = []
-test_block_files = []
-
-print("Categorizing block files by area...")
-for block_file in tqdm(all_block_files, desc="Categorizing blocks"):
-	filename = os.path.basename(block_file)
-	if TEST_AREA in filename:
-		test_block_files.append(block_file)
-	else:
-		# Blocks belonging to TRAIN_AREAS
-		for area in TRAIN_AREAS:
-			if area in filename:
-				train_block_files.append(block_file)
-				break
 
 def validate_block_files(file_list):
 	"""Validate block files and remove corrupted ones"""
@@ -282,20 +290,6 @@ def validate_block_files(file_list):
 	print(f"Valid files: {len(valid_files)}, Removed corrupted files: {len(corrupted_files)}")
 	return valid_files
 
-# Split training blocks into 8:2 using train_test_split
-# Validate block files before using them
-print("Validating training block files...")
-train_block_files = validate_block_files(train_block_files)
-print("Validating test block files...")
-test_block_files = validate_block_files(test_block_files)
-
-train_files, val_files = train_test_split(train_block_files, test_size=0.2, random_state=42)
-
-print(f"Total training blocks: {len(train_files)}")
-print(f"Total validation blocks: {len(val_files)}")
-print(f"Total test blocks: {len(test_block_files)}")
-print(f"Block size: {BLOCK_SIZE} points per block")
-
 # Improved Dataset class (for block data)
 class BlockDataset(torch.utils.data.Dataset):
 	def __init__(self, file_list):
@@ -314,9 +308,9 @@ class BlockDataset(torch.utils.data.Dataset):
 				# Basic validation
 				if hasattr(data, 'x') and hasattr(data, 'pos') and hasattr(data, 'y'):
 					return data
-				else:
-					print(f"Invalid data structure in file {self.file_list[idx]}")
-					return None
+
+				print(f"Invalid data structure in file {self.file_list[idx]}")
+				return None
 			except Exception as e:
 				self.error_count += 1
 				if retry == max_retries - 1:  # Last retry
@@ -346,6 +340,46 @@ def collate_fn(batch):
 		print(f"Error creating batch: {e}")
 		return None
 
+# Data loader preparation
+# Run preprocessing if block data doesn't exist
+if not os.path.exists(BLOCK_DATA_PATH) or len(glob(os.path.join(BLOCK_DATA_PATH, '*.pt'))) == 0:
+	print("Block data not found. Running preprocessing...")
+	preprocess_dataset()
+
+# Separate block files by area
+all_block_files = glob(os.path.join(BLOCK_DATA_PATH, '*.pt'))
+train_block_files = []
+test_block_files = []
+
+print("Categorizing block files by area...")
+for block_file in tqdm(all_block_files, desc="Categorizing blocks"):
+	filename = os.path.basename(block_file)
+	if TEST_AREA in filename:
+		test_block_files.append(block_file)
+	else:
+		# Blocks belonging to TRAIN_AREAS
+		for area in TRAIN_AREAS:
+			if area in filename:
+				train_block_files.append(block_file)
+				break
+
+# Split training blocks into 8:2 using train_test_split
+# Validate block files before using them
+# print("Validating training block files...")
+# train_block_files = validate_block_files(train_block_files)
+# print("Validating test block files...")
+# test_block_files = validate_block_files(test_block_files)
+
+# random.shuffle(train_block_files)
+# random.shuffle(test_block_files)
+# train_files = train_block_files
+# val_files = test_block_files 
+train_files, val_files = train_test_split(train_block_files, test_size=0.2, random_state=42)
+
+print(f"Total training blocks: {len(train_files)}")
+print(f"Total validation blocks: {len(val_files)}")
+print(f"Total test blocks: {len(test_block_files)}")
+print(f"Block size: {BLOCK_SIZE} points per block")
 
 train_dataset = BlockDataset(train_files)
 val_dataset = BlockDataset(val_files)
@@ -368,12 +402,13 @@ if len(val_loader) == 0:
 model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES).to(device)
 optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 # Set ignore_index=-1 to ignore labels (-1) of padded points
-criterion = torch.nn.NLLLoss(ignore_index=-1)
+# Add label smoothing for better generalization
+criterion = torch.nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=0.1)
 
 # Add learning rate scheduler (validation loss stabilization) 
 # More aggressive scheduler for faster adaptation
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-	optimizer, mode='min', factor=0.5, patience=4, min_lr=1e-6
+	optimizer, mode='min', factor=0.5, patience=1, min_lr=1e-6
 )
 
 def train(epoch):
@@ -386,13 +421,18 @@ def train(epoch):
 	pbar = tqdm(train_loader, desc=f'Epoch {epoch:02d}/{NUM_EPOCHS} [Training]')
 	total_loss, correct_nodes, total_nodes = 0, 0, 0
 	valid_batches = 0
-	
+
+	debug_break_flag = False
 	for batch_idx, data in enumerate(pbar):
 		# GPU memory safety check
 		if not safe_gpu_operation():
 			print(f"GPU memory critical at epoch {epoch}, batch {batch_idx}. Stopping training.")
 			break
 			
+		if debug_break_flag:
+			print("Debug break flag activated. Stopping training loop.")
+			break
+
 		if data is None: 
 			print(f"Warning: Skipping corrupted batch {batch_idx} in training")
 			continue
@@ -433,8 +473,8 @@ def train(epoch):
 				if epoch % 5 == 0 and batch_idx % 50 == 0:
 					print(f"Gradient clipped: {grad_norm_before:.2f} -> {GRADIENT_CLIP_VALUE}")
 			
-			if batch_idx % 50 == 0: # Brief pause for GPU cooling
-				time.sleep(15.0)  
+			if batch_idx % 200 == 0: # Brief pause for GPU cooling
+				time.sleep(10.0)  
 
 			total_grad_norm = grad_norm_before
 			
@@ -537,7 +577,7 @@ def validate(loader):
 	accuracy = correct_nodes / total_nodes if total_nodes > 0 else 0
 	return avg_loss, accuracy
 
-def run_training():
+def run_training(args=None):
 	# Add freeze_support for Windows multiprocessing support
 	import multiprocessing
 	multiprocessing.freeze_support()
@@ -558,12 +598,22 @@ def run_training():
 	consecutive_failures = 0
 	max_consecutive_failures = 3
 	
+	# Early stopping parameters - more aggressive
+	early_stop_patience = 3  # Reduced from 5 for faster stopping
+	early_stop_counter = 0
+	best_val_loss = float('inf')
+	
 	print(f"Starting training on {device} with safety measures enabled...")
 
 	# Add progress bar showing overall training progress
+	debug_break_flag = False
 	epoch_pbar = tqdm(range(1, NUM_EPOCHS + 1), desc="Training Progress")
 	for epoch in epoch_pbar:
 		try:
+			if debug_break_flag:
+				print("Debug break flag activated. Stopping training loop.")
+				break
+			
 			train_loss, train_acc = train(epoch)
 			
 			# Check if training was successful
@@ -578,10 +628,13 @@ def run_training():
 				consecutive_failures = 0  # Reset failure counter
 			
 			val_loss, val_acc = validate(val_loader)
-			
+
+			# KPI monitoring (if enabled)
+			if args.diagnose:
+				monitor_kpi(model, epoch, save_dir=log_dir, loss=train_loss, accuracy=train_acc)
+
 			# Check for numerical stability in results
-			if not all(check_numerical_stability(torch.tensor([x]), f"metric_{i}") 
-					  for i, x in enumerate([train_loss, train_acc, val_loss, val_acc])):
+			if not all(check_numerical_stability(torch.tensor([x]), f"metric_{i}") for i, x in enumerate([train_loss, train_acc, val_loss, val_acc])):
 				print(f"Numerical instability in epoch {epoch} results. Skipping epoch.")
 				torch.cuda.empty_cache()
 				continue
@@ -593,6 +646,7 @@ def run_training():
 			old_lr = current_lr
 			scheduler.step(val_loss)
 			new_lr = optimizer.param_groups[0]['lr']
+			log_epoch_metrics(csv_log_path, epoch, train_loss, train_acc, val_loss, val_acc, new_lr)
 			
 			# Detect learning rate changes and log output
 			if new_lr != old_lr:
@@ -604,7 +658,13 @@ def run_training():
 			history['val_loss'].append(val_loss)
 			history['val_acc'].append(val_acc)
 			
-			# Track best performance
+			# Track best performance and early stopping
+			if val_loss < best_val_loss:
+				best_val_loss = val_loss
+				early_stop_counter = 0
+			else:
+				early_stop_counter += 1
+				
 			if val_acc > best_val_acc:
 				best_val_acc = val_acc
 				best_epoch = epoch
@@ -615,8 +675,10 @@ def run_training():
 				except Exception as e:
 					print(f"Failed to save best model: {e}")
 			
-			# Save CSV log
-			log_epoch_metrics(csv_log_path, epoch, train_loss, train_acc, val_loss, val_acc, new_lr)
+			# Early stopping check
+			if early_stop_counter >= early_stop_patience:
+				print(f"Early stopping triggered! No improvement for {early_stop_patience} epochs.")
+				break
 			
 			# Update epoch progress bar
 			epoch_pbar.set_postfix({
@@ -679,7 +741,9 @@ def run_training():
 
 	print("\n--- Final Test Performance ---")
 	try:
-		# Clean up GPU memory before final test
+		# Clean up GPU memory before final model test
+		model.load_state_dict(torch.load(os.path.join(log_dir, 'best_model.pth'), map_location=device))
+		model.eval()
 		torch.cuda.empty_cache() if torch.cuda.is_available() else None
 		
 		test_dataset = BlockDataset(test_block_files)
@@ -687,6 +751,12 @@ def run_training():
 		test_loss, test_acc = validate(test_loader)
 		print(f"Final Test Accuracy on {TEST_AREA}: {test_acc:.4f}")
 		print(f"Final Test Loss on {TEST_AREA}: {test_loss:.4f}")
+
+		final_test_path = os.path.join(log_dir, "final_test.txt")
+		with open(final_test_path, "w") as f:
+			f.write(f"Final Test Accuracy: {test_acc:.6f}\n")
+			f.write(f"Final Test Loss: {test_loss:.6f}\n")
+
 	except Exception as e:
 		print(f"Error during final test: {str(e)}")
 		print("Skipping final test due to safety concerns.")
@@ -706,6 +776,7 @@ def main():
 	parser.add_argument('--num_features', type=int, default=NUM_FEATURES, help='Number of features')
 	parser.add_argument('--num_classes', type=int, default=NUM_CLASSES, help='Number of classes')
 	parser.add_argument('--block_size', type=int, default=BLOCK_SIZE, help='Block size')
+	parser.add_argument('--diagnose', type=bool, default=False, help='Enable KPI monitoring and diagnostics')
 	args = parser.parse_args()
 	
 	# Update global variables
@@ -726,7 +797,7 @@ def main():
 	print(f"  Block size: {BLOCK_SIZE}, Features: {NUM_FEATURES}, Classes: {NUM_CLASSES}")
 	
 	# Start training
-	run_training()
+	run_training(args)
 
 if __name__ == '__main__':
 	main()

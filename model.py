@@ -21,7 +21,7 @@ class EdgeConv(nn.Module):
 			nn.ReLU()
 		)
 
-	def forward(self, x, pos, batch, k=20):
+	def forward(self, x, pos, batch, k=16):  # Reduced from 20 for efficiency
 		edge_index = knn_graph(pos, k=k, batch=batch, loop=False)
 		row, col = edge_index
 		
@@ -47,13 +47,17 @@ class PointEdgeSegNet(nn.Module):
 		self.deconv2_mlp = nn.Sequential(nn.Linear(256 + 128, 128), nn.BatchNorm1d(128), nn.ReLU())
 		self.deconv3_mlp = nn.Sequential(nn.Linear(128 + 64, 64), nn.BatchNorm1d(64), nn.ReLU())
 
-		# Prediction Head
+		# Prediction Head with improved regularization
 		self.head = nn.Sequential(
 			nn.Linear(64 + num_features, 64), 
 			nn.BatchNorm1d(64), 
 			nn.ReLU(),
-			nn.Dropout(0.5), 
-			nn.Linear(64, num_classes)
+			nn.Dropout(0.3),  # Reduced from 0.5 for better learning
+			nn.Linear(64, 32),  # Added intermediate layer
+			nn.BatchNorm1d(32),
+			nn.ReLU(),
+			nn.Dropout(0.2),
+			nn.Linear(32, num_classes)
 		)
 
 	def forward(self, data):
@@ -87,4 +91,4 @@ class PointEdgeSegNet(nn.Module):
 		final_x = torch.cat([dec_x0, x0], dim=1)
 		out = self.head(final_x)
 		
-		return F.log_softmax(out, dim=-1)
+		return out  # Return raw logits for CrossEntropyLoss
