@@ -50,8 +50,8 @@ The below is todo list.
 - Comprehensive logging and model checkpointing
 
 <p align="center">
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/Figure_4.png" height="400"></img></br>
-Loss and Acc performance log(https://github.com/mac999/point_edge_seg_net/tree/main/logs/20251004_221236). Train and Val dataset = S3DIS v1.2 aligned (Area 1, 2, 3, 4, 6) 
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20251007_095926/training_plots.png" height="400"></img></br>
+Loss and Acc performance log(https://github.com/mac999/point_edge_seg_net/tree/main/logs/20251007_095926). Train and Val dataset = S3DIS v1.2 aligned (Area 1, 2, 3, 4, 6) 
 </p>
 
 ## Installation
@@ -437,6 +437,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
