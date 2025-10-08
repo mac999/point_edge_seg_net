@@ -34,8 +34,8 @@ PROCESSED_DATA_PATH = './processed_s3dis'
 BLOCK_DATA_PATH = './block_s3dis'  # Block data storage path
 TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']
 TEST_AREA = 'Area_5'
-NUM_EPOCHS = 30
-BATCH_SIZE = 32 # 24 to 32 for VRAM=24GB, VRAM=8GB. 8 4 to 2 
+NUM_EPOCHS = 100
+BATCH_SIZE = 36 # 32. 24 to 32 for VRAM=24GB, VRAM=8GB. 8 4 to 2 
 LEARNING_RATE = 0.001
 NUM_FEATURES = 9 
 NUM_CLASSES = 13
@@ -51,17 +51,28 @@ GPU_MEMORY_THRESHOLD = 0.85  # 85% GPU memory usage threshold
 MAX_GRADIENT_NORM = 20.0     # Maximum gradient norm threshold (increased)
 
 def safe_gpu_operation():
-	"""GPU memory safety check and cleanup"""
+	"""GPU memory safety check and cleanup with detailed logging"""
 	if not torch.cuda.is_available():
 		return True
 	
 	try:
 		memory_allocated = torch.cuda.memory_allocated() / 1024**3
+		memory_cached = torch.cuda.memory_reserved() / 1024**3  # Track cached memory
 		memory_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
 		memory_usage_ratio = memory_allocated / memory_total
 		
+		# Log memory usage every 50 calls for debugging
+		if not hasattr(safe_gpu_operation, 'call_count'):
+			safe_gpu_operation.call_count = 0
+		safe_gpu_operation.call_count += 1
+		
+		# if safe_gpu_operation.call_count % 50 == 0:
+			# print(f"Memory: {memory_allocated:.1f}GB allocated, {memory_cached:.1f}GB cached, {memory_total:.1f}GB total")
+		
 		if memory_usage_ratio > GPU_MEMORY_THRESHOLD:
 			torch.cuda.empty_cache()
+			import gc
+			gc.collect()  # Also clear Python object memory
 			memory_after_cleanup = torch.cuda.memory_allocated() / 1024**3
 			print(f"GPU memory cleanup: {memory_allocated:.1f}GB -> {memory_after_cleanup:.1f}GB")
 			
@@ -290,10 +301,82 @@ def validate_block_files(file_list):
 	print(f"Valid files: {len(valid_files)}, Removed corrupted files: {len(corrupted_files)}")
 	return valid_files
 
+def apply_point_cloud_augmentation(data):
+	"""
+	Efficient point cloud augmentation for S3DIS indoor scenes
+	Individual point transformations + minimal feature augmentation + indoor-specific
+	Final feature vector combination: data.x=[normals(3), verticality(1), planarity(1), curvature(1), colors(3)] = 9 dimensions
+	"""
+	n_points = data.pos.shape[0]
+	
+	# === 1. COORDINATE TRANSFORMATIONS (Individual Level) ===
+	# 1.1 Global rotation around Z-axis only (preserve up-down)
+	angle_z = torch.rand(1) * 2 * np.pi
+	cos_z, sin_z = torch.cos(angle_z), torch.sin(angle_z)
+	rotation_z = torch.tensor([
+		[cos_z, -sin_z, 0],
+		[sin_z, cos_z, 0],
+		[0, 0, 1]
+	], dtype=torch.float32)
+	data.pos = torch.matmul(data.pos, rotation_z.T)
+	
+	# 1.2 Individual point jittering (sensor noise)
+	jitter_noise = torch.randn_like(data.pos) * 0.01  # 1cm standard deviation
+	data.pos.add_(jitter_noise)
+	
+	# 1.3 Individual scaling variation per point
+	scale_variation = 0.98 + torch.rand(n_points, 1) * 0.04  # 0.98~1.02 per point
+	data.pos.mul_(scale_variation)
+	
+	# === 2. FEATURE AUGMENTATION (Minimal, within valid range) ===
+	if data.x.shape[1] >= 9:  # If we have all 9 features including RGB colors
+		# Small random color noise per point (within 3% deviation)
+		# RGB colors are at indices 6,7,8 (last 3 dimensions)
+		rgb_noise = torch.randn(n_points, 3) * 0.03  # 3% maximum deviation
+		data.x[:, 6:9] += rgb_noise
+		
+		# Slight brightness variation (±10%)
+		brightness_factor = 0.9 + torch.rand(1) * 0.2  # 0.9~1.1
+		data.x[:, 6:9] *= brightness_factor
+		
+		# Clamp RGB values to valid range [0, 1]
+		data.x[:, 6:9] = torch.clamp(data.x[:, 6:9], 0.0, 1.0)
+	
+	# Skip complex dropout for speed
+	
+	# === 3. GROUND-SPECIFIC TRANSFORMATIONS ===
+	# 3.1 Ground level variation (simulate carpet/elevation differences)
+	ground_shift = (torch.rand(1) - 0.5) * 0.06  # ±3cm ground variation
+	data.pos[:, 2] += ground_shift
+	
+	# 3.2 Height-based noise (ground more variable than ceiling)
+	heights = data.pos[:, 2]
+	height_median = torch.median(heights)
+	ground_mask = heights < height_median  # Bottom half
+
+	# More noise for ground points (furniture, carpet variation)
+	if ground_mask.sum() > 0:
+		ground_noise = torch.randn(ground_mask.sum(), 3) * 0.008  # 0.8cm
+		data.pos[ground_mask] += ground_noise
+
+	# Clean up intermediate tensors
+	del rotation_z, jitter_noise, scale_variation
+	
+	return data
+
 # Improved Dataset class (for block data)
+def get_augment_prob(epoch, max_epochs):
+	if epoch <= max_epochs * 0.3:  
+		return 0.9  # early
+	elif epoch <= max_epochs * 0.7:
+		return 0.6  # middle
+	return 0.3  # fine-tuning 
+
 class BlockDataset(torch.utils.data.Dataset):
-	def __init__(self, file_list):
+	def __init__(self, file_list, augment=False, augment_prob=0.0):
 		self.file_list = file_list
+		self.augment = augment
+		self.augment_prob = augment_prob  # Probability of applying augmentation
 		self.error_count = 0
 		self.max_error_rate = 0.1  # Allow up to 10% error rate
 	
@@ -307,6 +390,15 @@ class BlockDataset(torch.utils.data.Dataset):
 				data = torch.load(self.file_list[idx], weights_only=False)
 				# Basic validation
 				if hasattr(data, 'x') and hasattr(data, 'pos') and hasattr(data, 'y'):
+					# Apply on-the-fly augmentation for training data
+					if self.augment and torch.rand(1) < self.augment_prob:
+						try:
+							data = apply_point_cloud_augmentation(data)
+						except Exception as aug_e:
+							# If augmentation fails, use original data
+							print(f"Augmentation failed for {self.file_list[idx]}: {aug_e}")
+							pass  # Continue with original data
+					
 					return data
 
 				print(f"Invalid data structure in file {self.file_list[idx]}")
@@ -381,8 +473,8 @@ print(f"Total validation blocks: {len(val_files)}")
 print(f"Total test blocks: {len(test_block_files)}")
 print(f"Block size: {BLOCK_SIZE} points per block")
 
-train_dataset = BlockDataset(train_files)
-val_dataset = BlockDataset(val_files)
+train_dataset = BlockDataset(train_files, augment=True, augment_prob=0.8)
+val_dataset = BlockDataset(val_files, augment=False, augment_prob=0.0)
 
 # Apply collate_fn to DataLoader (set num_workers=0 to prevent Windows multiprocessing issues)
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, collate_fn=collate_fn)
@@ -405,10 +497,10 @@ optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 # Add label smoothing for better generalization
 criterion = torch.nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=0.1)
 
-# Add learning rate scheduler (validation loss stabilization) 
-# More aggressive scheduler for faster adaptation
-scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-	optimizer, mode='min', factor=0.5, patience=1, min_lr=1e-6
+# Add learning rate scheduler - Cosine Annealing
+# Smooth learning rate decay following cosine curve
+scheduler = optim.lr_scheduler.CosineAnnealingLR(
+	optimizer, T_max=NUM_EPOCHS, eta_min=1e-6
 )
 
 def train(epoch):
@@ -486,6 +578,13 @@ def train(epoch):
 			correct_nodes += pred.eq(valid_y).sum().item()
 			total_nodes += valid_mask.sum().item()
 			
+			# Memory cleanup every 10 batches to prevent accumulation
+			if batch_idx % 10 == 0:
+				torch.cuda.empty_cache()
+				# Force garbage collection for Python objects
+				import gc
+				gc.collect()
+			
 		except RuntimeError as e:
 			print(f"Runtime error at epoch {epoch}, batch {batch_idx}: {str(e)}")
 			torch.cuda.empty_cache()
@@ -504,6 +603,11 @@ def train(epoch):
 	if valid_batches == 0:
 		print("Warning: No valid batches were processed in training!")
 		return 0.0, 0.0
+	
+	# Force memory cleanup at end of epoch
+	torch.cuda.empty_cache()
+	import gc
+	gc.collect()
 		
 	return total_loss / valid_batches, correct_nodes / total_nodes
 
@@ -614,6 +718,8 @@ def run_training(args=None):
 				print("Debug break flag activated. Stopping training loop.")
 				break
 			
+			augment_prob = get_augment_prob(epoch, NUM_EPOCHS)
+			train_dataset.augment_prob = augment_prob
 			train_loss, train_acc = train(epoch)
 			
 			# Check if training was successful
@@ -642,15 +748,15 @@ def run_training(args=None):
 			# Get current learning rate
 			current_lr = optimizer.param_groups[0]['lr']
 			
-			# Update scheduler (based on validation loss)
+			# Update scheduler (Cosine Annealing - epoch based)
 			old_lr = current_lr
-			scheduler.step(val_loss)
+			scheduler.step()  # CosineAnnealingLR는 매 epoch마다 자동으로 학습률 조정
 			new_lr = optimizer.param_groups[0]['lr']
 			log_epoch_metrics(csv_log_path, epoch, train_loss, train_acc, val_loss, val_acc, new_lr)
 			
 			# Detect learning rate changes and log output
 			if new_lr != old_lr:
-				print(f"Learning rate reduced from {old_lr:.2e} to {new_lr:.2e}")
+				print(f"Learning rate changed from {old_lr:.2e} to {new_lr:.2e} (Cosine Annealing)")
 			
 			# Update history
 			history['train_loss'].append(train_loss)
@@ -670,10 +776,17 @@ def run_training(args=None):
 				best_epoch = epoch
 				torch.cuda.synchronize(); 
 				try:
+					# Force memory cleanup before model saving
+					torch.cuda.empty_cache()
+					import gc
+					gc.collect()
 					torch.save(model.state_dict(), os.path.join(log_dir, 'best_model.pth'))
-					time.sleep(5.0)  # Brief GPU cooling pause
+					# Additional cleanup after saving
+					torch.cuda.empty_cache()
+					time.sleep(2.0)  # Reduced from 5.0
 				except Exception as e:
 					print(f"Failed to save best model: {e}")
+					torch.cuda.empty_cache()
 			
 			# Early stopping check
 			if early_stop_counter >= early_stop_patience:
