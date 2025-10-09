@@ -41,7 +41,7 @@ The below is todo list.
 - **Enhance Learning Rate Scheduler**: Implement a learning rate **warm-up** phase for the first few epochs before the `CosineAnnealingLR` scheduler begins, which can help stabilize initial training.
 - **Experiment with Advanced Loss Functions**: Test **Focal Loss** to better handle the class imbalance present in the S3DIS dataset and implement **Lovász-Softmax Loss** to directly optimize for the mIoU metric, which can significantly boost segmentation performance.
 - **Implement More Aggressive Data Augmentation**: Add **Elastic Distortion** to create more complex geometric variations and **Random Point Dropout** to improve model robustness to sparse or incomplete data.
-- **Utilize Normalized Coordinates**: Verify that normalized XYZ coordinates (relative to the room's origin or center) are included as input features. This is critical for improving generalization across different rooms and areas.
+- **Utilize Normalized Coordinates**: Verify that normalized XYZ coordinates (relative to the room's origin or center) are included as input features.
 
 ## Features
 
@@ -442,6 +442,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
