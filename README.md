@@ -33,7 +33,7 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 The below is todo list.
 - Deep model architecture revision
 - Dataset augumentation (e.g. on the fly)
-- Diagnoise and visualize model related to weight, bais and gradient of loss in epoch.
+- Diagnoise (e.g. mIoU etc) and visualize model related to weight, bais and gradient of loss in epoch.
 - Customization about classes and features
 - Model Finetuning
 - LiDAR point cloud train example etc
@@ -437,6 +437,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
