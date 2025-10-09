@@ -17,7 +17,7 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img8.png" height="115"></img>
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img7.png" height="115"></img></br>
 </p>
-<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model(Best validation accuracy: 0.8861 at epoch 82, VRAM = 24GB. logs = 20251007_095926)
+<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model(Best validation accuracy: 0.8861 at epoch 82, VRAM: 24GB. logs: 20251007_095926)
 </p
 
 
@@ -437,6 +437,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
