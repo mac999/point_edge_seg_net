@@ -35,7 +35,8 @@ BLOCK_DATA_PATH = './block_s3dis'  # Block data storage path
 TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']
 TEST_AREA = 'Area_5'
 NUM_EPOCHS = 100
-BATCH_SIZE = 36 # 32. 24 to 32 for VRAM=24GB, VRAM=8GB. 8 4 to 2 
+BATCH_SIZE = 16  # Reduced from previous value to fit enhanced model in 24GB VRAM
+VAL_BATCH_SIZE = 32
 LEARNING_RATE = 0.001
 NUM_FEATURES = 9 
 NUM_CLASSES = 13
@@ -462,11 +463,11 @@ for block_file in tqdm(all_block_files, desc="Categorizing blocks"):
 # print("Validating test block files...")
 # test_block_files = validate_block_files(test_block_files)
 
-# random.shuffle(train_block_files)
-# random.shuffle(test_block_files)
-# train_files = train_block_files
-# val_files = test_block_files 
-train_files, val_files = train_test_split(train_block_files, test_size=0.2, random_state=42)
+random.shuffle(train_block_files)
+random.shuffle(test_block_files)
+train_files = train_block_files
+val_files = test_block_files 
+# train_files, val_files = train_test_split(train_block_files, test_size=0.2, random_state=42)
 
 print(f"Total training blocks: {len(train_files)}")
 print(f"Total validation blocks: {len(val_files)}")
@@ -478,7 +479,7 @@ val_dataset = BlockDataset(val_files, augment=False, augment_prob=0.0)
 
 # Apply collate_fn to DataLoader (set num_workers=0 to prevent Windows multiprocessing issues)
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, collate_fn=collate_fn)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
+val_loader = DataLoader(val_dataset, batch_size=VAL_BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
 
 # DataLoader 검증
 print(f"Training dataset size: {len(train_dataset)}")
@@ -703,7 +704,7 @@ def run_training(args=None):
 	max_consecutive_failures = 3
 	
 	# Early stopping parameters - more aggressive
-	early_stop_patience = 3  # Reduced from 5 for faster stopping
+	early_stop_patience = 20  # Reduced from 5 for faster stopping
 	early_stop_counter = 0
 	best_val_loss = float('inf')
 	
@@ -860,7 +861,7 @@ def run_training(args=None):
 		torch.cuda.empty_cache() if torch.cuda.is_available() else None
 		
 		test_dataset = BlockDataset(test_block_files)
-		test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
+		test_loader = DataLoader(test_dataset, batch_size=VAL_BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
 		test_loss, test_acc = validate(test_loader)
 		print(f"Final Test Accuracy on {TEST_AREA}: {test_acc:.4f}")
 		print(f"Final Test Loss on {TEST_AREA}: {test_loss:.4f}")
@@ -885,6 +886,7 @@ def main():
 	parser.add_argument('--test_area', default=TEST_AREA, help='Test area')
 	parser.add_argument('--num_epochs', type=int, default=NUM_EPOCHS, help='Number of epochs')
 	parser.add_argument('--batch_size', type=int, default=BATCH_SIZE, help='Batch size')
+	parser.add_argument('--val_batch_size', type=int, default=VAL_BATCH_SIZE, help='Validation batch size')
 	parser.add_argument('--learning_rate', type=float, default=LEARNING_RATE, help='Learning rate')
 	parser.add_argument('--num_features', type=int, default=NUM_FEATURES, help='Number of features')
 	parser.add_argument('--num_classes', type=int, default=NUM_CLASSES, help='Number of classes')
@@ -899,6 +901,7 @@ def main():
 	TEST_AREA = args.test_area
 	NUM_EPOCHS = args.num_epochs
 	BATCH_SIZE = args.batch_size
+	VAL_BATCH_SIZE = args.val_batch_size
 	LEARNING_RATE = args.learning_rate
 	NUM_FEATURES = args.num_features
 	NUM_CLASSES = args.num_classes
@@ -907,7 +910,7 @@ def main():
 	print(f"Training configuration:")
 	print(f"  Epochs: {NUM_EPOCHS}, Batch size: {BATCH_SIZE}, Learning rate: {LEARNING_RATE}")
 	print(f"  Train areas: {TRAIN_AREAS}, Test area: {TEST_AREA}")
-	print(f"  Block size: {BLOCK_SIZE}, Features: {NUM_FEATURES}, Classes: {NUM_CLASSES}")
+	print(f"  Block size: {BLOCK_SIZE}, Validation Batch Size: {VAL_BATCH_SIZE}, Features: {NUM_FEATURES}, Classes: {NUM_CLASSES}")
 	
 	# Start training
 	run_training(args)
