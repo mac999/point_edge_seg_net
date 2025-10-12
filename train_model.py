@@ -463,11 +463,11 @@ for block_file in tqdm(all_block_files, desc="Categorizing blocks"):
 # print("Validating test block files...")
 # test_block_files = validate_block_files(test_block_files)
 
-random.shuffle(train_block_files)
-random.shuffle(test_block_files)
-train_files = train_block_files
-val_files = test_block_files 
-# train_files, val_files = train_test_split(train_block_files, test_size=0.2, random_state=42)
+# random.shuffle(train_block_files)
+# random.shuffle(test_block_files)
+# train_files = train_block_files
+# val_files = test_block_files 
+train_files, val_files = train_test_split(train_block_files, test_size=0.2, random_state=42)
 
 print(f"Total training blocks: {len(train_files)}")
 print(f"Total validation blocks: {len(val_files)}")
@@ -493,7 +493,7 @@ if len(val_loader) == 0:
 	raise ValueError("Validation loader is empty! Check your data files.")
 
 model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES).to(device)
-optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
 # Set ignore_index=-1 to ignore labels (-1) of padded points
 # Add label smoothing for better generalization
 criterion = torch.nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=0.1)
@@ -506,6 +506,17 @@ scheduler = optim.lr_scheduler.CosineAnnealingLR(
 
 def train(epoch):
 	model.train()
+	
+	# Learning Rate Warm-up implementation (Linear warm-up for stability)
+	if epoch <= WARMUP_EPOCHS:
+		# Linear warm-up: gradually increase LR from small value to LEARNING_RATE
+		warmup_factor = epoch / WARMUP_EPOCHS
+		# Start from 1% of target LR to avoid zero gradients
+		min_lr_factor = 0.01
+		warmup_lr = LEARNING_RATE * (min_lr_factor + (1.0 - min_lr_factor) * warmup_factor)
+		for param_group in optimizer.param_groups:
+			param_group['lr'] = warmup_lr
+		print(f"Warmup Epoch {epoch}/{WARMUP_EPOCHS}: LR = {warmup_lr:.6f} (factor: {warmup_factor:.3f})")
 	
 	if len(train_loader) == 0:
 		print("Warning: Training loader is empty!")
@@ -704,7 +715,7 @@ def run_training(args=None):
 	max_consecutive_failures = 3
 	
 	# Early stopping parameters - more aggressive
-	early_stop_patience = 20  # Reduced from 5 for faster stopping
+	early_stop_patience = 10  # faster stopping
 	early_stop_counter = 0
 	best_val_loss = float('inf')
 	
@@ -749,9 +760,10 @@ def run_training(args=None):
 			# Get current learning rate
 			current_lr = optimizer.param_groups[0]['lr']
 			
-			# Update scheduler (Cosine Annealing - epoch based)
+			# Update scheduler (Cosine Annealing - epoch based) - Skip during warmup
 			old_lr = current_lr
-			scheduler.step()  # CosineAnnealingLR는 매 epoch마다 자동으로 학습률 조정
+			if epoch > WARMUP_EPOCHS:
+				scheduler.step()  # CosineAnnealingLR는 매 epoch마다 자동으로 학습률 조정
 			new_lr = optimizer.param_groups[0]['lr']
 			log_epoch_metrics(csv_log_path, epoch, train_loss, train_acc, val_loss, val_acc, new_lr)
 			
@@ -877,7 +889,7 @@ def run_training(args=None):
 
 def main():
 	global PROCESSED_DATA_PATH, BLOCK_DATA_PATH, TRAIN_AREAS, TEST_AREA
-	global NUM_EPOCHS, BATCH_SIZE, LEARNING_RATE, NUM_FEATURES, NUM_CLASSES, BLOCK_SIZE
+	global NUM_EPOCHS, BATCH_SIZE, VAL_BATCH_SIZE, LEARNING_RATE, NUM_FEATURES, NUM_CLASSES, BLOCK_SIZE
 	
 	parser = argparse.ArgumentParser(description='PointEdgeSegNet Training')
 	parser.add_argument('--processed_data_path', default=PROCESSED_DATA_PATH, help='Processed data path')
