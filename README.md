@@ -62,10 +62,6 @@ The following items already apply in 24GB VRAM.
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20251007_095926/training_plots.png" height="400"></img></br>
 Loss and Acc performance at 100 epoch (https://github.com/mac999/point_edge_seg_net/tree/main/logs/20251007_095926). Train and Val dataset (Area 1. 8:2) = S3DIS v1.2 aligned
 </p>
-<p align="center">
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20251010_010500/training_plots.png" height="400"></img></br>
-Loss and Acc performance at 14 epoch (https://github.com/mac999/point_edge_seg_net/tree/main/logs/20251010_010500). Train and Val dataset (Area 1: Area 5) = S3DIS v1.2 aligned
-</p>
 
 ## Installation
 
@@ -481,6 +477,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
