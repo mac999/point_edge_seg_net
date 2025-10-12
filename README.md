@@ -33,7 +33,6 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 - 0.6: 2025/10/3. Hyperparameter finetuning (support VRAM 8GB, 24GB) and Dataset augumentation (e.g. on the fly)
 
 The below is todo list.
-- **Model Optimization**: In example, switch from the standard `Adam` optimizer to `AdamW` for potentially better generalization through improved weight decay handling.
 - **Diagnoise**: Diagnoise (e.g. mIoU etc) and visualize model related to weight, bais and gradient of loss in epoch.
 - **Customization**: Customization about classes, features and LiDAR point cloud train example etc
 - **Utilize Normalized Coordinates**: Verify that normalized XYZ coordinates (relative to the room's origin or center) are included as input features.
@@ -46,6 +45,7 @@ The following items already apply in 24GB VRAM.
 - **Increase Model Depth and Width**: Experiment with deeper encoder/decoder stacks or wider channel dimensions (e.g., start with 96 instead of 64) to increase model capacity.
 - **Tune k-NN Parameter**: Test different values for `k` in the `EdgeConv` layer (e.g., 20, 24, 32) to find the optimal local receptive field.
 - **Enhance Learning Rate Scheduler**: Implement a learning rate **warm-up** phase for the first few epochs before the `CosineAnnealingLR` scheduler begins, which can help stabilize initial training.
+- **Model Optimization**: In example, switch from the standard `Adam` optimizer to `AdamW` for potentially better generalization through improved weight decay handling.
 
 ## Features
 
@@ -481,6 +481,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
