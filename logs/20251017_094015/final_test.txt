@@ -1,0 +1,2 @@
+Final Test Accuracy: 0.755313
+Final Test Loss: 1.150270
