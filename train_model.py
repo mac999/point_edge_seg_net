@@ -34,7 +34,7 @@ PROCESSED_DATA_PATH = './processed_s3dis'
 BLOCK_DATA_PATH = './block_s3dis'  # Block data storage path
 TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']
 TEST_AREA = 'Area_5'
-NUM_EPOCHS = 100
+NUM_EPOCHS = 20
 BATCH_SIZE = 16  # Reduced from previous value to fit enhanced model in 24GB VRAM
 VAL_BATCH_SIZE = 32
 LEARNING_RATE = 0.001
@@ -304,66 +304,15 @@ def validate_block_files(file_list):
 
 def apply_point_cloud_augmentation(data):
 	"""
-	Efficient point cloud augmentation for S3DIS indoor scenes
-	Individual point transformations + minimal feature augmentation + indoor-specific
-	Final feature vector combination: data.x=[normals(3), verticality(1), planarity(1), curvature(1), colors(3)] = 9 dimensions
+	Minimal augmentation so precomputed geometric features stay aligned with positions. # Final feature vector combination: [normals(3), verticality(1), planarity(1), curvature(1), colors(3)] = 9 dimensions
 	"""
 	n_points = data.pos.shape[0]
-	
-	# === 1. COORDINATE TRANSFORMATIONS (Individual Level) ===
-	# 1.1 Global rotation around Z-axis only (preserve up-down)
-	angle_z = torch.rand(1) * 2 * np.pi
-	cos_z, sin_z = torch.cos(angle_z), torch.sin(angle_z)
-	rotation_z = torch.tensor([
-		[cos_z, -sin_z, 0],
-		[sin_z, cos_z, 0],
-		[0, 0, 1]
-	], dtype=torch.float32)
-	data.pos = torch.matmul(data.pos, rotation_z.T)
-	
-	# 1.2 Individual point jittering (sensor noise)
-	jitter_noise = torch.randn_like(data.pos) * 0.01  # 1cm standard deviation
-	data.pos.add_(jitter_noise)
-	
-	# 1.3 Individual scaling variation per point
-	scale_variation = 0.98 + torch.rand(n_points, 1) * 0.04  # 0.98~1.02 per point
-	data.pos.mul_(scale_variation)
-	
-	# === 2. FEATURE AUGMENTATION (Minimal, within valid range) ===
-	if data.x.shape[1] >= 9:  # If we have all 9 features including RGB colors
-		# Small random color noise per point (within 3% deviation)
-		# RGB colors are at indices 6,7,8 (last 3 dimensions)
-		rgb_noise = torch.randn(n_points, 3) * 0.03  # 3% maximum deviation
-		data.x[:, 6:9] += rgb_noise
-		
-		# Slight brightness variation (±10%)
-		brightness_factor = 0.9 + torch.rand(1) * 0.2  # 0.9~1.1
-		data.x[:, 6:9] *= brightness_factor
-		
-		# Clamp RGB values to valid range [0, 1]
-		data.x[:, 6:9] = torch.clamp(data.x[:, 6:9], 0.0, 1.0)
-	
-	# Skip complex dropout for speed
-	
-	# === 3. GROUND-SPECIFIC TRANSFORMATIONS ===
-	# 3.1 Ground level variation (simulate carpet/elevation differences)
-	ground_shift = (torch.rand(1) - 0.5) * 0.06  # ±3cm ground variation
-	data.pos[:, 2] += ground_shift
-	
-	# 3.2 Height-based noise (ground more variable than ceiling)
-	heights = data.pos[:, 2]
-	height_median = torch.median(heights)
-	ground_mask = heights < height_median  # Bottom half
-
-	# More noise for ground points (furniture, carpet variation)
-	if ground_mask.sum() > 0:
-		ground_noise = torch.randn(ground_mask.sum(), 3) * 0.008  # 0.8cm
-		data.pos[ground_mask] += ground_noise
-
-	# Clean up intermediate tensors
-	del rotation_z, jitter_noise, scale_variation
-	
-	return data
+	if data.x.shape[1] >= 9:
+		rgb_noise = torch.randn(n_points, 3) * 0.015
+		data.x[:, 6:9] = torch.clamp(data.x[:, 6:9] + rgb_noise, 0.0, 1.0)
+		brightness_factor = 0.97 + torch.rand(1) * 0.06
+		data.x[:, 6:9] = torch.clamp(data.x[:, 6:9] * brightness_factor, 0.0, 1.0)
+	return data 
 
 # Improved Dataset class (for block data)
 def get_augment_prob(epoch, max_epochs):
