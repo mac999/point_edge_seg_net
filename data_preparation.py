@@ -145,7 +145,7 @@ def main():
 	parser.add_argument('--areas', nargs='+', default=AREAS_TO_PROCESS, help='Areas to process')
 	parser.add_argument('--num_points', type=int, default=NUM_POINTS_PER_BLOCK, help='Number of points per block')
 	parser.add_argument('--visualize', type=bool, default=False, help='Visualize point clouds for verification')
-	parser.add_argument('--save_3d_model', type=bool, default=True, help='Output flag to the ply files')
+	parser.add_argument('--save_3d_model', type=bool, default=False, help='Output flag to the ply files')
 	args = parser.parse_args()
 	
 	print(f"Starting data preparation for {len(args.areas)} areas...")
@@ -156,3 +156,4 @@ def main():
 
 if __name__ == '__main__':
 	main()
+
