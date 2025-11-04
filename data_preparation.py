@@ -12,7 +12,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # Configuration
 S3DIS_PATH = 'I:/05.data/s3dis_v1_2_Aligned' # S3DIS original dataset path
 SAVE_PATH = './processed_s3dis' 	# Preprocessed data storage path
-AREAS_TO_PROCESS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_5', 'Area_6'] 		# Specify areas to process
+AREAS_TO_PROCESS = ['Area_1', 'Area_5'] # ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_5', 'Area_6'] 		# Specify areas to process
 NUM_POINTS_PER_BLOCK = 8192 		# Number of points to sample per block
 
 # Class name and integer label mapping
@@ -130,6 +130,14 @@ def process_area(area_path, args):
 			o3d.visualization.draw_geometries([pcd], point_show_normal=True, window_name=os.path.basename(room_folder))
 			print("Visualization done.")
 
+		if args.save_3d_model:  # Save as ply for 3D model verification
+			pcd = o3d.geometry.PointCloud()
+			pcd.points = o3d.utility.Vector3dVector(coords_room)
+			pcd.colors = o3d.utility.Vector3dVector(colors_room)
+			ply_save_path = os.path.join(area_save_path, f"{os.path.basename(room_folder)}.ply")
+			o3d.io.write_point_cloud(ply_save_path, pcd)
+			print(f"Saved 3D model to {ply_save_path}")
+
 def main():
 	parser = argparse.ArgumentParser(description='S3DIS Dataset Preprocessing')
 	parser.add_argument('--s3dis_path', default=S3DIS_PATH, help='S3DIS dataset path')
@@ -137,6 +145,7 @@ def main():
 	parser.add_argument('--areas', nargs='+', default=AREAS_TO_PROCESS, help='Areas to process')
 	parser.add_argument('--num_points', type=int, default=NUM_POINTS_PER_BLOCK, help='Number of points per block')
 	parser.add_argument('--visualize', type=bool, default=False, help='Visualize point clouds for verification')
+	parser.add_argument('--save_3d_model', type=bool, default=True, help='Output flag to the ply files')
 	args = parser.parse_args()
 	
 	print(f"Starting data preparation for {len(args.areas)} areas...")
