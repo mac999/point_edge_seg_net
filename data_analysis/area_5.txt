@@ -1,0 +1,25 @@
+Area 'Area_5' filtering applied: 21337 files found
+Successfully loaded blocks: 21337
+--- Point Cloud Analysis Stats ---
+Analyzed files: 21337
+
+[Coordinate Information]
+XYZ mean: [-2.424972    2.4644086   0.46787593]
+XYZ std: [11.674979  9.285071  1.041614]
+Total points: 174792704
+
+[Color Information] (0~1 normalized)
+RGB mean: [0.09598351 0.09598351 0.09598351]
+RGB std: [0.28014994 0.26950717 0.27855477]
+
+[Normal Vectors]
+Normal mean: [ 0.09598351 -0.09598348  0.09598292]
+Normal std: [0.30981204 0.4381404  0.4381404 ]
+
+[Geometric Features] (Verticality, Planarity, Curvature)
+Geo features mean: [0.09598351 0.09598351 0.09598351]
+Geo features std: [0.30981204 0.30981204 0.30981204]
+
+[Label Distribution]
+Label counts: Counter({np.int64(-1): 97270197, np.int64(2): 22794414, np.int64(0): 15032185, np.int64(1): 12909276, np.int64(10): 7932766, np.int64(12): 6960731, np.int64(7): 2909661, np.int64(5): 2717504, np.int64(6): 2309658, np.int64(8): 1423045, np.int64(4): 1369762, np.int64(11): 933489, np.int64(9): 207592, np.int64(3): 22424})
+Total labels: 14
