@@ -1,25 +1,24 @@
-Area 'Area_1' filtering applied: 1800 files found
-Successfully loaded blocks: 1800
+Area 'Area_1' filtering applied: 16710 files found
+Successfully loaded blocks: 16710
+Backend tkagg is interactive backend. Turning interactive mode on.
 --- Point Cloud Analysis Stats ---
-Analyzed files: 1800
+Analyzed files: 16710
 
 [Coordinate Information]
-XYZ mean: [-8.821111  18.581013   1.5019606]
-XYZ std: [ 7.0059147 14.259471   1.0619287]
-Total points: 14745600
+XYZ mean: [-9.874955 15.730599  1.559267]
+XYZ std: [ 7.3774853 13.086017   1.1003349]
+Total points: 43038725
 
 [Color Information] (0~1 normalized)
-RGB mean: [0.52532315 0.51540875 0.48361108]
-RGB std: [0.17582756 0.1685544  0.17271462]
+RGB mean: [0.38981676 0.38981676 0.38981676]
+RGB std: [0.22463083 0.22139657 0.20627566]
 
 [Normal Vectors]
-Normal mean: [ 0.20535393 -0.09385601  0.11088526]
-Normal std: [0.40230116 0.5710362  0.6550922 ]
+Normal mean: [ 0.20983551 -0.09399758  0.11029708]
+Normal std: [0.36548862 0.57927644 0.6471811 ]
 
 [Geometric Features] (Verticality, Planarity, Curvature)
-Geo features mean: [0.529227   0.4707293  0.79992086]
-Geo features std: [0.46385652 0.46384126 0.11079797]
-
-[Label Distribution]
-Label counts: Counter({np.int64(-1): 10243416, np.int64(2): 1377012, np.int64(0): 832385, np.int64(1): 732511, np.int64(12): 269797, np.int64(8): 230636, np.int64(6): 221033, np.int64(10): 202884, np.int64(11): 180106, np.int64(3): 150003, np.int64(5): 116424, np.int64(7): 98666, np.int64(4): 69239, np.int64(9): 21488})
-Total labels: 14
+Geo features mean: [0.38981676 0.38981676 0.38981676]
+Geo features std: [0.4414843  0.4414843  0.35382462]
+Label counts: Counter({np.int64(2): 11263121, np.int64(0): 8215776, np.int64(1): 6371356, np.int64(12): 4898597, np.int64(6): 2146089, np.int64(3): 2103195, np.int64(10): 1734972, np.int64(7): 1569388, np.int64(5): 1443510, np.int64(4): 1266715, np.int64(8): 1071311, np.int64(11): 793815, np.int64(9): 160880})
+Total labels: 13
