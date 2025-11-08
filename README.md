@@ -466,6 +466,9 @@ point_unet/
 - Enable mixed precision training
 - Clear GPU cache between experiments
 
+## Insight
+When training point cloud data, it's crucial to assume all data characteristics. Inputs that deviate from these assumptions will not yield good results (e.g., indoor vs. outdoor, bright vs. dark lighting, and variations in label object types and features). In Example of S3DIS dataset, The Area 1 (Train) and Area 5 (Test) datasets are representative examples. Because these two datasets exhibit such high variation, standard training alone won't significantly improve Test Acc. This consideration must be taken into account when designing the model to determine which data features to train. Statistical analysis must be performed first to ensure inductive inference, a golden rule in deep learning model training.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit pull requests or open issues for bugs and feature requests.
@@ -484,6 +487,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
