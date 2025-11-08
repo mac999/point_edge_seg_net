@@ -45,7 +45,7 @@ The below is todo list.
 <p align="center">
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/data_analysis/area_1.png" height="200"></img>
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/data_analysis/area_5.png" height="200"></img>
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/area4.jpg" height="200"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/area4.jpg" height="400"></img>
 </p>
 
 The following items already apply in 24GB VRAM.
@@ -484,6 +484,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
