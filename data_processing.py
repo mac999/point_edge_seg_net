@@ -42,7 +42,8 @@ def rgb_to_hsv(rgb: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.
     
     # Value and Saturation
     hsv_flat[:, 2] = max_val
-    hsv_flat[:, 1] = np.where(max_val != 0, diff / max_val, 0)
+    safe_max_val = np.where(max_val > EPSILON, max_val, EPSILON)
+    hsv_flat[:, 1] = np.where(max_val != 0, diff / safe_max_val, 0)
     
     # Hue
     hue = np.zeros_like(max_val)
