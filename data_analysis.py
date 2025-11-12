@@ -48,26 +48,34 @@ class PointCloudAnalyzer:
 		labels = []
 		
 		for block in blocks:
+			y_list = block['y'].cpu().numpy()
+			find_valid_label_end_index = 0
+			try:
+				find_valid_label_end_index = np.where(y_list < 0)[0][0] - 1
+			except:
+				find_valid_label_end_index = len(y_list) - 1
+
+			labels.append(y_list[:find_valid_label_end_index + 1])
+
 			if 'pos' in block:
-				coords.append(block['pos'].cpu().numpy())
+				pos_list = block['pos'].cpu().numpy()
+				coords.append(pos_list[:find_valid_label_end_index + 1])
 			if 'x' in block:
-				# x structure: [normals(3), verticality(1), planarity(1), curvature(1), colors(3)]
+				# x structure: [normals(3) + curvature(1) + RGB(3) + HSV(2) + spatial(3)] = 12D
 				x_data = block['x'].cpu().numpy()
+				feature_dim = x_data.shape[1]
 				
 				# Normal vectors (0:3)
-				normals = x_data[:, 0:3]
+				normals = x_data[:find_valid_label_end_index + 1, 0:3]
 				normal_vectors.append(normals)
 				
-				# Geometric features (3:6) - verticality, planarity, curvature
-				geo_feat = x_data[:, 3:6]
-				geometric_features.append(geo_feat)
+				# Geometric features - only curvature(1) at index 3
+				curvature = x_data[:find_valid_label_end_index + 1, 3:4]
+				geometric_features.append(curvature)
 				
-				# Colors (6:9) - normalized to 0~1
-				color_data = x_data[:, 6:9]
+				# Colors - use RGB from indices 4:7
+				color_data = x_data[:find_valid_label_end_index + 1, 4:7]
 				colors.append(color_data)
-				
-			if 'y' in block:
-				labels.append(block['y'].cpu().numpy())
 				
 		coords = np.concatenate(coords, axis=0) if coords else None
 		colors = np.concatenate(colors, axis=0) if colors else None
@@ -127,9 +135,10 @@ class PointCloudAnalyzer:
 		if geo_features is not None:
 			plt.subplot(subplot_rows, subplot_cols, chart_idx)
 			plt.title('Geometric Features')
-			feature_names = ['Verticality', 'Planarity', 'Curvature']
+			feature_names = ['Curvature']  # Only curvature in new format
 			for i, feat in enumerate(feature_names):
-				plt.hist(geo_features[:, i], bins=50, alpha=0.5, label=feat, range=(0, 1))
+				if i < geo_features.shape[1]:
+					plt.hist(geo_features[:, i], bins=50, alpha=0.5, label=feat, range=(0, 1))
 			plt.legend()
 			plt.xlim(0, 1)
 			chart_idx += 1
@@ -149,7 +158,7 @@ class PointCloudAnalyzer:
 		coords, colors, labels, normals, geo_features = self.analyze()
 		self.plot_stats(coords, colors, labels, normals, geo_features)
 		
-		print('--- Point Cloud Analysis Stats ---')
+		print('Point Cloud Analysis Stats')
 		print(f'Analyzed files: {len(self.files)}')
 		
 		if coords is not None:
@@ -169,7 +178,7 @@ class PointCloudAnalyzer:
 			print('Normal std:', np.std(normals, axis=0))
 			
 		if geo_features is not None:
-			print('\n[Geometric Features] (Verticality, Planarity, Curvature)')
+			print('\n[Geometric Features] (Curvature)')
 			print('Geo features mean:', np.mean(geo_features, axis=0))
 			print('Geo features std:', np.std(geo_features, axis=0))
 			
@@ -179,17 +188,16 @@ class PointCloudAnalyzer:
 			print('Label counts:', label_counts)
 			print('Total labels:', len(set(labels)))
 
-		input("Press Enter to continue...")
-
 if __name__ == '__main__':
 	import argparse
 	parser = argparse.ArgumentParser(description='Point Cloud Block Analysis')
 	parser.add_argument('--block_dir', type=str, default='./block_s3dis', help='Directory containing block .pt files')
-	parser.add_argument('--area_name', type=str, default='Area_1', help='Specific area to analyze (e.g., Area_1, Area_5)')
+	parser.add_argument('--area_name', type=str, default='Area_5', help='Specific area to analyze (e.g., Area_1, Area_5)')
 	args = parser.parse_args()
 	
 	try:
 		analyzer = PointCloudAnalyzer(args.block_dir, area_name=args.area_name)
 		analyzer.run_full_analysis()
+		input()
 	except FileNotFoundError as e:
 		print(f"Error: {e}")
