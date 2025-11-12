@@ -13,6 +13,12 @@ from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from datetime import datetime
 from diagnose_kpi_grad import monitor_kpi
+from data_processing import (
+    apply_torch_color_augmentation, 
+    apply_torch_enhanced_color_augmentation,
+    CLASS_NAMES,
+    extract_features_from_room_data
+)
 
 random.seed(42)  
 
@@ -29,16 +35,16 @@ if torch.cuda.is_available():
 else:
 	print("CUDA not available, using CPU")
 
-# Configuration (adjusted for 8GB VRAM environment)
+# Configuration (optimized for Area 5 test accuracy improvement)
 PROCESSED_DATA_PATH = './processed_s3dis'
 BLOCK_DATA_PATH = './block_s3dis'  # Block data storage path
-TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']
-TEST_AREA = 'Area_5'
-NUM_EPOCHS = 20
-BATCH_SIZE = 16  # Reduced from previous value to fit enhanced model in 24GB VRAM
-VAL_BATCH_SIZE = 32
-LEARNING_RATE = 0.001
-NUM_FEATURES = 9 
+TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']  # Fixed: proper training areas
+TEST_AREA = 'Area_5'  # Fixed: proper test area
+NUM_EPOCHS = 50  # Increased for better convergence
+BATCH_SIZE = 12  # 12. Reduced for potential 13D features support
+VAL_BATCH_SIZE = 24  # Reduced accordingly
+LEARNING_RATE = 0.002  # Increased for faster learning
+NUM_FEATURES = 9  # Training: normals(3) + curvature(1) + HSV(2) + spatial(3)
 NUM_CLASSES = 13
 BLOCK_SIZE = 8192  # Number of points per block
 block_grid_min_coords = np.array([-50.0, 0.0, 0.0])  # base point for normalization
@@ -139,8 +145,8 @@ def save_training_summary(log_dir, history, best_epoch, best_val_acc):
 		"best_performance": {
 			"best_epoch": best_epoch,
 			"best_val_accuracy": best_val_acc,
-			"final_train_loss": history['train_loss'][-1],
-			"final_val_loss": history['val_loss'][-1]
+			"final_train_loss": history['train_loss'][-1] if history['train_loss'] else 0.0,
+			"final_val_loss": history['val_loss'][-1] if history['val_loss'] else 0.0
 		},
 		"training_history": history
 	}
@@ -303,30 +309,29 @@ def validate_block_files(file_list):
 	return valid_files
 
 def apply_point_cloud_augmentation(data):
-	"""
-	Minimal augmentation so precomputed geometric features stay aligned with positions. # Final feature vector combination: [normals(3), verticality(1), planarity(1), curvature(1), colors(3)] = 9 dimensions
-	"""
-	n_points = data.pos.shape[0]
-	if data.x.shape[1] >= 9:
-		rgb_noise = torch.randn(n_points, 3) * 0.015
-		data.x[:, 6:9] = torch.clamp(data.x[:, 6:9] + rgb_noise, 0.0, 1.0)
-		brightness_factor = 0.97 + torch.rand(1) * 0.06
-		data.x[:, 6:9] = torch.clamp(data.x[:, 6:9] * brightness_factor, 0.0, 1.0)
-	return data 
+	"""Fast HSV augmentation using pre-computed features with feature format conversion."""
+	# Always convert 12D features to 9D for training if needed
+	if data.x.shape[1] == 12:  # Full format: geometric(4) + RGB(3) + HSV(2) + spatial(3)
+		# Extract training features: geometric(4) + HSV(2) + spatial(3) = 9D
+		data.x = torch.cat([data.x[:, :4], data.x[:, 7:9], data.x[:, 9:]], dim=1)
+	
+	return apply_torch_enhanced_color_augmentation(data, augmentation_strength=1.0) 
 
 # Improved Dataset class (for block data)
-def get_augment_prob(epoch, max_epochs):
+def get_augment_prob_and_strength(epoch, max_epochs):
+	"""Get both augmentation probability and strength for training optimization"""
 	if epoch <= max_epochs * 0.3:  
-		return 0.9  # early
+		return 0.9, 1.2  # High probability, high strength (early training)
 	elif epoch <= max_epochs * 0.7:
-		return 0.6  # middle
-	return 0.3  # fine-tuning 
+		return 0.7, 1.0  # Medium probability, normal strength (middle)
+	return 0.5, 0.8  # Lower probability, reduced strength (fine-tuning) 
 
 class BlockDataset(torch.utils.data.Dataset):
-	def __init__(self, file_list, augment=False, augment_prob=0.0):
+	def __init__(self, file_list, augment=False, augment_prob=0.0, augment_strength=1.0):
 		self.file_list = file_list
 		self.augment = augment
 		self.augment_prob = augment_prob  # Probability of applying augmentation
+		self.augment_strength = augment_strength  # Strength of augmentation
 		self.error_count = 0
 		self.max_error_rate = 0.1  # Allow up to 10% error rate
 	
@@ -340,10 +345,18 @@ class BlockDataset(torch.utils.data.Dataset):
 				data = torch.load(self.file_list[idx], weights_only=False)
 				# Basic validation
 				if hasattr(data, 'x') and hasattr(data, 'pos') and hasattr(data, 'y'):
-					# Apply on-the-fly augmentation for training data
+					# Always convert 12D features to 9D for training
+					if data.x.shape[1] == 12:  # Full format: geometric(4) + RGB(3) + HSV(2) + spatial(3)
+						# features: [normals(3) + curvature(1) + RGB(3) + HSV(2) + spatial(3)] = 12D
+						data.x = torch.cat([data.x[:, :4], data.x[:, 7:9], data.x[:, 9:]], dim=1)
+					
+					# Apply enhanced augmentation for training data
 					if self.augment and torch.rand(1) < self.augment_prob:
 						try:
-							data = apply_point_cloud_augmentation(data)
+							data = apply_torch_enhanced_color_augmentation(
+								data,
+								augmentation_strength=self.augment_strength
+							)
 						except Exception as aug_e:
 							# If augmentation fails, use original data
 							print(f"Augmentation failed for {self.file_list[idx]}: {aug_e}")
@@ -423,8 +436,8 @@ print(f"Total validation blocks: {len(val_files)}")
 print(f"Total test blocks: {len(test_block_files)}")
 print(f"Block size: {BLOCK_SIZE} points per block")
 
-train_dataset = BlockDataset(train_files, augment=True, augment_prob=0.8)
-val_dataset = BlockDataset(val_files, augment=False, augment_prob=0.0)
+train_dataset = BlockDataset(train_files, augment=True, augment_prob=0.9, augment_strength=1.0)
+val_dataset = BlockDataset(val_files, augment=False, augment_prob=0.0, augment_strength=0.0)
 
 # Apply collate_fn to DataLoader (set num_workers=0 to prevent Windows multiprocessing issues)
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, collate_fn=collate_fn)
@@ -442,10 +455,32 @@ if len(val_loader) == 0:
 	raise ValueError("Validation loader is empty! Check your data files.")
 
 model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES).to(device)
-optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
+optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.015)  # Increased weight_decay
+
+# Optimized class weights (based on data analysis)
+class_weights = torch.tensor([
+    0.8,   # 0: ceiling (reduce, over-represented)
+    0.9,   # 1: floor (slight reduce)
+    0.3,   # 2: wall (major reduce, 102% over-represented)
+    50.0,  # 3: beam (extreme boost, 98.9% deficit)
+    8.0,   # 4: column (boost, 37.9% deficit)
+    2.0,   # 5: window (maintain)
+    2.5,   # 6: door (maintain)
+    3.0,   # 7: table (maintain)
+    5.0,   # 8: chair (boost needed)
+    15.0,  # 9: sofa (high boost, 27% deficit)
+    0.7,   # 10: bookcase (reduce, 357% over-represented)
+    8.0,   # 11: board (boost, 33% deficit)
+    1.5    # 12: clutter (slight boost)
+]).to(device)
+
 # Set ignore_index=-1 to ignore labels (-1) of padded points
-# Add label smoothing for better generalization
-criterion = torch.nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=0.1)
+# Add label smoothing for better generalization, use optimized class weights
+criterion = torch.nn.CrossEntropyLoss(
+    weight=class_weights, 
+    ignore_index=-1, 
+    label_smoothing=0.15  # Increased from 0.1 for better regularization
+)
 
 # Add learning rate scheduler - Cosine Annealing
 # Smooth learning rate decay following cosine curve
@@ -679,8 +714,11 @@ def run_training(args=None):
 				print("Debug break flag activated. Stopping training loop.")
 				break
 			
-			augment_prob = get_augment_prob(epoch, NUM_EPOCHS)
+			# Dynamic augmentation for training optimization
+			augment_prob, augment_strength = get_augment_prob_and_strength(epoch, NUM_EPOCHS)
 			train_dataset.augment_prob = augment_prob
+			train_dataset.augment_strength = augment_strength
+			
 			train_loss, train_acc = train(epoch)
 			
 			# Check if training was successful

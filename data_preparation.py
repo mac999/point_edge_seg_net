@@ -6,6 +6,14 @@
 import os, numpy as np, torch, open3d as o3d, glob, warnings, argparse, shutil
 from torch_geometric.data import Data
 from tqdm import tqdm
+from data_processing import (
+    extract_features_from_room_data, 
+    get_class_label, 
+    CLASS_NAMES,
+    create_point_cloud_visualization,
+    convert_numpy_to_torch,
+    validate_point_cloud_data
+)
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -15,43 +23,8 @@ SAVE_PATH = './processed_s3dis' 	# Preprocessed data storage path
 AREAS_TO_PROCESS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_5', 'Area_6'] 		# Specify areas to process
 NUM_POINTS_PER_BLOCK = 8192 		# Number of points to sample per block
 
-# Class name and integer label mapping
-class_names = [
-	'ceiling', 'floor', 'wall', 'beam', 'column', 'window', 'door',
-	'table', 'chair', 'sofa', 'bookcase', 'board', 'clutter'
-]
-
-def calculate_features_with_open3d(points_xyz):
-	"""
-	Efficiently calculate normal vectors and geometric features using Open3D.
-	Open3D uses KD-Tree internally to accelerate neighbor search.
-	"""
-	pcd = o3d.geometry.PointCloud()
-	pcd.points = o3d.utility.Vector3dVector(points_xyz)
-	
-	# Normal estimation
-	pcd.estimate_normals(
-		search_param=o3d.geometry.KDTreeSearchParamKNN(knn=15),
-		fast_normal_computation=True  # 고속 모드 활성화
-	)
-	normals = np.asarray(pcd.normals)
-	
-	# Geometric features
-	verticality = 1 - np.abs(normals[:, 2])
-	planarity = np.abs(normals[:, 2])
-	
-	# Curvature estimation
-	curvatures = np.linalg.norm(normals - np.mean(normals, axis=0), axis=1)
-	curvatures = curvatures / (np.max(curvatures) + 1e-9)  # Normalize curvature
-	
-	geometric_features = np.concatenate([
-		normals,
-		verticality[:, np.newaxis],
-		planarity[:, np.newaxis],
-		curvatures[:, np.newaxis]
-	], axis=1)
-	
-	return geometric_features
+# Use shared class names from data_processing module
+class_names = CLASS_NAMES
 
 def process_area(area_path, args):
 	save_path = args.save_path
@@ -75,10 +48,11 @@ def process_area(area_path, args):
 			try:
 				# Extract class name from filename (e.g., 'beam_1.txt' -> 'beam')
 				class_name = os.path.basename(annotation_file).split('_')[0]
-				if class_name not in class_names:
-					continue
 				
-				label = class_names.index(class_name)
+				# Use shared function for label lookup
+				label = get_class_label(class_name)
+				if label is None:
+					continue
 				
 				obj_data = np.loadtxt(annotation_file, dtype=np.float32)
 				# Skip if data is empty or format is incorrect
@@ -101,21 +75,27 @@ def process_area(area_path, args):
 		coords_room = points_room[:, :3]
 		colors_room = points_room[:, 3:6] / 255.0
 
-		# Calculate geometric features using Open3D
-		# print(f"Computing geometric features for {os.path.basename(room_folder)} ({len(coords_room)} points)...")
-		geometric_features = calculate_features_with_open3d(coords_room)
+		# Use shared feature extraction function
+		print(f"Computing features for {os.path.basename(room_folder)} ({len(coords_room)} points)...")
 		
-		# Final feature vector combination: [normals(3), verticality(1), planarity(1), curvature(1), colors(3)] = 9 dimensions
-		features_room = np.concatenate([geometric_features, colors_room], axis=1)
+		features_room = extract_features_from_room_data(
+			points_room, 
+			normalize_colors=True
+		)
+		
+		# Validate data consistency
+		if not validate_point_cloud_data(coords_room, features_room, labels_room):
+			print(f"Warning: Invalid data in {os.path.basename(room_folder)}, skipping...")
+			continue
 
 		# Block sampling from entire room point cloud
 		num_room_points = len(points_room)
 		if num_room_points > 0:
 			# Use original data as is
 			data = Data(
-				x=torch.tensor(features_room, dtype=torch.float),
-				pos=torch.tensor(coords_room, dtype=torch.float),
-				y=torch.tensor(labels_room, dtype=torch.long)
+				x=convert_numpy_to_torch(features_room, torch.float),
+				pos=convert_numpy_to_torch(coords_room, torch.float),
+				y=convert_numpy_to_torch(labels_room, torch.long)
 			)
 			
 			room_name = os.path.basename(room_folder)
@@ -123,17 +103,14 @@ def process_area(area_path, args):
 
 		if args.visualize:  # Visualization for verification with normal vectors
 			# Keyboard controls. H=help, Q=quit, F=fullscreen, N=toggle normals, W=toggle wireframe, R=reset view, +-=normal vector size, []=view projection scale, L=turn on/off lighting, 0..9=change color
-			pcd = o3d.geometry.PointCloud()
-			pcd.points = o3d.utility.Vector3dVector(coords_room)
-			pcd.colors = o3d.utility.Vector3dVector(colors_room)
-			pcd.normals = o3d.utility.Vector3dVector(geometric_features[:, :3])
+			pcd = create_point_cloud_visualization(
+				coords_room, colors_room, features_room[:, :3], show_normals=True
+			)
 			o3d.visualization.draw_geometries([pcd], point_show_normal=True, window_name=os.path.basename(room_folder))
 			print("Visualization done.")
 
 		if args.save_3d_model:  # Save as ply for 3D model verification
-			pcd = o3d.geometry.PointCloud()
-			pcd.points = o3d.utility.Vector3dVector(coords_room)
-			pcd.colors = o3d.utility.Vector3dVector(colors_room)
+			pcd = create_point_cloud_visualization(coords_room, colors_room)
 			ply_save_path = os.path.join(area_save_path, f"{os.path.basename(room_folder)}.ply")
 			o3d.io.write_point_cloud(ply_save_path, pcd)
 			print(f"Saved 3D model to {ply_save_path}")
@@ -156,4 +133,3 @@ def main():
 
 if __name__ == '__main__':
 	main()
-
