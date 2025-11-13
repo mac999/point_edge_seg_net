@@ -35,15 +35,15 @@ if torch.cuda.is_available():
 else:
 	print("CUDA not available, using CPU")
 
-# Configuration (optimized for Area 5 test accuracy improvement)
+# Configuration (optimized for faster convergence)
 PROCESSED_DATA_PATH = './processed_s3dis'
 BLOCK_DATA_PATH = './block_s3dis'  # Block data storage path
 TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']  # Fixed: proper training areas
 TEST_AREA = 'Area_5'  # Fixed: proper test area
-NUM_EPOCHS = 50  # Increased for better convergence
-BATCH_SIZE = 12  # 12. Reduced for potential 13D features support
-VAL_BATCH_SIZE = 24  # Reduced accordingly
-LEARNING_RATE = 0.002  # Increased for faster learning
+NUM_EPOCHS = 80  # Extended for full convergence
+BATCH_SIZE = 16  # Increased from 16 for better gradient estimation
+VAL_BATCH_SIZE = 32
+LEARNING_RATE = 0.002  # Increased from 0.0005 - 4x boost
 NUM_FEATURES = 9  # Training: normals(3) + curvature(1) + HSV(2) + spatial(3)
 NUM_CLASSES = 13
 BLOCK_SIZE = 8192  # Number of points per block
@@ -51,7 +51,7 @@ block_grid_min_coords = np.array([-50.0, 0.0, 0.0])  # base point for normalizat
 
 # Settings for validation loss stabilization
 GRADIENT_CLIP_VALUE = 8.0  # Gradient clipping (increased for better learning)
-WARMUP_EPOCHS = 3  # Learning rate warmup
+WARMUP_EPOCHS = 3  # Reduced for faster ramp-up
 
 # GPU safety settings
 GPU_MEMORY_THRESHOLD = 0.85  # 85% GPU memory usage threshold
@@ -309,22 +309,23 @@ def validate_block_files(file_list):
 	return valid_files
 
 def apply_point_cloud_augmentation(data):
-	"""Fast HSV augmentation using pre-computed features with feature format conversion."""
+	"""Minimal augmentation - geometry features only, no color augmentation."""
 	# Always convert 12D features to 9D for training if needed
 	if data.x.shape[1] == 12:  # Full format: geometric(4) + RGB(3) + HSV(2) + spatial(3)
 		# Extract training features: geometric(4) + HSV(2) + spatial(3) = 9D
 		data.x = torch.cat([data.x[:, :4], data.x[:, 7:9], data.x[:, 9:]], dim=1)
 	
-	return apply_torch_enhanced_color_augmentation(data, augmentation_strength=1.0) 
+	# Remove all color augmentation to test pure geometric learning
+	return data
 
-# Improved Dataset class (for block data)
+# Further reduced augmentation for maximum learning speed
 def get_augment_prob_and_strength(epoch, max_epochs):
-	"""Get both augmentation probability and strength for training optimization"""
-	if epoch <= max_epochs * 0.3:  
-		return 0.9, 1.2  # High probability, high strength (early training)
-	elif epoch <= max_epochs * 0.7:
-		return 0.7, 1.0  # Medium probability, normal strength (middle)
-	return 0.5, 0.8  # Lower probability, reduced strength (fine-tuning) 
+	"""Minimal augmentation for fastest convergence"""
+	if epoch <= max_epochs * 0.1:  
+		return 0.3, 0.4  # Very low augmentation
+	elif epoch <= max_epochs * 0.5:
+		return 0.2, 0.3  # Minimal augmentation
+	return 0.1, 0.2  # Almost no augmentation
 
 class BlockDataset(torch.utils.data.Dataset):
 	def __init__(self, file_list, augment=False, augment_prob=0.0, augment_strength=1.0):
@@ -436,7 +437,7 @@ print(f"Total validation blocks: {len(val_files)}")
 print(f"Total test blocks: {len(test_block_files)}")
 print(f"Block size: {BLOCK_SIZE} points per block")
 
-train_dataset = BlockDataset(train_files, augment=True, augment_prob=0.9, augment_strength=1.0)
+train_dataset = BlockDataset(train_files, augment=True, augment_prob=0.5, augment_strength=0.5)  # Reduced
 val_dataset = BlockDataset(val_files, augment=False, augment_prob=0.0, augment_strength=0.0)
 
 # Apply collate_fn to DataLoader (set num_workers=0 to prevent Windows multiprocessing issues)
@@ -455,37 +456,36 @@ if len(val_loader) == 0:
 	raise ValueError("Validation loader is empty! Check your data files.")
 
 model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES).to(device)
-optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.015)  # Increased weight_decay
+optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.005)  # Reduced from 0.01
 
-# Optimized class weights (based on data analysis)
+# Dramatically rebalanced class weights for faster rare class learning
 class_weights = torch.tensor([
-    0.8,   # 0: ceiling (reduce, over-represented)
-    0.9,   # 1: floor (slight reduce)
-    0.3,   # 2: wall (major reduce, 102% over-represented)
-    50.0,  # 3: beam (extreme boost, 98.9% deficit)
-    8.0,   # 4: column (boost, 37.9% deficit)
-    2.0,   # 5: window (maintain)
-    2.5,   # 6: door (maintain)
-    3.0,   # 7: table (maintain)
-    5.0,   # 8: chair (boost needed)
-    15.0,  # 9: sofa (high boost, 27% deficit)
-    0.7,   # 10: bookcase (reduce, 357% over-represented)
-    8.0,   # 11: board (boost, 33% deficit)
-    1.5    # 12: clutter (slight boost)
+    0.1,   # 0: ceiling (extreme suppress)
+    0.2,   # 1: floor (extreme suppress)  
+    0.05,  # 2: wall (ultra suppress - most dominant)
+    500.0, # 3: beam (ultra boost - rarest)
+    100.0, # 4: column (ultra boost)
+    20.0,  # 5: window (major boost)
+    20.0,  # 6: door (major boost)
+    30.0,  # 7: table (major boost)
+    40.0,  # 8: chair (major boost)
+    200.0, # 9: sofa (ultra boost)
+    80.0,  # 10: bookcase (major boost)
+    100.0, # 11: board (ultra boost)
+    15.0   # 12: clutter (major boost)
 ]).to(device)
 
-# Set ignore_index=-1 to ignore labels (-1) of padded points
-# Add label smoothing for better generalization, use optimized class weights
+# Reduced regularization for faster learning
 criterion = torch.nn.CrossEntropyLoss(
     weight=class_weights, 
     ignore_index=-1, 
-    label_smoothing=0.15  # Increased from 0.1 for better regularization
+    label_smoothing=0.05  # Reduced from 0.15
 )
 
 # Add learning rate scheduler - Cosine Annealing
 # Smooth learning rate decay following cosine curve
 scheduler = optim.lr_scheduler.CosineAnnealingLR(
-	optimizer, T_max=NUM_EPOCHS, eta_min=1e-6
+    optimizer, T_max=NUM_EPOCHS, eta_min=1e-5  # Higher minimum LR
 )
 
 def train(epoch):
@@ -493,10 +493,9 @@ def train(epoch):
 	
 	# Learning Rate Warm-up implementation (Linear warm-up for stability)
 	if epoch <= WARMUP_EPOCHS:
-		# Linear warm-up: gradually increase LR from small value to LEARNING_RATE
-		warmup_factor = epoch / WARMUP_EPOCHS
-		# Start from 1% of target LR to avoid zero gradients
-		min_lr_factor = 0.01
+		# Gentler warmup progression
+		warmup_factor = epoch / WARMUP_EPOCHS  # Removed square root for faster ramp
+		min_lr_factor = 0.1  # Increased from 0.05
 		warmup_lr = LEARNING_RATE * (min_lr_factor + (1.0 - min_lr_factor) * warmup_factor)
 		for param_group in optimizer.param_groups:
 			param_group['lr'] = warmup_lr
@@ -618,6 +617,8 @@ def validate(loader):
 	pbar = tqdm(loader, desc=f'[{loader_name}]')
 	correct_nodes, total_nodes, total_loss = 0, 0, 0.0
 	valid_batches = 0
+	total_valid_points = 0
+	total_points = 0
 	
 	with torch.no_grad():
 		for batch_idx, data in enumerate(pbar):
@@ -636,10 +637,21 @@ def validate(loader):
 				data = data.to(device)
 				out = model(data)
 				
-				# Include only valid points in loss and accuracy calculation
-				valid_mask = data.valid_mask.view(-1)  # Flatten batch dimension
+				valid_mask = data.valid_mask.view(-1)
 				valid_out = out[valid_mask]
 				valid_y = data.y[valid_mask]
+				
+				# Track padding efficiency
+				batch_valid_points = valid_mask.sum().item()
+				batch_total_points = valid_mask.numel()
+				total_valid_points += batch_valid_points
+				total_points += batch_total_points
+				
+				# Warn if padding ratio is too high
+				if batch_idx % 100 == 0:
+					padding_ratio = 1.0 - (batch_valid_points / batch_total_points)
+					if padding_ratio > 0.3:  # More than 30% padding
+						print(f"High padding ratio in {loader_name} batch {batch_idx}: {padding_ratio:.1%}")
 				
 				# Add validation loss calculation with numerical stability check
 				loss = criterion(valid_out, valid_y)
