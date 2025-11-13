@@ -401,24 +401,10 @@ def apply_hsv_augmentation(rgb_colors: np.ndarray, strength: float = 1.0) -> np.
     return hsv_to_rgb(hsv)
 
 def apply_torch_enhanced_color_augmentation(data, augmentation_strength: float = 1.0):
-    """Fast HSV augmentation using pre-computed features."""
+    """Disabled HSV augmentation for pure geometric learning."""
     
-    if data.x.shape[1] >= 6 and augmentation_strength > 0:
-        # For 9D training format: geo(4) + HSV(2) + spatial(3)
-        # HSV features are always at indices 4:6
-        hsv_features = data.x[:, 4:6].clone()
-        
-        # Hue shift
-        hue_shift = np.random.uniform(-0.042, 0.042) * augmentation_strength
-        hsv_features[:, 0] = (hsv_features[:, 0] + hue_shift) % 1.0
-        
-        # Saturation scaling
-        sat_scale = np.random.uniform(0.7, 1.4)
-        sat_scale = 1.0 + (sat_scale - 1.0) * augmentation_strength
-        hsv_features[:, 1] = torch.clamp(hsv_features[:, 1] * sat_scale, 0, 1)
-        
-        data.x[:, 4:6] = hsv_features
-    
+    # Completely disable HSV augmentation for S3DIS geometric segmentation
+    # HSV variations interfere with structural pattern learning
     return data
 
 def apply_color_augmentation(colors: np.ndarray, 
