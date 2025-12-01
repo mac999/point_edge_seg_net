@@ -271,19 +271,16 @@ def extract_features_from_room_data(points_room: np.ndarray,
                                    knn: int = DEFAULT_KNN) -> np.ndarray:
     """
     Extract complete feature set from room point cloud data.
-    Always includes spatial context features for enhanced geometric understanding.
+    Now uses RGB directly instead of HSV for better discrimination.
     
     Returns:
-        features: [normals(3) + curvature(1) + RGB(3) + HSV(2) + spatial(3)] = 12D
+        features: [normals(3) + curvature(1) + RGB(3) + spatial(3)] = 10D
         
-    Storage format (12D):
+    Storage format (10D):
         - 0:3   - Normal vectors (Nx, Ny, Nz)
         - 3:4   - Curvature (surface complexity)
-        - 4:7   - RGB colors (illumination-dependent)
-        - 7:9   - HSV features (illumination-invariant: hue, saturation)
-        - 9:12  - Spatial context (density, anisotropy, structure)
-        
-    Training format (9D): geometric(4) + HSV(2) + spatial(3)
+        - 4:7   - RGB colors (full color information)
+        - 7:10  - Spatial context (density, anisotropy, structure)
     """
     coords_room = points_room[:, :3]
     colors_room = points_room[:, 3:6]
@@ -294,14 +291,14 @@ def extract_features_from_room_data(points_room: np.ndarray,
     # Geometric features (4D)
     geometric_features = calculate_features_with_open3d(coords_room, knn=knn)
     
-    # Always store both RGB and HSV for optimal performance
-    hsv_features = extract_illumination_invariant_features(colors_room)  # [hue, saturation]
+    # Use RGB directly instead of HSV (3D instead of 2D)
+    # RGB provides full color information including brightness
     
-    # Always include spatial context features
+    # Spatial context features (3D)
     spatial_features = extract_spatial_context_features(coords_room)
     
-    # Combine all features: geometric + RGB + HSV + spatial
-    features = np.concatenate([geometric_features, colors_room, hsv_features, spatial_features], axis=1)  # 4+3+2+3=12D
+    # Combine: geometric(4) + RGB(3) + spatial(3) = 10D
+    features = np.concatenate([geometric_features, colors_room, spatial_features], axis=1)
     
     return features
 

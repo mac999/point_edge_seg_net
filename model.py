@@ -9,6 +9,39 @@ from torch_geometric.nn import fps, knn_interpolate
 from torch_geometric.nn.pool import knn_graph
 from torch_geometric.utils import scatter
 
+class FeatureGate(nn.Module):
+	"""Lightweight feature-wise gating for Geo, RGB and Spatial features."""
+	def __init__(self, geo_dim=4, rgb_dim=3, spatial_dim=3):
+		super(FeatureGate, self).__init__()
+		self.geo_dim = geo_dim
+		self.rgb_dim = rgb_dim
+		self.spatial_dim = spatial_dim
+		total_dim = geo_dim + rgb_dim + spatial_dim
+		
+		# Shared feature encoder (minimal overhead: ~200 params)
+		self.encoder = nn.Sequential(
+			nn.Linear(total_dim, 16),
+			nn.ReLU(),
+			nn.Linear(16, 3)  # 3 gates: geo, rgb, spatial
+		)
+		self.sigmoid = nn.Sigmoid()
+	
+	def forward(self, x):
+		# x: [N, 10] = [geo(4) + rgb(3) + spatial(3)]
+		gates = self.sigmoid(self.encoder(x))  # [N, 3]
+		
+		# Split features
+		geo = x[:, :self.geo_dim]
+		rgb = x[:, self.geo_dim:self.geo_dim+self.rgb_dim]
+		spatial = x[:, self.geo_dim+self.rgb_dim:]
+		
+		# Apply gates
+		geo_gated = geo * gates[:, 0:1]
+		rgb_gated = rgb * gates[:, 1:2]
+		spatial_gated = spatial * gates[:, 2:3]
+		
+		return torch.cat([geo_gated, rgb_gated, spatial_gated], dim=1), gates
+
 class AttentionModule(nn.Module):
 	def __init__(self, channels):
 		super(AttentionModule, self).__init__()
@@ -57,6 +90,9 @@ class PointEdgeSegNet(nn.Module):
 	def __init__(self, num_features, num_classes):
 		super(PointEdgeSegNet, self).__init__()
 		
+		# Add Feature Gate at input (minimal memory: ~2MB for 20 batches)
+		self.feature_gate = FeatureGate(geo_dim=4, rgb_dim=3, spatial_dim=3)
+		
 		# Optimized Encoder - reduced channels and removed deepest layer
 		self.conv1 = EdgeConv(num_features, 64)
 		self.conv1_2 = EdgeConv(64, 64, residual=True)
@@ -101,7 +137,12 @@ class PointEdgeSegNet(nn.Module):
 	def forward(self, data):
 		x, pos, batch = data.x, data.pos, data.batch
 		
-		x0, pos0, batch0 = x, pos, batch
+		# Apply feature gating at input
+		x_gated, gates = self.feature_gate(x)
+		x0, pos0, batch0 = x_gated, pos, batch
+		
+		# Store gates for analysis (keep on GPU)
+		self.last_gates = gates.detach()
 
 		# Optimized encoder with fewer layers
 		x1 = self.conv1(x0, pos0, batch0)
