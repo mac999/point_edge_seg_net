@@ -15,9 +15,9 @@ from tqdm import tqdm
 # Configuration Constants
 DEFAULT_MODEL_WEIGHTS_PATH = './logs/20250924_053221/best_model.pth'
 DEFAULT_TEST_POINT_CLOUD_PATH = './sample/area_6_conferenceRoom_1.txt'
-INFERENCE_BLOCK_PATH = './inference_blocks'  # Directory to save block files
-BLOCK_SIZE = 8192  # Same block size as training
-NUM_FEATURES = 9
+INFERENCE_BLOCK_PATH = './inference_blocks'
+BLOCK_SIZE = 8192
+NUM_FEATURES = 10  # ✅ 수정: geo(4) + RGB(3) + spatial(3) = 10D
 NUM_CLASSES = 13
 class_colors = np.array([
 	[233, 229, 107],[ 95, 156, 196],[179, 116,  81],[241, 149, 131],
@@ -31,37 +31,18 @@ def create_inference_blocks(point_cloud_path, block_output_dir, block_size=8192)
     print(f"Loading point cloud: {point_cloud_path}")
     points = np.loadtxt(point_cloud_path)
     
-    # Handle different input formats
-    if points.shape[1] == 6:  # [x,y,z,r,g,b] format
-        print("Calculating geometric features using shared function...")
-        features = extract_features_from_room_data(points, normalize_colors=True)
-        coords = points[:, :3]
-        
-        # Convert 12D features to 9D for inference (same as training)
-        if features.shape[1] == 12:  # Full format: geometric(4) + RGB(3) + HSV(2) + spatial(3)
-            # Extract training features: geometric(4) + HSV(2) + spatial(3) = 9D
-            features = np.concatenate([features[:, :4], features[:, 7:9], features[:, 9:]], axis=1)
-            print(f"Converted features from 12D to 9D format for inference")
-        
-    elif points.shape[1] == 3:  # [x,y,z] format only
-        coords = points
-        print("Calculating geometric features for XYZ-only data...")
-        
-        # Calculate geometric features (4D)
-        geometric_features = calculate_features_with_open3d(coords)
-        
-        # Create dummy HSV features (gray color)
-        dummy_hsv = np.full((len(coords), 2), [0.0, 0.0])  # No hue, no saturation (gray)
-        
-        # Create dummy spatial features (average values)
-        dummy_spatial = np.full((len(coords), 3), 0.5)  # Average density/anisotropy/structure
-        
-        # Combine to 9D: geometric(4) + HSV(2) + spatial(3)
-        features = np.concatenate([geometric_features, dummy_hsv, dummy_spatial], axis=1)
-        print(f"Created 9D features for XYZ-only data: geometric(4) + HSV(2) + spatial(3)")
-        
-    else:
-        raise ValueError(f"Unsupported point cloud format: {points.shape[1]} columns")
+    # Validate input format    
+    print("Calculating 10D features: geo(4) + RGB(3) + spatial(3)...")
+    features = extract_features_from_room_data(points, normalize_colors=True)
+    coords = points[:, :3]
+    
+    features = np.concatenate([features[:, :4], features[:, 4:7], features[:, 9:]], axis=1)
+    
+    # Validate feature dimensions
+    if features.shape[1] != NUM_FEATURES:
+        raise ValueError(f"Feature dimension mismatch! Expected {NUM_FEATURES}D, got {features.shape[1]}D")
+    
+    print(f"Feature validation passed: {features.shape[1]}D features")
     
     # Create output directory
     os.makedirs(block_output_dir, exist_ok=True)
@@ -74,12 +55,7 @@ def create_inference_blocks(point_cloud_path, block_output_dir, block_size=8192)
     num_points = len(coords)
     block_files = []
     
-    # Validate feature dimensions
-    if features.shape[1] != NUM_FEATURES:
-        raise ValueError(f"Feature dimension mismatch! Expected {NUM_FEATURES}D, got {features.shape[1]}D")
-    
-    print(f"Feature validation passed: {features.shape[1]}D features match expected {NUM_FEATURES}D")
-    print(f"Splitting {num_points} points into blocks of {block_size}...")
+    print(f"Splitting {len(coords)} points into blocks of {block_size}...")
     
     for start_idx in tqdm(range(0, num_points, block_size), desc="Creating blocks"):
         end_idx = min(start_idx + block_size, num_points)
