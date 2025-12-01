@@ -4,9 +4,10 @@
 # Purpose: Trains and validates the PointEdgeSegNet model.
 # Dependencies: torch, torch_geometric, matplotlib, scikit-learn, tqdm
 
-import os, torch, torch.optim as optim, json, csv, argparse, time, numpy as np, random
-import matplotlib.pyplot as plt
+import os, torch, torch.optim as optim, json, csv, argparse, time, numpy as np, random, wandb
+import torch.nn as nn, torch.nn.functional as F, matplotlib.pyplot as plt
 from torch_geometric.loader import DataLoader
+from dotenv import load_dotenv
 from glob import glob
 from model import PointEdgeSegNet
 from tqdm import tqdm
@@ -19,6 +20,9 @@ from data_processing import (
     CLASS_NAMES,
     extract_features_from_room_data
 )
+
+# Load wandb API key from .env file (single line)
+load_dotenv(os.path.join('logs', '.env'))
 
 random.seed(42)  
 
@@ -40,11 +44,11 @@ PROCESSED_DATA_PATH = './processed_s3dis'
 BLOCK_DATA_PATH = './block_s3dis'  # Block data storage path
 TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']  # Fixed: proper training areas
 TEST_AREA = 'Area_5'  # Fixed: proper test area
-NUM_EPOCHS = 80  # Extended for full convergence
-BATCH_SIZE = 16  # Increased from 16 for better gradient estimation
+NUM_EPOCHS = 150  # Extended for full convergence
+BATCH_SIZE = 20  # Increased from 16 for better gradient estimation
 VAL_BATCH_SIZE = 32
-LEARNING_RATE = 0.002  # Increased from 0.0005 - 4x boost
-NUM_FEATURES = 9  # Training: normals(3) + curvature(1) + HSV(2) + spatial(3)
+LEARNING_RATE = 0.003  # Increased from 0.002 for faster learning
+NUM_FEATURES = 10  # Training: normals(3) + curvature(1) + RGB(3) + spatial(3)
 NUM_CLASSES = 13
 BLOCK_SIZE = 8192  # Number of points per block
 block_grid_min_coords = np.array([-50.0, 0.0, 0.0])  # base point for normalization
@@ -56,6 +60,31 @@ WARMUP_EPOCHS = 3  # Reduced for faster ramp-up
 # GPU safety settings
 GPU_MEMORY_THRESHOLD = 0.85  # 85% GPU memory usage threshold
 MAX_GRADIENT_NORM = 20.0     # Maximum gradient norm threshold (increased)
+
+class FocalLoss(nn.Module):
+	"""Focal Loss for addressing class imbalance in semantic segmentation."""
+	def __init__(self, alpha=0.25, gamma=2.0, ignore_index=-1):
+		super(FocalLoss, self).__init__()
+		self.alpha = alpha
+		self.gamma = gamma
+		self.ignore_index = ignore_index
+	
+	def forward(self, inputs, targets):
+		# Filter out ignored indices
+		valid_mask = (targets != self.ignore_index)
+		inputs = inputs[valid_mask]
+		targets = targets[valid_mask]
+		
+		# Calculate cross entropy
+		ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+		
+		# Calculate pt (probability of true class)
+		pt = torch.exp(-ce_loss)
+		
+		# Focal Loss formula: -alpha * (1-pt)^gamma * log(pt)
+		focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+		
+		return focal_loss.mean()
 
 def safe_gpu_operation():
 	"""GPU memory safety check and cleanup with detailed logging"""
@@ -308,16 +337,6 @@ def validate_block_files(file_list):
 	print(f"Valid files: {len(valid_files)}, Removed corrupted files: {len(corrupted_files)}")
 	return valid_files
 
-def apply_point_cloud_augmentation(data):
-	"""Minimal augmentation - geometry features only, no color augmentation."""
-	# Always convert 12D features to 9D for training if needed
-	if data.x.shape[1] == 12:  # Full format: geometric(4) + RGB(3) + HSV(2) + spatial(3)
-		# Extract training features: geometric(4) + HSV(2) + spatial(3) = 9D
-		data.x = torch.cat([data.x[:, :4], data.x[:, 7:9], data.x[:, 9:]], dim=1)
-	
-	# Remove all color augmentation to test pure geometric learning
-	return data
-
 # Further reduced augmentation for maximum learning speed
 def get_augment_prob_and_strength(epoch, max_epochs):
 	"""Minimal augmentation for fastest convergence"""
@@ -344,27 +363,13 @@ class BlockDataset(torch.utils.data.Dataset):
 		for retry in range(max_retries):
 			try:
 				data = torch.load(self.file_list[idx], weights_only=False)
-				# Basic validation
 				if hasattr(data, 'x') and hasattr(data, 'pos') and hasattr(data, 'y'):
-					# Always convert 12D features to 9D for training
-					if data.x.shape[1] == 12:  # Full format: geometric(4) + RGB(3) + HSV(2) + spatial(3)
-						# features: [normals(3) + curvature(1) + RGB(3) + HSV(2) + spatial(3)] = 12D
-						data.x = torch.cat([data.x[:, :4], data.x[:, 7:9], data.x[:, 9:]], dim=1)
+					# Convert 10D storage format to 10D training format
+					# No conversion needed - use all features directly
+					# Format: geo(4) + RGB(3) + spatial(3) = 10D
 					
-					# Apply enhanced augmentation for training data
-					if self.augment and torch.rand(1) < self.augment_prob:
-						try:
-							data = apply_torch_enhanced_color_augmentation(
-								data,
-								augmentation_strength=self.augment_strength
-							)
-						except Exception as aug_e:
-							# If augmentation fails, use original data
-							print(f"Augmentation failed for {self.file_list[idx]}: {aug_e}")
-							pass  # Continue with original data
-					
+					# No color augmentation for pure geometric+color learning
 					return data
-
 				print(f"Invalid data structure in file {self.file_list[idx]}")
 				return None
 			except Exception as e:
@@ -456,36 +461,14 @@ if len(val_loader) == 0:
 	raise ValueError("Validation loader is empty! Check your data files.")
 
 model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES).to(device)
-optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.005)  # Reduced from 0.01
+optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.005)
 
-# Dramatically rebalanced class weights for faster rare class learning
-class_weights = torch.tensor([
-    0.1,   # 0: ceiling (extreme suppress)
-    0.2,   # 1: floor (extreme suppress)  
-    0.05,  # 2: wall (ultra suppress - most dominant)
-    500.0, # 3: beam (ultra boost - rarest)
-    100.0, # 4: column (ultra boost)
-    20.0,  # 5: window (major boost)
-    20.0,  # 6: door (major boost)
-    30.0,  # 7: table (major boost)
-    40.0,  # 8: chair (major boost)
-    200.0, # 9: sofa (ultra boost)
-    80.0,  # 10: bookcase (major boost)
-    100.0, # 11: board (ultra boost)
-    15.0   # 12: clutter (major boost)
-]).to(device)
+# Use Focal Loss instead of weighted CrossEntropyLoss
+criterion = FocalLoss(alpha=0.25, gamma=2.0, ignore_index=-1)
 
-# Reduced regularization for faster learning
-criterion = torch.nn.CrossEntropyLoss(
-    weight=class_weights, 
-    ignore_index=-1, 
-    label_smoothing=0.05  # Reduced from 0.15
-)
-
-# Add learning rate scheduler - Cosine Annealing
-# Smooth learning rate decay following cosine curve
+# More conservative learning rate scheduler
 scheduler = optim.lr_scheduler.CosineAnnealingLR(
-    optimizer, T_max=NUM_EPOCHS, eta_min=1e-5  # Higher minimum LR
+    optimizer, T_max=NUM_EPOCHS*2, eta_min=5e-4  # Slower decay, higher minimum LR
 )
 
 def train(epoch):
@@ -510,6 +493,7 @@ def train(epoch):
 	valid_batches = 0
 
 	debug_break_flag = False
+	
 	for batch_idx, data in enumerate(pbar):
 		# GPU memory safety check
 		if not safe_gpu_operation():
@@ -530,6 +514,16 @@ def train(epoch):
 		
 		try:
 			out = model(data)
+			
+			# Log feature gates to wandb (batch-level)
+			if hasattr(model, 'last_gates'):
+				gates = model.last_gates
+				wandb.log({
+					"batch/gate_geo": gates[:, 0].mean().item(),
+					"batch/gate_rgb": gates[:, 1].mean().item(),
+					"batch/gate_spatial": gates[:, 2].mean().item(),
+					"batch/loss": loss.item() if 'loss' in locals() else 0,
+				}, step=epoch * len(train_loader) + batch_idx)
 			
 			# Include only valid points in loss calculation
 			valid_mask = data.valid_mask.view(-1)  # Flatten batch dimension
@@ -593,6 +587,9 @@ def train(epoch):
 			'Acc': f'{current_acc:.4f}',
 			'Batch': f'{batch_idx+1}/{len(train_loader)}'
 		})
+	
+	# Remove manual gate tracking - wandb handles it
+	# geo_gates, rgb_gates, spatial_gates = [], [], # REMOVED
 	
 	# Handle case where no valid batches were processed
 	if valid_batches == 0:
@@ -698,6 +695,20 @@ def run_training(args=None):
 	log_dir, csv_log_path = setup_logging()
 	print(f"Logging to directory: {log_dir}")
 	
+	# Initialize wandb (API key automatically loaded from environment)
+	wandb.init(
+		project="pointedge-s3dis",
+		name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+		config={
+			"learning_rate": LEARNING_RATE,
+			"batch_size": BATCH_SIZE,
+			"num_epochs": NUM_EPOCHS,
+			"num_features": NUM_FEATURES,
+			"block_size": BLOCK_SIZE,
+		}
+	)
+	wandb.watch(model, log="all", log_freq=100)
+	
 	# Initial GPU memory check
 	if torch.cuda.is_available():
 		initial_memory = torch.cuda.memory_allocated() / 1024**3
@@ -745,7 +756,7 @@ def run_training(args=None):
 				consecutive_failures = 0  # Reset failure counter
 			
 			val_loss, val_acc = validate(val_loader)
-
+			
 			# KPI monitoring (if enabled)
 			if args.diagnose:
 				monitor_kpi(model, epoch, save_dir=log_dir, loss=train_loss, accuracy=train_acc)
@@ -804,6 +815,17 @@ def run_training(args=None):
 			if early_stop_counter >= early_stop_patience:
 				print(f"Early stopping triggered! No improvement for {early_stop_patience} epochs.")
 				break
+			
+			# Log epoch metrics to wandb
+			wandb.log({
+				"epoch/train_loss": train_loss,
+				"epoch/train_acc": train_acc,
+				"epoch/val_loss": val_loss,
+				"epoch/val_acc": val_acc,
+				"epoch/loss_diff": val_loss - train_loss,
+				"epoch/acc_diff": train_acc - val_acc,
+				"epoch/lr": new_lr,
+			}, step=epoch)
 			
 			# Update epoch progress bar
 			epoch_pbar.set_postfix({
@@ -874,8 +896,16 @@ def run_training(args=None):
 		test_dataset = BlockDataset(test_block_files)
 		test_loader = DataLoader(test_dataset, batch_size=VAL_BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
 		test_loss, test_acc = validate(test_loader)
-		print(f"Final Test Accuracy on {TEST_AREA}: {test_acc:.4f}")
-		print(f"Final Test Loss on {TEST_AREA}: {test_loss:.4f}")
+
+		print(f"Final Test Loss: {test_loss:.4f}, Final Test Accuracy: {test_acc:.4f}")
+		
+		# Log final test results to wandb
+		wandb.log({
+			"final/test_loss": test_loss,
+			"final/test_acc": test_acc,
+			"final/val_test_gap": best_val_acc - test_acc,
+		})
+		wandb.finish()
 
 		final_test_path = os.path.join(log_dir, "final_test.txt")
 		with open(final_test_path, "w") as f:

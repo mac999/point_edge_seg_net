@@ -18,7 +18,7 @@ from data_processing import (
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Configuration
-S3DIS_PATH = 'I:/05.data/s3dis_v1_2_Aligned' # S3DIS original dataset path
+S3DIS_PATH = 'G:/data/Stanford3dDataset_v1.2_Aligned_Version' # S3DIS original dataset path
 SAVE_PATH = './processed_s3dis' 	# Preprocessed data storage path
 AREAS_TO_PROCESS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_5', 'Area_6'] 		# Specify areas to process
 NUM_POINTS_PER_BLOCK = 8192 		# Number of points to sample per block
