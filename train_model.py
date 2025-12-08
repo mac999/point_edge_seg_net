@@ -852,21 +852,45 @@ def run_training(args=None):
 	# Finish wandb run
 	wandb.finish()
 
-# 1. Dropout 증가
-self.head = nn.Sequential(
-	nn.Linear(64 + num_features, 96),
-	nn.BatchNorm1d(96), 
-	nn.ReLU(),
-	nn.Dropout(0.5),  # ✅ 0.4 → 0.5
-	nn.Linear(96, 48),
-	nn.BatchNorm1d(48),
-	nn.ReLU(),
-	nn.Dropout(0.4),  # ✅ 0.3 → 0.4
-	nn.Linear(48, num_classes)
-)
+def main():
+	global PROCESSED_DATA_PATH, BLOCK_DATA_PATH, TRAIN_AREAS, TEST_AREA
+	global NUM_EPOCHS, BATCH_SIZE, VAL_BATCH_SIZE, LEARNING_RATE, NUM_FEATURES, NUM_CLASSES, BLOCK_SIZE
+	
+	parser = argparse.ArgumentParser(description='PointEdgeSegNet Training')
+	parser.add_argument('--processed_data_path', default=PROCESSED_DATA_PATH, help='Processed data path')
+	parser.add_argument('--block_data_path', default=BLOCK_DATA_PATH, help='Block data storage path')
+	parser.add_argument('--train_areas', nargs='+', default=TRAIN_AREAS, help='Training areas')
+	parser.add_argument('--test_area', default=TEST_AREA, help='Test area')
+	parser.add_argument('--num_epochs', type=int, default=NUM_EPOCHS, help='Number of epochs')
+	parser.add_argument('--batch_size', type=int, default=BATCH_SIZE, help='Batch size')
+	parser.add_argument('--val_batch_size', type=int, default=VAL_BATCH_SIZE, help='Validation batch size')
+	parser.add_argument('--learning_rate', type=float, default=LEARNING_RATE, help='Learning rate')
+	parser.add_argument('--num_features', type=int, default=NUM_FEATURES, help='Number of features')
+	parser.add_argument('--num_classes', type=int, default=NUM_CLASSES, help='Number of classes')
+	parser.add_argument('--block_size', type=int, default=BLOCK_SIZE, help='Block size')
+	parser.add_argument('--diagnose', type=bool, default=False, help='Enable KPI monitoring and diagnostics')
+	args = parser.parse_args()
+	
+	# Update global variables
+	PROCESSED_DATA_PATH = args.processed_data_path
+	BLOCK_DATA_PATH = args.block_data_path
+	TRAIN_AREAS = args.train_areas
+	TEST_AREA = args.test_area
+	NUM_EPOCHS = args.num_epochs
+	BATCH_SIZE = args.batch_size
+	VAL_BATCH_SIZE = args.val_batch_size
+	LEARNING_RATE = args.learning_rate
+	NUM_FEATURES = args.num_features
+	NUM_CLASSES = args.num_classes
+	BLOCK_SIZE = args.block_size
+	
+	print(f"Training configuration:")
+	print(f"  Epochs: {NUM_EPOCHS}, Batch size: {BATCH_SIZE}, Learning rate: {LEARNING_RATE}")
+	print(f"  Train areas: {TRAIN_AREAS}, Test area: {TEST_AREA}")
+	print(f"  Block size: {BLOCK_SIZE}, Validation Batch Size: {VAL_BATCH_SIZE}, Features: {NUM_FEATURES}, Classes: {NUM_CLASSES}")
+	
+	# Start training
+	run_training(args)
 
-# 2. Weight Decay 증가
-optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)  # ✅ 0.005 → 0.01
-
-# 3. Early Stopping 더 빠르게
-early_stop_patience = 7  # ✅ 10 → 7
+if __name__ == '__main__':
+	main()
