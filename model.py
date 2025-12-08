@@ -126,11 +126,11 @@ class PointEdgeSegNet(nn.Module):
 			nn.Linear(64 + num_features, 96),  # Reduced from 128
 			nn.BatchNorm1d(96), 
 			nn.ReLU(),
-			nn.Dropout(0.4),
+			nn.Dropout(0.5),
 			nn.Linear(96, 48),  # Reduced from 64
 			nn.BatchNorm1d(48),
 			nn.ReLU(),
-			nn.Dropout(0.3),
+			nn.Dropout(0.4),
 			nn.Linear(48, num_classes)
 		)
 

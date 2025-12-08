@@ -44,9 +44,9 @@ PROCESSED_DATA_PATH = './processed_s3dis'
 BLOCK_DATA_PATH = './block_s3dis'  # Block data storage path
 TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']  # Fixed: proper training areas
 TEST_AREA = 'Area_5'  # Fixed: proper test area
-NUM_EPOCHS = 150  # Extended for full convergence
-BATCH_SIZE = 20  # Increased from 16 for better gradient estimation
-VAL_BATCH_SIZE = 32
+NUM_EPOCHS = 80  # Extended for full convergence
+BATCH_SIZE = 16  # Increased from 16 for better gradient estimation
+VAL_BATCH_SIZE = 20
 LEARNING_RATE = 0.003  # Increased from 0.002 for faster learning
 NUM_FEATURES = 10  # Training: normals(3) + curvature(1) + RGB(3) + spatial(3)
 NUM_CLASSES = 13
@@ -461,7 +461,7 @@ if len(val_loader) == 0:
 	raise ValueError("Validation loader is empty! Check your data files.")
 
 model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES).to(device)
-optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.005)
+optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)  # ✅ 0.005 → 0.01
 
 # Use Focal Loss instead of weighted CrossEntropyLoss
 criterion = FocalLoss(alpha=0.25, gamma=2.0, ignore_index=-1)
@@ -514,17 +514,7 @@ def train(epoch):
 		
 		try:
 			out = model(data)
-			
-			# Log feature gates to wandb (batch-level)
-			if hasattr(model, 'last_gates'):
-				gates = model.last_gates
-				wandb.log({
-					"batch/gate_geo": gates[:, 0].mean().item(),
-					"batch/gate_rgb": gates[:, 1].mean().item(),
-					"batch/gate_spatial": gates[:, 2].mean().item(),
-					"batch/loss": loss.item() if 'loss' in locals() else 0,
-				}, step=epoch * len(train_loader) + batch_idx)
-			
+						
 			# Include only valid points in loss calculation
 			valid_mask = data.valid_mask.view(-1)  # Flatten batch dimension
 			valid_out = out[valid_mask]
@@ -567,6 +557,18 @@ def train(epoch):
 			correct_nodes += pred.eq(valid_y).sum().item()
 			total_nodes += valid_mask.sum().item()
 			
+			# Log feature gates to wandb (batch-level)
+			if hasattr(model, 'last_gates'):
+				gates = model.last_gates
+				current_batch_acc = pred.eq(valid_y).sum().item() / valid_mask.sum().item()
+				wandb.log({
+					"batch/gate_geo": gates[:, 0].mean().item(),
+					"batch/gate_rgb": gates[:, 1].mean().item(),
+					"batch/gate_spatial": gates[:, 2].mean().item(),
+					"batch/loss": loss.item(),
+					"batch/accuracy": current_batch_acc,
+				}, step=epoch * len(train_loader) + batch_idx)
+
 			# Memory cleanup every 10 batches to prevent accumulation
 			if batch_idx % 10 == 0:
 				torch.cuda.empty_cache()
@@ -722,7 +724,7 @@ def run_training(args=None):
 	max_consecutive_failures = 3
 	
 	# Early stopping parameters - more aggressive
-	early_stop_patience = 10  # faster stopping
+	early_stop_patience = 7  # ✅ 10 → 7
 	early_stop_counter = 0
 	best_val_loss = float('inf')
 	
@@ -731,6 +733,7 @@ def run_training(args=None):
 	# Add progress bar showing overall training progress
 	debug_break_flag = False
 	epoch_pbar = tqdm(range(1, NUM_EPOCHS + 1), desc="Training Progress")
+	global_step = 0  # 전역 step 카운터
 	for epoch in epoch_pbar:
 		try:
 			if debug_break_flag:
@@ -743,17 +746,7 @@ def run_training(args=None):
 			train_dataset.augment_strength = augment_strength
 			
 			train_loss, train_acc = train(epoch)
-			
-			# Check if training was successful
-			if train_loss == 0.0 and train_acc == 0.0:
-				consecutive_failures += 1
-				print(f"Training failure at epoch {epoch}. Consecutive failures: {consecutive_failures}")
-				if consecutive_failures >= max_consecutive_failures:
-					print("Maximum consecutive failures reached. Stopping training.")
-					break
-				continue
-			else:
-				consecutive_failures = 0  # Reset failure counter
+			global_step += len(train_loader)  # 배치 수만큼 누적
 			
 			val_loss, val_acc = validate(val_loader)
 			
@@ -816,7 +809,7 @@ def run_training(args=None):
 				print(f"Early stopping triggered! No improvement for {early_stop_patience} epochs.")
 				break
 			
-			# Log epoch metrics to wandb
+			# ✅ 수정: 누적 step 사용
 			wandb.log({
 				"epoch/train_loss": train_loss,
 				"epoch/train_acc": train_acc,
@@ -825,136 +818,55 @@ def run_training(args=None):
 				"epoch/loss_diff": val_loss - train_loss,
 				"epoch/acc_diff": train_acc - val_acc,
 				"epoch/lr": new_lr,
-			}, step=epoch)
+			}, step=global_step)  # ✅ epoch 대신 global_step
 			
-			# Update epoch progress bar
+			# Update epoch progress
 			epoch_pbar.set_postfix({
-				'Train Loss': f'{train_loss:.4f}',
-				'Train Acc': f'{train_acc:.4f}',
-				'Val Loss': f'{val_loss:.4f}',
-				'Val Acc': f'{val_acc:.4f}',
-				'LR': f'{new_lr:.2e}'
+				'Loss': f'{val_loss:.4f}',
+				'Acc': f'{val_acc:.4f}',
+				'Epoch': f'{epoch}/{NUM_EPOCHS}'
 			})
 			
-			print(f'\nEpoch: {epoch:02d}, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, LR: {new_lr:.2e}')
-			
 		except Exception as e:
-			print(f"Critical error at epoch {epoch}: {str(e)}")
-			torch.cuda.empty_cache() if torch.cuda.is_available() else None
-			consecutive_failures += 1
-			if consecutive_failures >= max_consecutive_failures:
-				print("Maximum consecutive failures reached due to critical errors. Stopping training.")
-				break
+			print(f"Error in training loop at epoch {epoch}: {e}")
+			torch.cuda.empty_cache()
 			continue
-
-	# Save final model and logs
-	torch.save(model.state_dict(), os.path.join(log_dir, 'final_model.pth'))
+	
+	# Final model saving - save the best model at the end of training
+	try:
+		torch.save(model.state_dict(), os.path.join(log_dir, 'final_model.pth'))
+		print(f"Final model saved to: {os.path.join(log_dir, 'final_model.pth')}")
+	except Exception as e:
+		print(f"Failed to save final model: {e}")
+		torch.cuda.empty_cache()
+	
+	# Save training summary
 	save_training_summary(log_dir, history, best_epoch, best_val_acc)
 	
-	print(f"\nBest validation accuracy: {best_val_acc:.4f} at epoch {best_epoch}")
+	# Final GPU memory check
+	if torch.cuda.is_available():
+		final_memory = torch.cuda.memory_allocated() / 1024**3
+		print(f"Final GPU memory: {final_memory:.1f}GB / {total_memory:.1f}GB")
+		print(f"Memory used during training: {final_memory - initial_memory:.1f}GB")
+	
+	# Finish wandb run
+	wandb.finish()
 
-	# Display all train/val loss and accuracy with 4 subplots
-	fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
-	
-	# Training and Validation Loss
-	ax1.plot(history['train_loss'], label='Train Loss', color='blue')
-	ax1.plot(history['val_loss'], label='Validation Loss', color='red')
-	ax1.set_xlabel('Epoch'); ax1.set_ylabel('Loss'); ax1.set_title('Training and Validation Loss'); ax1.legend()
-	ax1.grid(True)
-	
-	# Training and Validation Accuracy  
-	ax2.plot(history['train_acc'], label='Train Accuracy', color='blue')
-	ax2.plot(history['val_acc'], label='Validation Accuracy', color='red')
-	ax2.set_xlabel('Epoch'); ax2.set_ylabel('Accuracy'); ax2.set_title('Training and Validation Accuracy'); ax2.legend()
-	ax2.grid(True)
-	
-	# Loss difference (Overfitting detection)
-	loss_diff = [val - train for val, train in zip(history['val_loss'], history['train_loss'])]
-	ax3.plot(loss_diff, label='Val Loss - Train Loss', color='orange')
-	ax3.axhline(y=0, color='black', linestyle='--', alpha=0.5)
-	ax3.set_xlabel('Epoch'); ax3.set_ylabel('Loss Difference'); ax3.set_title('Overfitting Detection (Val - Train Loss)'); ax3.legend()
-	ax3.grid(True)
-	
-	# Accuracy difference
-	acc_diff = [train - val for val, train in zip(history['val_acc'], history['train_acc'])]
-	ax4.plot(acc_diff, label='Train Acc - Val Acc', color='green')
-	ax4.axhline(y=0, color='black', linestyle='--', alpha=0.5)
-	ax4.set_xlabel('Epoch'); ax4.set_ylabel('Accuracy Difference'); ax4.set_title('Generalization Gap (Train - Val Acc)'); ax4.legend()
-	ax4.grid(True)
-	
-	plt.tight_layout()
-	plt.savefig(os.path.join(log_dir, 'training_plots.png'))
-	plt.show()
+# 1. Dropout 증가
+self.head = nn.Sequential(
+	nn.Linear(64 + num_features, 96),
+	nn.BatchNorm1d(96), 
+	nn.ReLU(),
+	nn.Dropout(0.5),  # ✅ 0.4 → 0.5
+	nn.Linear(96, 48),
+	nn.BatchNorm1d(48),
+	nn.ReLU(),
+	nn.Dropout(0.4),  # ✅ 0.3 → 0.4
+	nn.Linear(48, num_classes)
+)
 
-	print("\n--- Final Test Performance ---")
-	try:
-		# Clean up GPU memory before final model test
-		model.load_state_dict(torch.load(os.path.join(log_dir, 'best_model.pth'), map_location=device))
-		model.eval()
-		torch.cuda.empty_cache() if torch.cuda.is_available() else None
-		
-		test_dataset = BlockDataset(test_block_files)
-		test_loader = DataLoader(test_dataset, batch_size=VAL_BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
-		test_loss, test_acc = validate(test_loader)
+# 2. Weight Decay 증가
+optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)  # ✅ 0.005 → 0.01
 
-		print(f"Final Test Loss: {test_loss:.4f}, Final Test Accuracy: {test_acc:.4f}")
-		
-		# Log final test results to wandb
-		wandb.log({
-			"final/test_loss": test_loss,
-			"final/test_acc": test_acc,
-			"final/val_test_gap": best_val_acc - test_acc,
-		})
-		wandb.finish()
-
-		final_test_path = os.path.join(log_dir, "final_test.txt")
-		with open(final_test_path, "w") as f:
-			f.write(f"Final Test Accuracy: {test_acc:.6f}\n")
-			f.write(f"Final Test Loss: {test_loss:.6f}\n")
-
-	except Exception as e:
-		print(f"Error during final test: {str(e)}")
-		print("Skipping final test due to safety concerns.")
-
-def main():
-	global PROCESSED_DATA_PATH, BLOCK_DATA_PATH, TRAIN_AREAS, TEST_AREA
-	global NUM_EPOCHS, BATCH_SIZE, VAL_BATCH_SIZE, LEARNING_RATE, NUM_FEATURES, NUM_CLASSES, BLOCK_SIZE
-	
-	parser = argparse.ArgumentParser(description='PointEdgeSegNet Training')
-	parser.add_argument('--processed_data_path', default=PROCESSED_DATA_PATH, help='Processed data path')
-	parser.add_argument('--block_data_path', default=BLOCK_DATA_PATH, help='Block data storage path')
-	parser.add_argument('--train_areas', nargs='+', default=TRAIN_AREAS, help='Training areas')
-	parser.add_argument('--test_area', default=TEST_AREA, help='Test area')
-	parser.add_argument('--num_epochs', type=int, default=NUM_EPOCHS, help='Number of epochs')
-	parser.add_argument('--batch_size', type=int, default=BATCH_SIZE, help='Batch size')
-	parser.add_argument('--val_batch_size', type=int, default=VAL_BATCH_SIZE, help='Validation batch size')
-	parser.add_argument('--learning_rate', type=float, default=LEARNING_RATE, help='Learning rate')
-	parser.add_argument('--num_features', type=int, default=NUM_FEATURES, help='Number of features')
-	parser.add_argument('--num_classes', type=int, default=NUM_CLASSES, help='Number of classes')
-	parser.add_argument('--block_size', type=int, default=BLOCK_SIZE, help='Block size')
-	parser.add_argument('--diagnose', type=bool, default=False, help='Enable KPI monitoring and diagnostics')
-	args = parser.parse_args()
-	
-	# Update global variables
-	PROCESSED_DATA_PATH = args.processed_data_path
-	BLOCK_DATA_PATH = args.block_data_path
-	TRAIN_AREAS = args.train_areas
-	TEST_AREA = args.test_area
-	NUM_EPOCHS = args.num_epochs
-	BATCH_SIZE = args.batch_size
-	VAL_BATCH_SIZE = args.val_batch_size
-	LEARNING_RATE = args.learning_rate
-	NUM_FEATURES = args.num_features
-	NUM_CLASSES = args.num_classes
-	BLOCK_SIZE = args.block_size
-	
-	print(f"Training configuration:")
-	print(f"  Epochs: {NUM_EPOCHS}, Batch size: {BATCH_SIZE}, Learning rate: {LEARNING_RATE}")
-	print(f"  Train areas: {TRAIN_AREAS}, Test area: {TEST_AREA}")
-	print(f"  Block size: {BLOCK_SIZE}, Validation Batch Size: {VAL_BATCH_SIZE}, Features: {NUM_FEATURES}, Classes: {NUM_CLASSES}")
-	
-	# Start training
-	run_training(args)
-
-if __name__ == '__main__':
-	main()
+# 3. Early Stopping 더 빠르게
+early_stop_patience = 7  # ✅ 10 → 7
