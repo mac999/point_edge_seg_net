@@ -41,6 +41,7 @@ The below is todo list.
 - **Extend Training Duration**: Increase the total number of epochs (e.g., to 200+) to ensure full convergence, which is crucial for the demanding 6-fold cross-validation setup.
 - **Experiment with Advanced Loss Functions**: Test **Focal Loss** to better handle the class imbalance present in the S3DIS dataset and implement **Lovász-Softmax Loss** to directly optimize for the mIoU metric, which can significantly boost segmentation performance.
 - **Implement More Aggressive Data Augmentation**: Add **Elastic Distortion** to create more complex geometric variations and **Random Point Dropout** to improve model robustness to sparse or incomplete data.
+- **Performance Improvement**: Considering bottleneck transformers, sparse space features etc.
 
 <p align="center">
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/data_analysis/area_1.png" height="200"></img>
@@ -487,6 +488,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
