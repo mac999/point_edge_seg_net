@@ -2,7 +2,7 @@
 
 ## Overview
 
-PointEdgeSegNet is the lightweight 3D point cloud segmentation model based on EdgeConv layers and U-Net architecture. This project has purpose of researching and developing 3D point cloud segmenation model that can classify each point in large-scale 3D PCD into semantic categories such as ceiling, floor, wall, furniture, and other objects which you can customize easily under small size VRAM like 24GB under. This is the personal project, but if you are interested, you are welcome to join in developing this.
+PointEdgeSegNet is the lightweight 3D point cloud segmentation model based on EdgeConv layers and U-Net architecture. This project has purpose of researching and developing 3D point cloud segmenation model that can classify each point in large-scale 3D PCD into semantic categories such as ceiling, floor, wall, furniture, and other objects which you can customize easily under small size VRAM like 24GB under. This is a personal project that I develop in my spare time, but if you're interested, you're welcome to join me in developing it at any time.
 
 Although many research and open-source models exist for PCD segmentation, they have been challenging to use in practice. For example, some SOTA models in this research field use lots of VRAM, so it's difficult to apply them to industry. They have issues under the limited VRAM, large dataset processing in specific industry domain etc. When processing large PCD files, open-source models often did not perform as well as claimed in papers or required additional development to handle them. Some model codes were too outdated to be installed and run in current development environments. Some open-source models had overly complex structures and modules, making them difficult to modify for specific purposes. Models that consumed excessive GPU resources were problematic in practice. Some models used specialized libraries or file formats for training, limiting their overall usability. Few similar projects had well-documented learning and training methods. This project strives to address these issues to the best of its ability.
 
@@ -487,6 +487,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
