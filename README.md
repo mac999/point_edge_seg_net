@@ -2,7 +2,7 @@
 
 ## Overview
 
-PointEdgeSegNet is the lightweight 3D point cloud segmentation model based on EdgeConv layers and U-Net architecture. This project has purpose of researching and developing 3D point cloud segmenation model that can classify each point in large-scale 3D PCD into semantic categories such as ceiling, floor, wall, furniture, and other objects which you can customize easily. This is the personal project, but if you are interested, you are welcome to join in developing this.
+PointEdgeSegNet is the lightweight 3D point cloud segmentation model based on EdgeConv layers and U-Net architecture. This project has purpose of researching and developing 3D point cloud segmenation model that can classify each point in large-scale 3D PCD into semantic categories such as ceiling, floor, wall, furniture, and other objects which you can customize easily under small size VRAM like 24GB under. This is the personal project, but if you are interested, you are welcome to join in developing this.
 
 Although many research and open-source models exist for PCD segmentation, they have been challenging to use in practice. For example, when processing large PCD files, open-source models often did not perform as well as claimed in papers or required additional development to handle them. Some model codes were too outdated to be installed and run in current development environments. Some open-source models had overly complex structures and modules, making them difficult to modify for specific purposes. Models that consumed excessive GPU resources were problematic in practice. Some models used specialized libraries or file formats for training, limiting their overall usability. Few similar projects had well-documented learning and training methods. This project strives to address these issues to the best of its ability.
 
@@ -33,6 +33,7 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 - 0.6: 2025/10/3. Hyperparameter finetuning (support VRAM 8GB, 24GB) and Dataset augumentation (e.g. on the fly)
 
 The below is todo list.
+- **Test dataset accuray improvement**: The test set, Area5, has significant differences in color and characteristics from the training dataset. Bottleneck transformer, sparse space features will be considered.
 - **Diagnoise**: Diagnoise (e.g. mIoU etc) and visualize model related to weight, bais and gradient of loss in epoch.
 - **Customization**: Customization about classes, features and LiDAR point cloud train example etc
 - **Utilize Normalized Coordinates**: Verify that normalized XYZ coordinates (relative to the room's origin or center) are included as input features.
@@ -40,7 +41,6 @@ The below is todo list.
 - **Extend Training Duration**: Increase the total number of epochs (e.g., to 200+) to ensure full convergence, which is crucial for the demanding 6-fold cross-validation setup.
 - **Experiment with Advanced Loss Functions**: Test **Focal Loss** to better handle the class imbalance present in the S3DIS dataset and implement **Lovász-Softmax Loss** to directly optimize for the mIoU metric, which can significantly boost segmentation performance.
 - **Implement More Aggressive Data Augmentation**: Add **Elastic Distortion** to create more complex geometric variations and **Random Point Dropout** to improve model robustness to sparse or incomplete data.
-- **Test dataset accuray improvement**: The test set, Area5, has significant differences in color and characteristics from the training dataset. It is currently being analyzed for training.
 
 <p align="center">
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/data_analysis/area_1.png" height="200"></img>
@@ -487,6 +487,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
