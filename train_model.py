@@ -1055,7 +1055,8 @@ def main():
 	if len(args.test_model_path) > 0:
 		test_model(args.test_model_path)
 	else:
-		run_training(args)
+		final_model_fname = run_training(args)
+		test_model(final_model_fname)
 
 if __name__ == '__main__':
 	main()
