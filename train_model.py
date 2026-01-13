@@ -1,11 +1,11 @@
-# Title: train_model (version 0.1)
+# Title: train_model (version 0.2)
 # Author: taewook kang (laputa9999@gmail.com)
 # Date: 2025-09-21
 # Purpose: Trains and validates the PointEdgeSegNet model.
 # Dependencies: torch, torch_geometric, matplotlib, scikit-learn, tqdm
 
 import os, torch, torch.optim as optim, json, csv, argparse, time, numpy as np, random, wandb
-import torch.nn as nn, torch.nn.functional as F, matplotlib.pyplot as plt
+import torch.nn as nn, torch.nn.functional as F, matplotlib.pyplot as plt, gc
 from torch_geometric.loader import DataLoader
 from dotenv import load_dotenv
 from glob import glob
@@ -20,6 +20,7 @@ from data_processing import (
     CLASS_NAMES,
     extract_features_from_room_data
 )
+from torch.cuda.amp import autocast, GradScaler
 
 # Load wandb API key from .env file (single line)
 load_dotenv(os.path.join('logs', '.env'))
@@ -45,12 +46,12 @@ BLOCK_DATA_PATH = './block_s3dis'  # Block data storage path
 TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']  # Fixed: proper training areas
 TEST_AREA = 'Area_5'  # Fixed: proper test area
 NUM_EPOCHS = 80  # Extended for full convergence
-BATCH_SIZE = 16  # Increased from 16 for better gradient estimation
-VAL_BATCH_SIZE = 20
+BATCH_SIZE = 14  # Increased from 16 for better gradient estimation
+VAL_BATCH_SIZE = 18
 LEARNING_RATE = 0.003  # Increased from 0.002 for faster learning
 NUM_FEATURES = 10  # Training: normals(3) + curvature(1) + RGB(3) + spatial(3)
 NUM_CLASSES = 13
-BLOCK_SIZE = 8192  # Number of points per block
+BLOCK_SIZE = 8192  # Number of points per block. TBD
 block_grid_min_coords = np.array([-50.0, 0.0, 0.0])  # base point for normalization
 
 # Settings for validation loss stabilization
@@ -61,11 +62,14 @@ WARMUP_EPOCHS = 3  # Reduced for faster ramp-up
 GPU_MEMORY_THRESHOLD = 0.85  # 85% GPU memory usage threshold
 MAX_GRADIENT_NORM = 20.0     # Maximum gradient norm threshold (increased)
 
+# Gradient Accumulation settings (virtual batch size increase)
+ACCUMULATION_STEPS = 4  # Effective batch size: 14 × 4 = 56
+
 class FocalLoss(nn.Module):
-	"""Focal Loss for addressing class imbalance in semantic segmentation."""
-	def __init__(self, alpha=0.25, gamma=2.0, ignore_index=-1):
+	"""Focal Loss with per-class weights for addressing class imbalance."""
+	def __init__(self, class_weights=None, gamma=2.5, ignore_index=-1):
 		super(FocalLoss, self).__init__()
-		self.alpha = alpha
+		self.class_weights = class_weights
 		self.gamma = gamma
 		self.ignore_index = ignore_index
 	
@@ -75,14 +79,14 @@ class FocalLoss(nn.Module):
 		inputs = inputs[valid_mask]
 		targets = targets[valid_mask]
 		
-		# Calculate cross entropy
-		ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+		# Calculate cross entropy with class weights
+		ce_loss = F.cross_entropy(inputs, targets, weight=self.class_weights, reduction='none')
 		
 		# Calculate pt (probability of true class)
 		pt = torch.exp(-ce_loss)
 		
-		# Focal Loss formula: -alpha * (1-pt)^gamma * log(pt)
-		focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+		# Focal Loss formula: (1-pt)^gamma * log(pt)
+		focal_loss = (1 - pt) ** self.gamma * ce_loss
 		
 		return focal_loss.mean()
 
@@ -107,7 +111,6 @@ def safe_gpu_operation():
 		
 		if memory_usage_ratio > GPU_MEMORY_THRESHOLD:
 			torch.cuda.empty_cache()
-			import gc
 			gc.collect()  # Also clear Python object memory
 			memory_after_cleanup = torch.cuda.memory_allocated() / 1024**3
 			print(f"GPU memory cleanup: {memory_allocated:.1f}GB -> {memory_after_cleanup:.1f}GB")
@@ -328,11 +331,8 @@ def validate_block_files(file_list):
 	
 	# Remove corrupted files
 	for corrupted_file in corrupted_files:
-		try:
-			os.remove(corrupted_file)
-			print(f"Removed corrupted file: {corrupted_file}")
-		except Exception as e:
-			print(f"Failed to remove {corrupted_file}: {e}")
+		os.remove(corrupted_file)
+		print(f"Removed corrupted file: {corrupted_file}")
 	
 	print(f"Valid files: {len(valid_files)}, Removed corrupted files: {len(corrupted_files)}")
 	return valid_files
@@ -394,12 +394,8 @@ def collate_fn(batch):
 		print(f"Warning: Only {len(valid_batch)}/{len(batch)} valid samples in batch. Skipping batch.")
 		return None
 	
-	try:
-		from torch_geometric.data import Batch
-		return Batch.from_data_list(valid_batch)
-	except Exception as e:
-		print(f"Error creating batch: {e}")
-		return None
+	from torch_geometric.data import Batch
+	return Batch.from_data_list(valid_batch)
 
 # Data loader preparation
 # Run preprocessing if block data doesn't exist
@@ -449,7 +445,7 @@ val_dataset = BlockDataset(val_files, augment=False, augment_prob=0.0, augment_s
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, collate_fn=collate_fn)
 val_loader = DataLoader(val_dataset, batch_size=VAL_BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
 
-# DataLoader 검증
+# DataLoader
 print(f"Training dataset size: {len(train_dataset)}")
 print(f"Validation dataset size: {len(val_dataset)}")
 print(f"Training batches: {len(train_loader)}")
@@ -463,13 +459,33 @@ if len(val_loader) == 0:
 model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES).to(device)
 optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)  # ✅ 0.005 → 0.01
 
-# Use Focal Loss instead of weighted CrossEntropyLoss
-criterion = FocalLoss(alpha=0.25, gamma=2.0, ignore_index=-1)
+# Per-class weights for Focal Loss (near-uniform with slight rare class boost)
+# Strategy: Minimal intervention, let Focal Loss handle imbalance naturally
+class_weights = torch.tensor([
+	0.7,  # 0: ceiling (important structural element)
+	0.7,  # 1: floor (important structural element)
+	0.7,  # 2: wall (important structural element)
+	0.8,  # 3: beam
+	0.9,  # 4: column (rare - 2.39%, needs boost)
+	0.85, # 5: window
+	0.9,  # 6: door (rare - 11.81%, needs boost)
+	0.75, # 7: table
+	0.75, # 8: chair
+	0.9,  # 9: sofa (rare - 36.13%, needs boost)
+	0.8,  # 10: bookcase
+	0.8,  # 11: board
+	0.75  # 12: clutter
+], device=device)
+
+# Use Focal Loss with minimal gamma (let class weights do the work)
+criterion = FocalLoss(class_weights=class_weights, gamma=1.5, ignore_index=-1)  # Reduced gamma 2.0 -> 1.5
 
 # More conservative learning rate scheduler
 scheduler = optim.lr_scheduler.CosineAnnealingLR(
     optimizer, T_max=NUM_EPOCHS*2, eta_min=5e-4  # Slower decay, higher minimum LR
 )
+
+scaler = GradScaler()
 
 def train(epoch):
 	model.train()
@@ -491,8 +507,15 @@ def train(epoch):
 	pbar = tqdm(train_loader, desc=f'Epoch {epoch:02d}/{NUM_EPOCHS} [Training]')
 	total_loss, correct_nodes, total_nodes = 0, 0, 0
 	valid_batches = 0
+	
+	# Per-class accuracy tracking
+	class_correct = np.zeros(NUM_CLASSES)
+	class_total = np.zeros(NUM_CLASSES)
 
 	debug_break_flag = False
+	
+	# Initialize gradient accumulation
+	optimizer.zero_grad()
 	
 	for batch_idx, data in enumerate(pbar):
 		# GPU memory safety check
@@ -510,52 +533,64 @@ def train(epoch):
 			
 		valid_batches += 1
 		data = data.to(device)
-		optimizer.zero_grad()
 		
 		try:
+			# Run model in FP32 (Transformer indexing doesn't support FP16)
 			out = model(data)
-						
-			# Include only valid points in loss calculation
-			valid_mask = data.valid_mask.view(-1)  # Flatten batch dimension
-			valid_out = out[valid_mask]
-			valid_y = data.y[valid_mask]
 			
-			loss = criterion(valid_out, valid_y)
-			
-			# Check for numerical instability
+			# Only use autocast for loss calculation
+			with autocast():
+				valid_mask = data.valid_mask.view(-1)
+				valid_out = out[valid_mask]
+				valid_y = data.y[valid_mask]
+				
+				# Apply Focal Loss on all samples (OHEM removed for stability)
+				loss = criterion(valid_out, valid_y)
+		
 			if not check_numerical_stability(loss, "loss"):
 				print(f"Numerical instability at epoch {epoch}, batch {batch_idx}\n")
 				torch.cuda.empty_cache()
 				continue
 			
-			loss.backward()
+			# Gradient Accumulation: Scale loss and backward
+			loss = loss / ACCUMULATION_STEPS
+			scaler.scale(loss).backward()
 			
-			# Monitor gradient norm before clipping
-			grad_norm_before = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
+			# Update weights every ACCUMULATION_STEPS
+			if (batch_idx + 1) % ACCUMULATION_STEPS == 0:
+				scaler.unscale_(optimizer)
+				grad_norm_before = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
+				
+				if grad_norm_before > MAX_GRADIENT_NORM:
+					print(f"Very large gradient detected: {grad_norm_before:.2f}, skipping update")
+					optimizer.zero_grad()
+					torch.cuda.empty_cache()
+					continue
+				elif grad_norm_before > GRADIENT_CLIP_VALUE:
+					torch.nn.utils.clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
+					if epoch % 5 == 0 and batch_idx % 50 == 0:
+						print(f"Gradient clipped: {grad_norm_before:.2f} -> {GRADIENT_CLIP_VALUE}")
+				
+				scaler.step(optimizer)
+				scaler.update()
+				optimizer.zero_grad()
 			
-			# Apply adaptive gradient clipping
-			if grad_norm_before > MAX_GRADIENT_NORM:
-				print(f"Very large gradient detected: {grad_norm_before:.2f}, skipping batch")
-				torch.cuda.empty_cache()
-				continue
-			elif grad_norm_before > GRADIENT_CLIP_VALUE:
-				# Apply clipping only when needed
-				torch.nn.utils.clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
-				if epoch % 5 == 0 and batch_idx % 50 == 0:
-					print(f"Gradient clipped: {grad_norm_before:.2f} -> {GRADIENT_CLIP_VALUE}")
+			if batch_idx % 200 == 0:
+				time.sleep(10.0)
 			
-			if batch_idx % 200 == 0: # Brief pause for GPU cooling
-				time.sleep(10.0)  
-
-			total_grad_norm = grad_norm_before
-			
-			optimizer.step()
-			total_loss += loss.item()
+			total_loss += loss.item() * ACCUMULATION_STEPS  # Unscale for logging
 			
 			# Calculate accuracy (valid points only)
 			pred = valid_out.argmax(dim=-1)
 			correct_nodes += pred.eq(valid_y).sum().item()
 			total_nodes += valid_mask.sum().item()
+			
+			# Track per-class accuracy
+			for cls in range(NUM_CLASSES):
+				cls_mask = (valid_y == cls)
+				if cls_mask.sum() > 0:
+					class_total[cls] += cls_mask.sum().item()
+					class_correct[cls] += (pred[cls_mask] == cls).sum().item()
 			
 			# Log feature gates to wandb (batch-level)
 			if hasattr(model, 'last_gates'):
@@ -597,6 +632,15 @@ def train(epoch):
 	if valid_batches == 0:
 		print("Warning: No valid batches were processed in training!")
 		return 0.0, 0.0
+	
+	# Print per-class accuracy for monitoring
+	print(f"\n--- Per-Class Training Accuracy (Epoch {epoch}) ---")
+	for cls in range(NUM_CLASSES):
+		if class_total[cls] > 0:
+			cls_acc = class_correct[cls] / class_total[cls]
+			cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f"Class_{cls}"
+			print(f"{cls_name:12s}: {cls_acc*100:5.1f}% ({int(class_correct[cls])}/{int(class_total[cls])})")
+	print("-" * 50)
 	
 	# Force memory cleanup at end of epoch
 	torch.cuda.empty_cache()
@@ -697,19 +741,24 @@ def run_training(args=None):
 	log_dir, csv_log_path = setup_logging()
 	print(f"Logging to directory: {log_dir}")
 	
-	# Initialize wandb (API key automatically loaded from environment)
-	wandb.init(
-		project="pointedge-s3dis",
-		name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-		config={
-			"learning_rate": LEARNING_RATE,
-			"batch_size": BATCH_SIZE,
-			"num_epochs": NUM_EPOCHS,
-			"num_features": NUM_FEATURES,
-			"block_size": BLOCK_SIZE,
-		}
-	)
-	wandb.watch(model, log="all", log_freq=100)
+	# Initialize wandb with timeout and offline fallback
+	try:
+		wandb.init(
+			project="pointedge-s3dis",
+			name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+			config={
+				"learning_rate": LEARNING_RATE,
+				"batch_size": BATCH_SIZE,
+				"num_epochs": NUM_EPOCHS,
+				"num_features": NUM_FEATURES,
+				"block_size": BLOCK_SIZE,
+			},
+			mode="offline"  # Use offline mode to avoid blocking
+		)
+		wandb.watch(model, log="all", log_freq=100)
+		print("wandb initialized successfully (offline mode)")
+	except Exception as e:
+		print(f"wandb initialization failed: {e}. Continuing without wandb.")
 	
 	# Initial GPU memory check
 	if torch.cuda.is_available():
@@ -724,16 +773,17 @@ def run_training(args=None):
 	max_consecutive_failures = 3
 	
 	# Early stopping parameters - more aggressive
-	early_stop_patience = 7  # ✅ 10 → 7
+	early_stop_patience = 7   
 	early_stop_counter = 0
 	best_val_loss = float('inf')
 	
 	print(f"Starting training on {device} with safety measures enabled...")
 
 	# Add progress bar showing overall training progress
+	model_best_fname = ''
 	debug_break_flag = False
 	epoch_pbar = tqdm(range(1, NUM_EPOCHS + 1), desc="Training Progress")
-	global_step = 0  # 전역 step 카운터
+	global_step = 0  
 	for epoch in epoch_pbar:
 		try:
 			if debug_break_flag:
@@ -746,7 +796,7 @@ def run_training(args=None):
 			train_dataset.augment_strength = augment_strength
 			
 			train_loss, train_acc = train(epoch)
-			global_step += len(train_loader)  # 배치 수만큼 누적
+			global_step += len(train_loader)  
 			
 			val_loss, val_acc = validate(val_loader)
 			
@@ -766,7 +816,7 @@ def run_training(args=None):
 			# Update scheduler (Cosine Annealing - epoch based) - Skip during warmup
 			old_lr = current_lr
 			if epoch > WARMUP_EPOCHS:
-				scheduler.step()  # CosineAnnealingLR는 매 epoch마다 자동으로 학습률 조정
+				scheduler.step()  
 			new_lr = optimizer.param_groups[0]['lr']
 			log_epoch_metrics(csv_log_path, epoch, train_loss, train_acc, val_loss, val_acc, new_lr)
 			
@@ -790,26 +840,21 @@ def run_training(args=None):
 			if val_acc > best_val_acc:
 				best_val_acc = val_acc
 				best_epoch = epoch
+
+				# Force memory cleanup before model saving
 				torch.cuda.synchronize(); 
-				try:
-					# Force memory cleanup before model saving
-					torch.cuda.empty_cache()
-					import gc
-					gc.collect()
-					torch.save(model.state_dict(), os.path.join(log_dir, 'best_model.pth'))
-					# Additional cleanup after saving
-					torch.cuda.empty_cache()
-					time.sleep(2.0)  # Reduced from 5.0
-				except Exception as e:
-					print(f"Failed to save best model: {e}")
-					torch.cuda.empty_cache()
+				torch.cuda.empty_cache()
+				gc.collect()
+				model_best_fname = os.path.join(log_dir, 'best_model.pth')
+				torch.save(model.state_dict(), model_best_fname)
+				torch.cuda.empty_cache()
+				time.sleep(2.0)  
 			
 			# Early stopping check
 			if early_stop_counter >= early_stop_patience:
 				print(f"Early stopping triggered! No improvement for {early_stop_patience} epochs.")
 				break
 			
-			# ✅ 수정: 누적 step 사용
 			wandb.log({
 				"epoch/train_loss": train_loss,
 				"epoch/train_acc": train_acc,
@@ -818,7 +863,7 @@ def run_training(args=None):
 				"epoch/loss_diff": val_loss - train_loss,
 				"epoch/acc_diff": train_acc - val_acc,
 				"epoch/lr": new_lr,
-			}, step=global_step)  # ✅ epoch 대신 global_step
+			}, step=global_step)  # global_step
 			
 			# Update epoch progress
 			epoch_pbar.set_postfix({
@@ -833,12 +878,9 @@ def run_training(args=None):
 			continue
 	
 	# Final model saving - save the best model at the end of training
-	try:
-		torch.save(model.state_dict(), os.path.join(log_dir, 'final_model.pth'))
-		print(f"Final model saved to: {os.path.join(log_dir, 'final_model.pth')}")
-	except Exception as e:
-		print(f"Failed to save final model: {e}")
-		torch.cuda.empty_cache()
+	model_fname = os.path.join(log_dir, 'final_model.pth')
+	torch.save(model.state_dict(), model_fname)
+	print(f"Final model saved to: {model_fname}")
 	
 	# Save training summary
 	save_training_summary(log_dir, history, best_epoch, best_val_acc)
@@ -851,6 +893,125 @@ def run_training(args=None):
 	
 	# Finish wandb run
 	wandb.finish()
+
+	return model_best_fname
+
+def test_model(model_path):
+	"""Test trained model on TEST_AREA dataset"""
+	print(f"\n--- Testing Model on {TEST_AREA} ---")
+	print(f"Loading model from: {model_path}")
+	
+	# Load trained model
+	try:
+		model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES).to(device)
+		model.load_state_dict(torch.load(model_path, map_location=device))
+		model.eval()
+		print("Model loaded successfully")
+	except Exception as e:
+		print(f"Error loading model: {e}")
+		return
+	
+	# Load test dataset (TEST_AREA only)
+	test_block_files = glob(os.path.join(BLOCK_DATA_PATH, f'*_{TEST_AREA}.pt'))
+	if len(test_block_files) == 0:
+		print(f"No test blocks found for {TEST_AREA}!")
+		return
+	
+	print(f"Total test blocks: {len(test_block_files)}")
+	
+	# Create test dataset and loader
+	test_dataset = BlockDataset(test_block_files, augment=False)
+	test_loader = DataLoader(test_dataset, batch_size=VAL_BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
+	
+	# Test metrics - use same class weights as training
+	class_weights = torch.tensor([
+		0.1, 0.1, 0.1, 0.5, 0.9, 0.7, 0.8, 0.4, 0.4, 0.8, 0.5, 0.6, 0.5
+	], device=device)
+	criterion_test = FocalLoss(class_weights=class_weights, gamma=2.5, ignore_index=-1)
+	correct_nodes, total_nodes, total_loss = 0, 0, 0.0
+	valid_batches = 0
+	
+	# Per-class metrics
+	class_correct = np.zeros(NUM_CLASSES)
+	class_total = np.zeros(NUM_CLASSES)
+	
+	print(f"Starting evaluation on {len(test_loader)} batches...")
+	pbar = tqdm(test_loader, desc=f'[Test {TEST_AREA}]')
+	
+	with torch.no_grad():
+		for batch_idx, data in enumerate(pbar):
+			if data is None:
+				continue
+			
+			valid_batches += 1
+			
+			try:
+				data = data.to(device)
+				out = model(data)
+				
+				valid_mask = data.valid_mask.view(-1)
+				valid_out = out[valid_mask]
+				valid_y = data.y[valid_mask]
+				
+				loss = criterion_test(valid_out, valid_y)
+				total_loss += loss.item()
+				
+				pred = valid_out.argmax(dim=-1)
+				correct_nodes += pred.eq(valid_y).sum().item()
+				total_nodes += valid_mask.sum().item()
+				
+				# Per-class accuracy
+				for cls in range(NUM_CLASSES):
+					cls_mask = (valid_y == cls)
+					if cls_mask.sum() > 0:
+						class_total[cls] += cls_mask.sum().item()
+						class_correct[cls] += (pred[cls_mask] == cls).sum().item()
+				
+				# Update progress
+				current_acc = correct_nodes / total_nodes if total_nodes > 0 else 0
+				current_loss = total_loss / valid_batches
+				pbar.set_postfix({
+					'Loss': f'{current_loss:.4f}',
+					'Acc': f'{current_acc:.4f}',
+					'Batch': f'{batch_idx+1}/{len(test_loader)}'
+				})
+				
+			except Exception as e:
+				print(f"Error in test batch {batch_idx}: {e}")
+				continue
+	
+	if valid_batches == 0:
+		print("No valid batches processed!")
+		return
+	
+	# Calculate final metrics
+	final_loss = total_loss / valid_batches
+	final_acc = correct_nodes / total_nodes if total_nodes > 0 else 0
+	
+	print(f"\n{'='*60}")
+	print(f"Test Results on {TEST_AREA}:")
+	print(f"{'='*60}")
+	print(f"Overall Loss: {final_loss:.4f}")
+	print(f"Overall Accuracy: {final_acc:.4f} ({final_acc*100:.2f}%)")
+	print(f"Total Points: {total_nodes}")
+	print(f"Correct Predictions: {correct_nodes}")
+	print(f"\nPer-Class Accuracy:")
+	print(f"{'-'*60}")
+	
+	for cls in range(NUM_CLASSES):
+		if class_total[cls] > 0:
+			cls_acc = class_correct[cls] / class_total[cls]
+			cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f"Class_{cls}"
+			print(f"{cls_name:15s}: {cls_acc*100:6.2f}% ({int(class_correct[cls])}/{int(class_total[cls])})")
+		else:
+			cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f"Class_{cls}"
+			print(f"{cls_name:15s}: N/A (no samples)")
+	
+	print(f"{'='*60}\n")
+	
+	return final_loss, final_acc
+
+
 
 def main():
 	global PROCESSED_DATA_PATH, BLOCK_DATA_PATH, TRAIN_AREAS, TEST_AREA
@@ -869,6 +1030,7 @@ def main():
 	parser.add_argument('--num_classes', type=int, default=NUM_CLASSES, help='Number of classes')
 	parser.add_argument('--block_size', type=int, default=BLOCK_SIZE, help='Block size')
 	parser.add_argument('--diagnose', type=bool, default=False, help='Enable KPI monitoring and diagnostics')
+	parser.add_argument('--test_model_path', type=str, default='', help='Path to trained model for testing') # D:\\projects\\point_edge_seg_net\\logs\\20260107_080233\\best_model.pth
 	args = parser.parse_args()
 	
 	# Update global variables
@@ -890,7 +1052,10 @@ def main():
 	print(f"  Block size: {BLOCK_SIZE}, Validation Batch Size: {VAL_BATCH_SIZE}, Features: {NUM_FEATURES}, Classes: {NUM_CLASSES}")
 	
 	# Start training
-	run_training(args)
+	if len(args.test_model_path) > 0:
+		test_model(args.test_model_path)
+	else:
+		run_training(args)
 
 if __name__ == '__main__':
 	main()

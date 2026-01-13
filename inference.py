@@ -17,7 +17,7 @@ DEFAULT_MODEL_WEIGHTS_PATH = './logs/20250924_053221/best_model.pth'
 DEFAULT_TEST_POINT_CLOUD_PATH = './sample/area_6_conferenceRoom_1.txt'
 INFERENCE_BLOCK_PATH = './inference_blocks'
 BLOCK_SIZE = 8192
-NUM_FEATURES = 10  # ✅ 수정: geo(4) + RGB(3) + spatial(3) = 10D
+NUM_FEATURES = 10  # geo(4) + RGB(3) + spatial(3) = 10D
 NUM_CLASSES = 13
 class_colors = np.array([
 	[233, 229, 107],[ 95, 156, 196],[179, 116,  81],[241, 149, 131],
@@ -36,8 +36,7 @@ def create_inference_blocks(point_cloud_path, block_output_dir, block_size=8192)
     features = extract_features_from_room_data(points, normalize_colors=True)
     coords = points[:, :3]
     
-    features = np.concatenate([features[:, :4], features[:, 4:7], features[:, 9:]], axis=1)
-    
+    # extract_features_from_room_data already returns correct order: geo(4) + RGB(3) + spatial(3)    
     # Validate feature dimensions
     if features.shape[1] != NUM_FEATURES:
         raise ValueError(f"Feature dimension mismatch! Expected {NUM_FEATURES}D, got {features.shape[1]}D")
