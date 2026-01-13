@@ -31,17 +31,13 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 - 0.4: 2025/9/28. Diagnose was added. Points grid generation using grid hash spatial indexing
 - 0.5: 2025/10/1. Train dataset development (area 1 to 6)
 - 0.6: 2025/10/3. Hyperparameter finetuning (support VRAM 8GB, 24GB) and Dataset augumentation (e.g. on the fly)
+- 0.7: 2025/12/30. Integrate Attention Mechanism, Focal Loss, Area 5 test
 
 The below is todo list.
-- **Test dataset accuray improvement**: The test set, Area5, has significant differences in color and characteristics from the training dataset. Bottleneck transformer, sparse space features will be considered.
 - **Diagnoise**: Diagnoise (e.g. mIoU etc) and visualize model related to weight, bais and gradient of loss in epoch.
 - **Customization**: Customization about classes, features and LiDAR point cloud train example etc
 - **Utilize Normalized Coordinates**: Verify that normalized XYZ coordinates (relative to the room's origin or center) are included as input features.
-- **Integrate Attention Mechanism**: Replace or augment the `EdgeConv` layers with a self-attention or Transformer block (inspired by Point Transformer V3 / Stratified Transformer) to better capture long-range dependencies.
 - **Extend Training Duration**: Increase the total number of epochs (e.g., to 200+) to ensure full convergence, which is crucial for the demanding 6-fold cross-validation setup.
-- **Experiment with Advanced Loss Functions**: Test **Focal Loss** to better handle the class imbalance present in the S3DIS dataset and implement **Lovász-Softmax Loss** to directly optimize for the mIoU metric, which can significantly boost segmentation performance.
-- **Implement More Aggressive Data Augmentation**: Add **Elastic Distortion** to create more complex geometric variations and **Random Point Dropout** to improve model robustness to sparse or incomplete data.
-- **Performance Improvement**: Considering bottleneck transformers, sparse space features etc.
 
 <p align="center">
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/data_analysis/area_1.png" height="200"></img>
@@ -60,7 +56,7 @@ The following items already apply in 24GB VRAM.
 - Large-scale point cloud training and segmentation
 - Edge-based convolution layers for capturing local geometric relationships
 - U-Net encoder-decoder architecture with skip connections
-- Lightweight Model Architecture
+- Lightweight Model Architecture with Transformers
 - Block-based processing for memory efficiency. Here, the concept of a block refers to a unit of point cloud file that divides a large number of point clouds, such as 100 million, into units that enable model learning and prediction within VRAM.
 - Support for S3DIS dataset preprocessing and training
 - Inference with 3D visualization of Large-scale point cloud file
@@ -488,6 +484,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
