@@ -188,6 +188,54 @@ def save_training_summary(log_dir, history, best_epoch, best_val_acc):
 		json.dump(summary, f, indent=2)
 	
 	print(f"Training summary saved to: {summary_path}")
+	
+	# Generate training plots with 4 subplots
+	fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+	
+	# Training and Validation Loss
+	ax1.plot(history['train_loss'], label='Train Loss', color='blue')
+	ax1.plot(history['val_loss'], label='Validation Loss', color='red')
+	ax1.set_xlabel('Epoch')
+	ax1.set_ylabel('Loss')
+	ax1.set_title('Training and Validation Loss')
+	ax1.legend()
+	ax1.grid(True)
+	
+	# Training and Validation Accuracy  
+	ax2.plot(history['train_acc'], label='Train Accuracy', color='blue')
+	ax2.plot(history['val_acc'], label='Validation Accuracy', color='red')
+	ax2.set_xlabel('Epoch')
+	ax2.set_ylabel('Accuracy')
+	ax2.set_title('Training and Validation Accuracy')
+	ax2.legend()
+	ax2.grid(True)
+	
+	# Loss difference (Overfitting detection)
+	loss_diff = [val - train for val, train in zip(history['val_loss'], history['train_loss'])]
+	ax3.plot(loss_diff, label='Val Loss - Train Loss', color='orange')
+	ax3.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+	ax3.set_xlabel('Epoch')
+	ax3.set_ylabel('Loss Difference')
+	ax3.set_title('Overfitting Detection (Val - Train Loss)')
+	ax3.legend()
+	ax3.grid(True)
+	
+	# Accuracy difference (Generalization gap)
+	acc_diff = [train - val for val, train in zip(history['val_acc'], history['train_acc'])]
+	ax4.plot(acc_diff, label='Train Acc - Val Acc', color='green')
+	ax4.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+	ax4.set_xlabel('Epoch')
+	ax4.set_ylabel('Accuracy Difference')
+	ax4.set_title('Generalization Gap (Train - Val Acc)')
+	ax4.legend()
+	ax4.grid(True)
+	
+	plt.tight_layout()
+	plot_path = os.path.join(log_dir, 'training_plots.png')
+	plt.savefig(plot_path)
+	plt.close()
+	
+	print(f"Training plots saved to: {plot_path}")
 
 def preprocess_dataset():
 	"""
@@ -741,24 +789,19 @@ def run_training(args=None):
 	log_dir, csv_log_path = setup_logging()
 	print(f"Logging to directory: {log_dir}")
 	
-	# Initialize wandb with timeout and offline fallback
-	try:
-		wandb.init(
-			project="pointedge-s3dis",
-			name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-			config={
-				"learning_rate": LEARNING_RATE,
-				"batch_size": BATCH_SIZE,
-				"num_epochs": NUM_EPOCHS,
-				"num_features": NUM_FEATURES,
-				"block_size": BLOCK_SIZE,
-			},
-			mode="offline"  # Use offline mode to avoid blocking
-		)
-		wandb.watch(model, log="all", log_freq=100)
-		print("wandb initialized successfully (offline mode)")
-	except Exception as e:
-		print(f"wandb initialization failed: {e}. Continuing without wandb.")
+	# Initialize wandb (online mode for cloud sync)
+	wandb.init(
+		project="pointedge-s3dis",
+		name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+		config={
+			"learning_rate": LEARNING_RATE,
+			"batch_size": BATCH_SIZE,
+			"num_epochs": NUM_EPOCHS,
+			"num_features": NUM_FEATURES,
+			"block_size": BLOCK_SIZE,
+		}
+	)
+	wandb.watch(model, log="all", log_freq=100)
 	
 	# Initial GPU memory check
 	if torch.cuda.is_available():
@@ -898,7 +941,7 @@ def run_training(args=None):
 
 def test_model(model_path):
 	"""Test trained model on TEST_AREA dataset"""
-	print(f"\n--- Testing Model on {TEST_AREA} ---")
+	print(f"\nTesting Model on {TEST_AREA}")
 	print(f"Loading model from: {model_path}")
 	
 	# Load trained model
@@ -988,30 +1031,59 @@ def test_model(model_path):
 	final_loss = total_loss / valid_batches
 	final_acc = correct_nodes / total_nodes if total_nodes > 0 else 0
 	
-	print(f"\n{'='*60}")
 	print(f"Test Results on {TEST_AREA}:")
-	print(f"{'='*60}")
 	print(f"Overall Loss: {final_loss:.4f}")
 	print(f"Overall Accuracy: {final_acc:.4f} ({final_acc*100:.2f}%)")
 	print(f"Total Points: {total_nodes}")
 	print(f"Correct Predictions: {correct_nodes}")
 	print(f"\nPer-Class Accuracy:")
-	print(f"{'-'*60}")
 	
+	# Prepare per-class results for JSON
+	per_class_results = {}
 	for cls in range(NUM_CLASSES):
+		cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f"Class_{cls}"
 		if class_total[cls] > 0:
 			cls_acc = class_correct[cls] / class_total[cls]
-			cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f"Class_{cls}"
 			print(f"{cls_name:15s}: {cls_acc*100:6.2f}% ({int(class_correct[cls])}/{int(class_total[cls])})")
+			per_class_results[cls_name] = {
+				"accuracy": float(cls_acc),
+				"correct": int(class_correct[cls]),
+				"total": int(class_total[cls])
+			}
 		else:
-			cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f"Class_{cls}"
 			print(f"{cls_name:15s}: N/A (no samples)")
+			per_class_results[cls_name] = {
+				"accuracy": None,
+				"correct": 0,
+				"total": 0
+			}
 	
-	print(f"{'='*60}\n")
+	# Save test summary to JSON
+	log_dir = os.path.dirname(model_path)
+	test_summary = {
+		"test_area": TEST_AREA,
+		"model_path": model_path,
+		"overall_metrics": {
+			"loss": float(final_loss),
+			"accuracy": float(final_acc),
+			"total_points": int(total_nodes),
+			"correct_predictions": int(correct_nodes)
+		},
+		"per_class_results": per_class_results,
+		"test_config": {
+			"num_classes": NUM_CLASSES,
+			"batch_size": VAL_BATCH_SIZE,
+			"total_blocks": len(test_block_files),
+			"valid_batches": valid_batches
+		}
+	}
 	
+	test_summary_path = os.path.join(log_dir, "test_summary.json")
+	with open(test_summary_path, 'w') as f:
+		json.dump(test_summary, f, indent=2)
+	
+	print(f"\nTest summary saved to: {test_summary_path}")
 	return final_loss, final_acc
-
-
 
 def main():
 	global PROCESSED_DATA_PATH, BLOCK_DATA_PATH, TRAIN_AREAS, TEST_AREA
