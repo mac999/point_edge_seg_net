@@ -1,0 +1,83 @@
+{
+  "test_area": "Area_5",
+  "model_path": "logs\\20260113_231712\\best_model.pth",
+  "overall_metrics": {
+    "loss": 0.21659006574440132,
+    "accuracy": 0.8009582105861417,
+    "total_points": 80767632,
+    "correct_predictions": 64691498
+  },
+  "per_class_results": {
+    "ceiling": {
+      "accuracy": 0.963251993180508,
+      "correct": 15352160,
+      "total": 15937844
+    },
+    "floor": {
+      "accuracy": 0.9764857144963567,
+      "correct": 13377451,
+      "total": 13699587
+    },
+    "wall": {
+      "accuracy": 0.8741334816271638,
+      "correct": 20657838,
+      "total": 23632361
+    },
+    "beam": {
+      "accuracy": 0.9529344504523366,
+      "correct": 473374,
+      "total": 496754
+    },
+    "column": {
+      "accuracy": 0.24101514357354337,
+      "correct": 340270,
+      "total": 1411820
+    },
+    "window": {
+      "accuracy": 0.5213541544005087,
+      "correct": 1416782,
+      "total": 2717504
+    },
+    "door": {
+      "accuracy": 0.172426393864373,
+      "correct": 398246,
+      "total": 2309658
+    },
+    "table": {
+      "accuracy": 0.7397371458765454,
+      "correct": 2290349,
+      "total": 3096166
+    },
+    "chair": {
+      "accuracy": 0.8430688296445339,
+      "correct": 1206735,
+      "total": 1431360
+    },
+    "sofa": {
+      "accuracy": 0.23379031947281206,
+      "correct": 48533,
+      "total": 207592
+    },
+    "bookcase": {
+      "accuracy": 0.5849370824753938,
+      "correct": 4640169,
+      "total": 7932766
+    },
+    "board": {
+      "accuracy": 0.6352993982789299,
+      "correct": 593045,
+      "total": 933489
+    },
+    "clutter": {
+      "accuracy": 0.5597897692067112,
+      "correct": 3896546,
+      "total": 6960731
+    }
+  },
+  "test_config": {
+    "num_classes": 13,
+    "batch_size": 18,
+    "total_blocks": 22572,
+    "valid_batches": 1254
+  }
+}
