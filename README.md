@@ -62,9 +62,9 @@ The following items already apply in 24GB VRAM.
 - Comprehensive logging and model checkpointing
 
 <p align="center">
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/training_plots.png" height="200"></img>
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/acc.png" height="200"></img>
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/grad.png" height="200"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/training_plots.png" height="100"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/acc.png" height="100"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/grad.png" height="100"></img>
 </br></p>
 In addition, [Train Model Performance](https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/training_summary.json), [Test Data Prediction Performance](https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/test_summary.json), [Result and Log data files](https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712). Train and Val dataset (Area 1. 8:2) = S3DIS v1.2 aligned
 
@@ -200,11 +200,6 @@ EdgeConv (Edge Convolution) is designed specifically for point cloud processing:
 - Captures local geometric relationships through edge features
 - Combines point features with relative position information
 - Maintains permutation invariance while being sensitive to local structure
-
-<p align="center">
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img11.png" height="100"></img>
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img10.png" height="100"></img>
-</p>
 
 Mathematical formulation:
 ```
@@ -486,6 +481,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
