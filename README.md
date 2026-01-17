@@ -1,5 +1,3 @@
-<img width="1500" height="1000" alt="image" src="https://github.com/user-attachments/assets/297e5135-7d22-4ad2-a150-9b63871c9afd" /><img width="1500" height="1000" alt="image" src="https://github.com/user-attachments/assets/7ac5ca2c-f2d6-4c9e-8f19-3bc9756b5112" /># PointEdgeSegNet: Lightweight 3D Point Cloud Segmentation Model
-
 ## Overview
 
 PointEdgeSegNet is the lightweight 3D point cloud segmentation model based on EdgeConv layers and U-Net architecture. This project has purpose of researching and developing 3D point cloud segmenation model that can classify each point in large-scale 3D PCD into semantic categories such as ceiling, floor, wall, furniture, and other objects which you can customize easily under small size VRAM like 24GB under. This is a personal project that I develop in my spare time, but if you're interested, you're welcome to join me in developing it at any time.
@@ -488,6 +486,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
