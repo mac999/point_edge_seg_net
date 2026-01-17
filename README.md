@@ -69,8 +69,8 @@ The following items already apply in 24GB VRAM.
 
 <p align="center">
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/training_plots.png" width="600"></img></br>
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/acc.png" height="200"></img>
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/grad.png" height="200"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/acc.png" height="170"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/grad.png" height="170"></img>
 </br></p>
 
 ## Installation
@@ -481,6 +481,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
