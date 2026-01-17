@@ -1,4 +1,4 @@
-# PointEdgeSegNet: Lightweight 3D Point Cloud Segmentation Model
+<img width="1500" height="1000" alt="image" src="https://github.com/user-attachments/assets/297e5135-7d22-4ad2-a150-9b63871c9afd" /><img width="1500" height="1000" alt="image" src="https://github.com/user-attachments/assets/7ac5ca2c-f2d6-4c9e-8f19-3bc9756b5112" /># PointEdgeSegNet: Lightweight 3D Point Cloud Segmentation Model
 
 ## Overview
 
@@ -64,9 +64,12 @@ The following items already apply in 24GB VRAM.
 - Comprehensive logging and model checkpointing
 
 <p align="center">
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20251007_095926/training_plots.png" height="400"></img></br>
-Loss and Acc performance at 100 epoch (https://github.com/mac999/point_edge_seg_net/tree/main/logs/20251007_095926). Train and Val dataset (Area 1. 8:2) = S3DIS v1.2 aligned
-</p>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/training_plots.png" height="200"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/acc.png" height="200"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/grad.png" height="200"></img>
+</br></p>
+In addition, [Train Model Performance](https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/training_summary.json), [Test Data Prediction Performance](https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/test_summary.json), [Result and Log data files](https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712). Train and Val dataset (Area 1. 8:2) = S3DIS v1.2 aligned
+
 
 ## Installation
 
@@ -485,6 +488,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
