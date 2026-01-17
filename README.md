@@ -32,11 +32,15 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 - 0.7: 2025/12/30. Integrate Attention Mechanism, Focal Loss, Area 5 test
 - 0.8: 2026/1/17. Update source code and [model file](https://github.com/mac999/point_edge_seg_net/tree/main/logs/20260113_231712).
 
-The below is todo list.
-- **Diagnoise**: Diagnoise (e.g. mIoU etc) and visualize model related to weight, bais and gradient of loss in epoch.
+The below is ToDo list:
 - **Customization**: Customization about classes, features and LiDAR point cloud train example etc
 - **Utilize Normalized Coordinates**: Verify that normalized XYZ coordinates (relative to the room's origin or center) are included as input features.
-- **Extend Training Duration**: Increase the total number of epochs (e.g., to 200+) to ensure full convergence, which is crucial for the demanding 6-fold cross-validation setup.
+
+For Optimization Strategy under 24GB VRAM Constraints, To address boundary artifacts and class imbalance without hardware upgrades for Area 5 test accuracy, considering the below strategies:
+* **Sliding Window with Overlap:** Generates training blocks with 50% overlap to preserve the topology of objects (e.g., Columns) typically bisected by grid boundaries.
+* **Global Context Injection:** Appends normalized Global Z-coordinates to input features, enabling the model to distinguish height-dependent classes (e.g., Beam vs. Sofa).
+* **Copy-Paste Augmentation:** Selectively copies points of rare classes into wall-dominated blocks to directly address class imbalance.
+* **Voting Inference:** Aggregates predictions from overlapping blocks during testing (Multi-view Voting) to suppress boundary noise and improve segmentation stability.
 
 <p align="center">
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/data_analysis/area_1.png" height="200"></img>
@@ -479,6 +483,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
