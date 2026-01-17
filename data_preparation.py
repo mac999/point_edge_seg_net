@@ -18,8 +18,8 @@ from data_processing import (
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Configuration
-S3DIS_PATH = 'G:/data/Stanford3dDataset_v1.2_Aligned_Version' # S3DIS original dataset path
-SAVE_PATH = './processed_s3dis' 	# Preprocessed data storage path
+input_path = 'I:/05.data/s3dis_v1_2_Aligned' # S3DIS original dataset path
+output_path = './processed_s3dis' 	# Preprocessed data storage path
 AREAS_TO_PROCESS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_5', 'Area_6'] 		# Specify areas to process
 NUM_POINTS_PER_BLOCK = 8192 		# Number of points to sample per block
 
@@ -27,9 +27,9 @@ NUM_POINTS_PER_BLOCK = 8192 		# Number of points to sample per block
 class_names = CLASS_NAMES
 
 def process_area(area_path, args):
-	save_path = args.save_path
+	output_path = args.output_path
 	print(f"Processing {os.path.basename(area_path)}...")
-	area_save_path = os.path.join(save_path, os.path.basename(area_path))
+	area_save_path = os.path.join(output_path, os.path.basename(area_path))
 	if os.path.exists(area_save_path):
 		shutil.rmtree(area_save_path, ignore_errors=True)
 	os.makedirs(area_save_path, exist_ok=True)
@@ -117,8 +117,8 @@ def process_area(area_path, args):
 
 def main():
 	parser = argparse.ArgumentParser(description='S3DIS Dataset Preprocessing')
-	parser.add_argument('--s3dis_path', default=S3DIS_PATH, help='S3DIS dataset path')
-	parser.add_argument('--save_path', default=SAVE_PATH, help='Output directory')
+	parser.add_argument('--input_path', default=input_path, help='S3DIS dataset path')
+	parser.add_argument('--output_path', default=output_path, help='Output directory')
 	parser.add_argument('--areas', nargs='+', default=AREAS_TO_PROCESS, help='Areas to process')
 	parser.add_argument('--num_points', type=int, default=NUM_POINTS_PER_BLOCK, help='Number of points per block')
 	parser.add_argument('--visualize', type=bool, default=False, help='Visualize point clouds for verification')
@@ -127,7 +127,7 @@ def main():
 	
 	print(f"Starting data preparation for {len(args.areas)} areas...")
 	for area in tqdm(args.areas, desc="Processing areas"):
-		area_path = os.path.join(args.s3dis_path, area)
+		area_path = os.path.join(args.input_path, area)
 		process_area(area_path, args)
 	print("\nData preparation finished.")
 
