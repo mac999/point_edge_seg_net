@@ -81,6 +81,18 @@ The following items already apply in 24GB VRAM.
 - NVIDIA GPU with CUDA support (recommended)
 - Minimum 8GB GPU memory
 
+Download source code and install it like below.
+```bash
+git clone https://github.com/mac999/point_edge_seg_net
+cd point_edge_seg_net
+```
+If you have CUDA 11.8 version, install packages using requirements.txt
+```bash
+pip install -r requirements.txt
+```
+
+If you have the lastest CUDA version, install them like below. 
+
 ### Step 1: Install PyTorch and PyTorch Geometric
 
 Install PyTorch with CUDA support first (replace with your CUDA version):
@@ -99,13 +111,6 @@ pip install torch_geometric torch_scatter torch_sparse torch_cluster torch_splin
 
 ```bash
 pip install numpy scikit-learn open3d tqdm matplotlib
-```
-
-### Step 3: Clone and Setup
-
-```bash
-git clone https://github.com/mac999/point_edge_seg_net
-cd point_unet
 ```
 
 ## Dataset Preparation
@@ -481,6 +486,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
