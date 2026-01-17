@@ -68,9 +68,9 @@ The following items already apply in 24GB VRAM.
 - [Trained model and Log files](https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712). Train and Val dataset (Area 1. 8:2) = S3DIS v1.2 aligned
 
 <p align="center">
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/training_plots.png" width="300"></img>
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/acc.png" height="100"></img>
-<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/grad.png" height="100"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/training_plots.png" width="500"></img></br>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/acc.png" height="150"></img>
+<img src="https://github.com/mac999/point_edge_seg_net/blob/main/logs/20260113_231712/grad.png" height="150"></img>
 </br></p>
 
 ## Installation
@@ -481,6 +481,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
