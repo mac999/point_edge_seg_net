@@ -1,5 +1,4 @@
 # KPI Monitoring for PointEdgeSegNet Training
-# Author: AI Assistant
 # Date: 2025-09-26
 # Purpose: Simple gradient and training KPI monitoring with visualization
 
@@ -300,3 +299,4 @@ if __name__ == "__main__":
     print("Usage in training loop:")
     print("  results = monitor_kpis(model, epoch, loss=train_loss, accuracy=train_acc)")
     print("  # Generates plots every 5 epochs by default")
+
