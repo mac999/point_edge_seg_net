@@ -119,10 +119,16 @@ pip install numpy scikit-learn open3d tqdm matplotlib
 
 1. Download the S3DIS dataset from [Stanford Vision Lab](https://cvgl.stanford.edu/resources.html) and [point cloud storage](https://sdss.redivis.com/datasets/9q3m-9w5pa1a2h/files)
 2. Extract the dataset to `./s3dis_v1.2_aligned/` directory
-3. Run data preprocessing:
+3. Run data preprocessing with input_path, output_path arguments:
 
 ```bash
 python data_preparation.py
+```
+
+In example, 
+```bash
+# Custom data preparation with specific areas
+python data_preparation.py --input_path ./s3dis_v1.2_aligned --output_path ./processed_s3dis --areas Area_1 Area_2 Area_3
 ```
 
 The preprocessing script will:
@@ -242,20 +248,7 @@ The encoder-decoder structure with skip connections:
 - **Geometric Feature Integration**: Leverages Open3D for robust normal/curvature computation
 - **Memory Efficient Processing**: Block-based training and inference
 
-## Run
-
-### Data Preparation
-
-First, prepare your dataset:
-
-```bash
-# Basic data preparation (uses default paths)
-python data_preparation.py
-
-# Custom data preparation with specific areas
-python data_preparation.py --input_path ./s3dis_v1.2_aligned --output_path ./processed_s3dis --areas Area_1 Area_2 Area_3
-```
-
+## Train model and Inference 
 ### Training
 
 Basic training with default settings:
@@ -486,6 +479,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
