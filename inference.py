@@ -13,7 +13,7 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 # Configuration Constants
-DEFAULT_MODEL_WEIGHTS_PATH = './logs/20250924_053221/best_model.pth'
+DEFAULT_MODEL_WEIGHTS_PATH = './logs/20260113_231712/best_model.pth'
 DEFAULT_TEST_POINT_CLOUD_PATH = './sample/area_6_conferenceRoom_1.txt'
 INFERENCE_BLOCK_PATH = './inference_blocks'
 BLOCK_SIZE = 8192
