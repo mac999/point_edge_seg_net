@@ -121,7 +121,7 @@ python data_preparation.py
 ```
 
 The preprocessing script will:
-- Convert raw point cloud data to PyTorch Geometric format
+- Convert raw point cloud data to PyTorch Geometric format. You can download [the converted point cloud and PLY files](https://drive.google.com/drive/folders/1QdISVNKUnVrUVxugQrmezWmNuL78ZXoq)
 - Calculate geometric features (normals, curvature)
 - Split data into 8192-point blocks for efficient training
 - Save processed data to `./processed_s3dis/`
@@ -481,6 +481,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
