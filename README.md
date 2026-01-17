@@ -19,8 +19,8 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img8.png" height="115"></img>
 <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img7.png" height="115"></img></br>
 </p>
-<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model(Best validation accuracy: 88.61% at epoch 82, VRAM: 24GB. logs: 20251007_095926)
-</p
+<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model. Best validation accuracy=90.43%, test(area 5) accuray=80.1% in S3DIS. VRAM=24GB. logs=20260113_231712)
+</p>
 
 
 ## Version
@@ -32,6 +32,7 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 - 0.5: 2025/10/1. Train dataset development (area 1 to 6)
 - 0.6: 2025/10/3. Hyperparameter finetuning (support VRAM 8GB, 24GB) and Dataset augumentation (e.g. on the fly)
 - 0.7: 2025/12/30. Integrate Attention Mechanism, Focal Loss, Area 5 test
+- 0.8: 2026/1/17. Update source code and [model file](https://github.com/mac999/point_edge_seg_net/tree/main/logs/20260113_231712).
 
 The below is todo list.
 - **Diagnoise**: Diagnoise (e.g. mIoU etc) and visualize model related to weight, bais and gradient of loss in epoch.
@@ -484,6 +485,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
