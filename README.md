@@ -120,6 +120,78 @@ pip install numpy scikit-learn open3d tqdm matplotlib
 
 ## Dataset Preparation
 
+### Using Custom Point Cloud Datasets
+
+**PointEdgeSegNet now supports custom point cloud datasets!** You can train and infer on any point cloud dataset by configuring the `model_params.json` file with your own class names, colors, and parameters.
+
+#### Configuration File: model_params.json
+
+Create or modify `model_params.json` to define your dataset configuration:
+
+```json
+{
+  "dataset_name": "Your_Dataset_Name",
+  "num_classes": 8,
+  "class_names": ["class1", "class2", "class3", ...],
+  "class_colors": [[R, G, B], [R, G, B], ...],
+  "class_weights": [1.0, 0.8, 0.9, ...],
+  "num_features": 10,
+  "block_size": 8192,
+  "preprocessing": {
+    "grid_min_coords": [0.0, 0.0, 0.0],
+    "grid_resolution": 1.0
+  },
+  "description": "Description of your dataset"
+}
+```
+
+**Configuration Parameters:**
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `dataset_name` | string | Name of your dataset | "Custom_Outdoor_Scene" |
+| `num_classes` | int | Number of semantic classes | 8 |
+| `class_names` | array | List of class names | ["ground", "building", "tree", ...] |
+| `class_colors` | array | RGB colors for visualization (0-255) | [[139, 69, 19], [255, 0, 0], ...] |
+| `class_weights` | array | Loss weights for class balancing | [1.0, 0.8, 0.9, ...] |
+| `num_features` | int | Feature dimension (default: 10) | 10 |
+| `block_size` | int | Points per block (default: 8192) | 8192 |
+| `preprocessing.grid_min_coords` | array | Minimum coordinates for grid normalization | [0.0, 0.0, 0.0] |
+| `preprocessing.grid_resolution` | float | Grid resolution for spatial hashing | 1.0 |
+
+**Example Configurations:**
+
+1. **Indoor Scene (S3DIS-like)**: `model_params.json`
+   - 13 classes: ceiling, floor, wall, furniture, etc.
+   - Fine grid resolution (0.5) for detailed indoor spaces
+   - Negative min_coords for normalized coordinate handling
+
+2. **Outdoor Scene**: `model_params_example_outdoor.json`
+   - 8 classes: ground, building, tree, vehicle, etc.
+   - Coarser grid resolution (2.0) for large outdoor spaces
+   - Zero-origin min_coords for outdoor coordinates
+
+#### Training with Custom Configuration
+
+```bash
+# Train with your custom configuration
+python train_model.py --config model_params_custom.json
+
+# Train with outdoor example
+python train_model.py --config model_params_example_outdoor.json \
+    --processed_data_path ./processed_outdoor \
+    --block_data_path ./block_outdoor
+```
+
+#### Inference with Custom Configuration
+
+```bash
+# Inference with custom model
+python inference.py --config model_params_custom.json \
+    --model_weights ./logs/custom_model/best_model.pth \
+    --input_cloud ./data/custom_scene.txt
+```
+
 ### Stanford 3D Indoor Spaces Dataset (S3DIS)
 
 1. Download the S3DIS dataset from [Stanford Vision Lab](https://cvgl.stanford.edu/resources.html) and [point cloud storage](https://sdss.redivis.com/datasets/9q3m-9w5pa1a2h/files)
@@ -127,13 +199,14 @@ pip install numpy scikit-learn open3d tqdm matplotlib
 3. Run data preprocessing with input_path, output_path arguments:
 
 ```bash
-python data_preparation.py
-```
+# S3DIS preprocessing with default configuration
+python data_preparation.py --config model_params.json
 
-In example, 
-```bash
 # Custom data preparation with specific areas
-python data_preparation.py --input_path ./s3dis_v1.2_aligned --output_path ./processed_s3dis --areas Area_1 Area_2 Area_3
+python data_preparation.py --config model_params.json \
+    --s3dis_path ./s3dis_v1.2_aligned \
+    --save_path ./processed_s3dis \
+    --areas Area_1 Area_2 Area_3
 ```
 
 The preprocessing script will:
@@ -144,7 +217,9 @@ The preprocessing script will:
 
 ### Supported Classes
 
-The model supports 13 semantic classes with their corresponding visualization colors:
+#### S3DIS Dataset (Default Configuration)
+
+The default model supports 13 semantic classes for indoor scene segmentation:
 
 | Class ID | Class Name | RGB Color | Color Name | Hex Code |
 |----------|------------|-----------|------------|----------|
@@ -162,14 +237,33 @@ The model supports 13 semantic classes with their corresponding visualization co
 | 11 | board | (107, 233, 107) | Bright Green | #6BE96B |
 | 12 | clutter | (160, 160, 160) | Gray | #A0A0A0 |
 
-### Color Scheme Design
-
-The color scheme is designed for optimal visual distinction:
+**Color Scheme Design:**
 - **Structural elements** (ceiling, floor, wall): Natural tones (yellow, blue, brown)
 - **Architectural features** (beam, column, window, door): Warm and cool contrasts
 - **Furniture** (table, chair, sofa, bookcase): Vibrant colors for easy identification
 - **Functional items** (board): Bright green for visibility
 - **Miscellaneous** (clutter): Neutral gray
+
+#### Custom Dataset Classes
+
+You can define your own classes in `model_params.json`. For example, an outdoor scene configuration:
+
+| Class ID | Class Name | RGB Color | Description |
+|----------|------------|-----------|-------------|
+| 0 | ground | (139, 69, 19) | Ground surface |
+| 1 | building | (255, 0, 0) | Building structures |
+| 2 | tree | (0, 255, 0) | Trees and vegetation |
+| 3 | vehicle | (0, 0, 255) | Cars, trucks, etc. |
+| 4 | road | (128, 128, 128) | Road surfaces |
+| 5 | vegetation | (34, 139, 34) | Low vegetation |
+| 6 | pedestrian | (255, 255, 0) | People |
+| 7 | others | (128, 0, 128) | Miscellaneous objects |
+
+**Tips for Defining Custom Classes:**
+1. Choose distinct RGB colors for easy visual discrimination
+2. Set `class_weights` based on class frequency (higher weights for rare classes)
+3. Adjust `grid_resolution` based on scene scale (smaller for indoor, larger for outdoor)
+4. Set `grid_min_coords` to normalize your coordinate system
 
 ### S3DIS dataset Characteristics
 
@@ -484,95 +578,3 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
