@@ -6,40 +6,40 @@
 
 import torch, numpy as np, open3d as o3d, os, argparse
 from model import PointEdgeSegNet
-from data_processing import calculate_features_with_open3d, CLASS_NAMES, extract_features_from_room_data
+from data_processing import (
+    calculate_features_with_open3d, 
+    CLASS_NAMES, 
+    extract_features_from_room_data,
+    load_model_config,
+    get_class_colors
+)
 from torch_geometric.data import Data, Batch
 from torch_geometric.loader import DataLoader
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
 # Configuration Constants
-DEFAULT_MODEL_WEIGHTS_PATH = './logs/20260113_231712/best_model.pth'
+DEFAULT_MODEL_WEIGHTS_PATH = './logs/20260126_155613/best_model.pth' 
 DEFAULT_TEST_POINT_CLOUD_PATH = './sample/area_6_conferenceRoom_1.txt'
+DEFAULT_CONFIG_PATH = 'model_params.json'
 INFERENCE_BLOCK_PATH = './inference_blocks'
 BLOCK_SIZE = 8192
 NUM_FEATURES = 10  # geo(4) + RGB(3) + spatial(3) = 10D
-NUM_CLASSES = 13
-class_colors = np.array([
-	[233, 229, 107],[ 95, 156, 196],[179, 116,  81],[241, 149, 131],
-	[ 81, 163, 163],[223, 160, 168],[142,  86, 114],[153, 223, 138],
-	[149, 149, 241],[107, 229, 233],[233, 107, 229],[107, 233, 107],
-	[160, 160, 160],
-]) / 255.0
 
-def create_inference_blocks(point_cloud_path, block_output_dir, block_size=8192):
+def create_inference_blocks(point_cloud_path, block_output_dir, block_size=8192, num_features=NUM_FEATURES):
     """Load point cloud, split into blocks, and save to files"""
     print(f"Loading point cloud: {point_cloud_path}")
     points = np.loadtxt(point_cloud_path)
     
     # Validate input format    
-    print("Calculating 10D features: geo(4) + RGB(3) + spatial(3)...")
+    print(f"Calculating {num_features}D features: geo(4) + RGB(3) + spatial(3)...")
     features = extract_features_from_room_data(points, normalize_colors=True)
     coords = points[:, :3]
     
     # extract_features_from_room_data already returns correct order: geo(4) + RGB(3) + spatial(3)    
     # Validate feature dimensions
-    if features.shape[1] != NUM_FEATURES:
-        raise ValueError(f"Feature dimension mismatch! Expected {NUM_FEATURES}D, got {features.shape[1]}D")
+    if features.shape[1] != num_features:
+        raise ValueError(f"Feature dimension mismatch! Expected {num_features}D, got {features.shape[1]}D")
     
     print(f"Feature validation passed: {features.shape[1]}D features")
     
@@ -152,6 +152,8 @@ def run_inference_on_blocks(model, block_files, device):
 def parse_arguments():
     parser = argparse.ArgumentParser(description='PointEdgeSegNet Inference')
     
+    parser.add_argument('--config', '-c', default=DEFAULT_CONFIG_PATH,
+                       help='Path to model configuration JSON file')
     parser.add_argument('--model_weights', '-m', default=DEFAULT_MODEL_WEIGHTS_PATH,
                        help='Path to model weights (.pth)')
     parser.add_argument('--input_cloud', '-i', default=DEFAULT_TEST_POINT_CLOUD_PATH,
@@ -168,6 +170,15 @@ def main():
     # Parse command line arguments
     args = parse_arguments()
     
+    # Load model configuration
+    print(f"Loading configuration from: {args.config}")
+    config = load_model_config(args.config)
+    NUM_CLASSES = config['num_classes']
+    class_colors = get_class_colors(as_numpy=True) / 255.0
+    
+    print(f"Dataset: {config.get('dataset_name', 'Custom')}")
+    print(f"Number of classes: {NUM_CLASSES}")
+    
     # Print configuration
     print("PointEdgeSegNet Inference")
     print(f"Model weights: {args.model_weights}")
@@ -180,7 +191,7 @@ def main():
     print(f"Using device: {device}")
     
     model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES)
-    model.load_state_dict(torch.load(args.model_weights, map_location=device))
+    model.load_state_dict(torch.load(args.model_weights, map_location=device, weights_only=False))
     model = model.to(device)
     model.eval()
     print("Model loaded successfully!")

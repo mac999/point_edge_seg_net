@@ -18,7 +18,11 @@ from data_processing import (
     apply_torch_color_augmentation, 
     apply_torch_enhanced_color_augmentation,
     CLASS_NAMES,
-    extract_features_from_room_data
+    extract_features_from_room_data,
+    load_model_config,
+    get_model_config,
+    get_class_colors,
+    get_class_weights
 )
 from torch.cuda.amp import autocast, GradScaler
 
@@ -50,9 +54,8 @@ BATCH_SIZE = 14  # Increased from 16 for better gradient estimation
 VAL_BATCH_SIZE = 18
 LEARNING_RATE = 0.003  # Increased from 0.002 for faster learning
 NUM_FEATURES = 10  # Training: normals(3) + curvature(1) + RGB(3) + spatial(3)
-NUM_CLASSES = 13
+NUM_CLASSES = 13  # Default for S3DIS, will be overridden by config in main()
 BLOCK_SIZE = 8192  # Number of points per block. TBD
-block_grid_min_coords = np.array([-50.0, 0.0, 0.0])  # base point for normalization
 
 # Settings for validation loss stabilization
 GRADIENT_CLIP_VALUE = 8.0  # Gradient clipping (increased for better learning)
@@ -271,17 +274,15 @@ def preprocess_dataset():
 				features = data.x.numpy() 
 				labels = data.y.numpy()
 				
-				# Grid Hash spatial partitioning with coordinate range adjustment
-				# S3DIS coordinates: X: -15.609~-15.331, Y: 37.738~39.569, Z: 0.299~2.657
-				grid_resolution = 0.5  # Resolution for narrow coordinate ranges
+				# Load preprocessing parameters from config
+				config = get_model_config()
+				preprocessing = config.get('preprocessing', {})
+				grid_min_coords = np.array(preprocessing.get('grid_min_coords', [0.0, 0.0, 0.0]))
+				grid_resolution = preprocessing.get('grid_resolution', 1.0)
 				
 				# Normalize coordinates to handle negative values and optimize grid distribution
-				normalized_points = points - block_grid_min_coords
+				normalized_points = points - grid_min_coords
 				grid_coords = np.floor(normalized_points / grid_resolution).astype(np.int32)
-				
-				# Ensure all grid coordinates are non-negative
-				grid_coords = np.maximum(grid_coords, 0)
-				
 				grid_hashes = (grid_coords[:, 0] * 73856093) ^ (grid_coords[:, 1] * 19349663) ^ (grid_coords[:, 2] * 83492791)  # Hash function using large prime numbers for 3D spatial hashing
 				unique_hashes, inverse_indices = np.unique(grid_hashes, return_inverse=True)
 				
@@ -504,36 +505,12 @@ if len(train_loader) == 0:
 if len(val_loader) == 0:
 	raise ValueError("Validation loader is empty! Check your data files.")
 
-model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES).to(device)
-optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)  # ✅ 0.005 → 0.01
-
-# Per-class weights for Focal Loss (near-uniform with slight rare class boost)
-# Strategy: Minimal intervention, let Focal Loss handle imbalance naturally
-class_weights = torch.tensor([
-	0.7,  # 0: ceiling (important structural element)
-	0.7,  # 1: floor (important structural element)
-	0.7,  # 2: wall (important structural element)
-	0.8,  # 3: beam
-	0.9,  # 4: column (rare - 2.39%, needs boost)
-	0.85, # 5: window
-	0.9,  # 6: door (rare - 11.81%, needs boost)
-	0.75, # 7: table
-	0.75, # 8: chair
-	0.9,  # 9: sofa (rare - 36.13%, needs boost)
-	0.8,  # 10: bookcase
-	0.8,  # 11: board
-	0.75  # 12: clutter
-], device=device)
-
-# Use Focal Loss with minimal gamma (let class weights do the work)
-criterion = FocalLoss(class_weights=class_weights, gamma=1.5, ignore_index=-1)  # Reduced gamma 2.0 -> 1.5
-
-# More conservative learning rate scheduler
-scheduler = optim.lr_scheduler.CosineAnnealingLR(
-    optimizer, T_max=NUM_EPOCHS*2, eta_min=5e-4  # Slower decay, higher minimum LR
-)
-
-scaler = GradScaler()
+# Model, optimizer, criterion, scaler will be created in run_training() after config load
+# Declared as global to be accessed by train() and validate() functions
+model = None
+optimizer = None
+criterion = None
+scaler = None
 
 def train(epoch):
 	model.train()
@@ -781,6 +758,8 @@ def validate(loader):
 	return avg_loss, accuracy
 
 def run_training(args=None):
+	global model, optimizer, criterion, scaler  # Access global variables
+	
 	# Add freeze_support for Windows multiprocessing support
 	import multiprocessing
 	multiprocessing.freeze_support()
@@ -789,9 +768,30 @@ def run_training(args=None):
 	log_dir, csv_log_path = setup_logging()
 	print(f"Logging to directory: {log_dir}")
 	
+	# Load configuration and create model/optimizer/criterion (after config is loaded in main)
+	config = get_model_config()
+	print(f"\nInitializing model with {NUM_CLASSES} classes, {NUM_FEATURES} features...")
+	
+	# Create model
+	model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES).to(device)
+	optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
+	
+	# Load class weights from configuration
+	class_weights = get_class_weights(as_tensor=True, device=device)
+	criterion = FocalLoss(class_weights=class_weights, gamma=1.5, ignore_index=-1)
+	
+	# Initialize GradScaler for mixed precision
+	scaler = GradScaler()
+	
+	# Learning rate scheduler
+	scheduler = optim.lr_scheduler.CosineAnnealingLR(
+	    optimizer, T_max=NUM_EPOCHS*2, eta_min=5e-4
+	)
+	
 	# Initialize wandb (online mode for cloud sync)
+	dataset_name = config.get('dataset_name', 'custom').lower().replace('_', '-')
 	wandb.init(
-		project="pointedge-s3dis",
+		project=f"pointedge-{dataset_name}",
 		name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
 		config={
 			"learning_rate": LEARNING_RATE,
@@ -944,10 +944,10 @@ def test_model(model_path):
 	print(f"\nTesting Model on {TEST_AREA}")
 	print(f"Loading model from: {model_path}")
 	
-	# Load trained model
+	# Load trained model (create model using current NUM_CLASSES)
 	try:
 		model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES).to(device)
-		model.load_state_dict(torch.load(model_path, map_location=device))
+		model.load_state_dict(torch.load(model_path, map_location=device, weights_only=False))
 		model.eval()
 		print("Model loaded successfully")
 	except Exception as e:
@@ -966,10 +966,8 @@ def test_model(model_path):
 	test_dataset = BlockDataset(test_block_files, augment=False)
 	test_loader = DataLoader(test_dataset, batch_size=VAL_BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
 	
-	# Test metrics - use same class weights as training
-	class_weights = torch.tensor([
-		0.1, 0.1, 0.1, 0.5, 0.9, 0.7, 0.8, 0.4, 0.4, 0.8, 0.5, 0.6, 0.5
-	], device=device)
+	# Test metrics - load class weights from configuration
+	class_weights = get_class_weights(as_tensor=True, device=device)
 	criterion_test = FocalLoss(class_weights=class_weights, gamma=2.5, ignore_index=-1)
 	correct_nodes, total_nodes, total_loss = 0, 0, 0.0
 	valid_batches = 0
@@ -1090,6 +1088,7 @@ def main():
 	global NUM_EPOCHS, BATCH_SIZE, VAL_BATCH_SIZE, LEARNING_RATE, NUM_FEATURES, NUM_CLASSES, BLOCK_SIZE
 	
 	parser = argparse.ArgumentParser(description='PointEdgeSegNet Training')
+	parser.add_argument('--config', type=str, default='model_params.json', help='Path to model configuration JSON file')
 	parser.add_argument('--processed_data_path', default=PROCESSED_DATA_PATH, help='Processed data path')
 	parser.add_argument('--block_data_path', default=BLOCK_DATA_PATH, help='Block data storage path')
 	parser.add_argument('--train_areas', nargs='+', default=TRAIN_AREAS, help='Training areas')
@@ -1099,11 +1098,33 @@ def main():
 	parser.add_argument('--val_batch_size', type=int, default=VAL_BATCH_SIZE, help='Validation batch size')
 	parser.add_argument('--learning_rate', type=float, default=LEARNING_RATE, help='Learning rate')
 	parser.add_argument('--num_features', type=int, default=NUM_FEATURES, help='Number of features')
-	parser.add_argument('--num_classes', type=int, default=NUM_CLASSES, help='Number of classes')
+	parser.add_argument('--num_classes', type=int, default=13, help='Number of classes (default: 13 for S3DIS)')
 	parser.add_argument('--block_size', type=int, default=BLOCK_SIZE, help='Block size')
 	parser.add_argument('--diagnose', type=bool, default=False, help='Enable KPI monitoring and diagnostics')
 	parser.add_argument('--test_model_path', type=str, default='', help='Path to trained model for testing') # D:\\projects\\point_edge_seg_net\\logs\\20260107_080233\\best_model.pth
 	args = parser.parse_args()
+	
+	# Load model configuration from JSON file
+	try:
+		print(f"Loading model configuration from: {args.config}")
+		config = load_model_config(args.config)
+		
+		# Override with config file values if not explicitly provided via command line
+		# Check if user provided explicit command line values
+		import sys
+		if '--num_classes' not in sys.argv and 'num_classes' in config:
+			args.num_classes = config['num_classes']
+		if '--num_features' not in sys.argv and 'num_features' in config:
+			args.num_features = config['num_features']
+		if '--block_size' not in sys.argv and 'block_size' in config:
+			args.block_size = config['block_size']
+			
+		print(f"Dataset: {config.get('dataset_name', 'Custom')}")
+		print(f"Classes: {config['class_names']}")
+		
+	except Exception as e:
+		print(f"Warning: Could not load config file: {e}")
+		print("Using default configuration...")
 	
 	# Update global variables
 	PROCESSED_DATA_PATH = args.processed_data_path
