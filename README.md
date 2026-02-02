@@ -35,7 +35,6 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 - 0.9: 2026/2/1. Support custom train dataset with classes of points. Please refer to [model_params.json](https://github.com/mac999/point_edge_seg_net/blob/main/model_params.json).
 
 The below is ToDo list:
-- **Customization**: Customization about classes, features and LiDAR point cloud train example etc
 - **Utilize Normalized Coordinates**: Verify that normalized XYZ coordinates (relative to the room's origin or center) are included as input features.
 
 For Optimization Strategy under 24GB VRAM Constraints, To address boundary artifacts and class imbalance without hardware upgrades for Area 5 test accuracy, considering the below strategies:
@@ -579,4 +578,5 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
