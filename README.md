@@ -32,6 +32,7 @@ The model combines the effectiveness of EdgeConv for capturing local geometric r
 - 0.7: 2025/12/30. Integrate Attention Mechanism, Focal Loss, Area 5 test
 - 0.8: 2026/1/17. Update source code and [model file](https://github.com/mac999/point_edge_seg_net/tree/main/logs/20260113_231712).
 <p align="center"> <img src="https://github.com/mac999/point_edge_seg_net/blob/main/imgs/img12.png" height="150"></img></br></p>
+- 0.9: 2026/2/1. Support custom train dataset with classes of points. Please refer to [model_params.json](https://github.com/mac999/point_edge_seg_net/blob/main/model_params.json).
 
 The below is ToDo list:
 - **Customization**: Customization about classes, features and LiDAR point cloud train example etc
@@ -578,3 +579,4 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
