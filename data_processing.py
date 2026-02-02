@@ -8,18 +8,136 @@ import numpy as np
 import torch
 import open3d as o3d
 import random
-from typing import Tuple, Optional, Union
+import json
+import os
+from typing import Tuple, Optional, Union, Dict
 
 # Configuration constants
 DEFAULT_KNN = 15
 DEFAULT_FAST_NORMAL = True
 EPSILON = 1e-9
 
-# Class name and integer label mapping (shared across modules)
-CLASS_NAMES = [
+# Default class names (used when no config file is provided)
+_DEFAULT_CLASS_NAMES = [
     'ceiling', 'floor', 'wall', 'beam', 'column', 'window', 'door',
     'table', 'chair', 'sofa', 'bookcase', 'board', 'clutter'
 ]
+
+# Global configuration (will be loaded from model_params.json)
+_MODEL_CONFIG = None
+CLASS_NAMES = _DEFAULT_CLASS_NAMES.copy()
+
+def load_model_config(config_path: str = 'model_params.json') -> Dict:
+    """
+    Load model configuration from JSON file.
+    
+    Args:
+        config_path: Path to model_params.json file
+        
+    Returns:
+        config: Dictionary containing model parameters
+    """
+    global _MODEL_CONFIG, CLASS_NAMES
+    
+    if not os.path.exists(config_path):
+        print(f"Warning: Config file '{config_path}' not found. Using default S3DIS configuration.")
+        _MODEL_CONFIG = {
+            'dataset_name': 'S3DIS',
+            'num_classes': 13,
+            'class_names': _DEFAULT_CLASS_NAMES,
+            'class_colors': [[230, 25, 75], [60, 180, 75], [255, 225, 25], [0, 130, 200],
+                           [245, 130, 48], [145, 30, 180], [70, 240, 240], [240, 50, 230],
+                           [210, 245, 60], [250, 190, 212], [0, 128, 128], [220, 190, 255],
+                           [170, 110, 40]],
+            'num_features': 10,
+            'block_size': 8192
+        }
+        CLASS_NAMES = _MODEL_CONFIG['class_names']
+        return _MODEL_CONFIG
+    
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            _MODEL_CONFIG = json.load(f)
+        
+        # Validate required fields
+        required_fields = ['num_classes', 'class_names']
+        for field in required_fields:
+            if field not in _MODEL_CONFIG:
+                raise ValueError(f"Missing required field '{field}' in config file")
+        
+        # Update global CLASS_NAMES
+        CLASS_NAMES = _MODEL_CONFIG['class_names']
+        
+        # Validate consistency
+        if len(CLASS_NAMES) != _MODEL_CONFIG['num_classes']:
+            raise ValueError(f"Number of class names ({len(CLASS_NAMES)}) doesn't match num_classes ({_MODEL_CONFIG['num_classes']})")
+        
+        print(f"Loaded configuration for '{_MODEL_CONFIG.get('dataset_name', 'Unknown')}' dataset")
+        print(f"Number of classes: {_MODEL_CONFIG['num_classes']}")
+        
+        return _MODEL_CONFIG
+        
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON format in '{config_path}': {e}")
+        raise
+    except Exception as e:
+        print(f"Error loading config file '{config_path}': {e}")
+        raise
+
+def get_model_config() -> Dict:
+    """
+    Get current model configuration. Loads default if not already loaded.
+    
+    Returns:
+        config: Dictionary containing model parameters
+    """
+    global _MODEL_CONFIG
+    if _MODEL_CONFIG is None:
+        load_model_config()
+    return _MODEL_CONFIG
+
+def get_class_colors(as_numpy: bool = True) -> Union[list, np.ndarray]:
+    """
+    Get class colors from configuration.
+    
+    Args:
+        as_numpy: If True, return as numpy array, otherwise as list
+        
+    Returns:
+        colors: Class colors (num_classes, 3) in RGB format [0-255]
+    """
+    config = get_model_config()
+    colors = config.get('class_colors', [])
+    
+    if not colors:
+        # Generate random colors if not defined
+        num_classes = config['num_classes']
+        colors = [[random.randint(0, 255) for _ in range(3)] for _ in range(num_classes)]
+    
+    return np.array(colors) if as_numpy else colors
+
+def get_class_weights(as_tensor: bool = False, device: str = 'cpu') -> Union[list, 'torch.Tensor']:
+    """
+    Get class weights from configuration for handling class imbalance.
+    
+    Args:
+        as_tensor: If True, return as torch.Tensor, otherwise as list
+        device: Device for tensor ('cpu' or 'cuda')
+        
+    Returns:
+        weights: Class weights (num_classes,)
+    """
+    config = get_model_config()
+    weights = config.get('class_weights', [])
+    
+    if not weights:
+        # Use uniform weights if not defined
+        num_classes = config['num_classes']
+        weights = [1.0] * num_classes
+    
+    if as_tensor:
+        return torch.tensor(weights, dtype=torch.float32, device=device)
+    return weights
 
 def rgb_to_hsv(rgb: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
     """Convert RGB to HSV color space for illumination invariance."""
