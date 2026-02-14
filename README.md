@@ -277,7 +277,7 @@ The S3DIS dataset is not uniform. Each of the 6 areas, sourced from 3 different 
 | **Area 2** | Building 2 | Lounge, hallways, offices | Similar to Area 1, but with a potentially higher proportion of `sofa`. |
 | **Area 3** | Building 1 | Open spaces, hallways, restrooms | Dominated by structural elements (`wall`, `floor`, `ceiling`); sparse furniture. |
 | **Area 4** | Building 2 | Offices, hallways, storage areas | Similar characteristics to other office-centric areas. |
-| **Area 5** | Building 3 | Auditorium, lobby, offices, hallways | The most diverse area; likely the largest point cloud. High `chair` count due to the auditorium. Frequently used as a test set. |
+| **Area 5** | Building 3 | Auditorium, lobby, offices, hallways | The most diverse area; likely the largest point cloud. In example, high chair count due to the auditorium. Frequently used as a test set. |
 | **Area 6** | Building 1 | Hallways, offices, pantry | Office-centric distribution, similar to Area 1. |
 
 #### Pros
@@ -580,6 +580,7 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
+
 
 
 
