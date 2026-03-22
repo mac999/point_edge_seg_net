@@ -67,6 +67,7 @@ The following items already apply in 24GB VRAM.
 - Support for S3DIS dataset preprocessing and training
 - Inference with 3D visualization of Large-scale point cloud file
 - Comprehensive logging and model checkpointing
+- Converting 3D model file (IFC) to 3D point cloud file (LAS) to develop train dataset. 
 
 ## Performance Log
 
