@@ -195,6 +195,63 @@ python inference.py --config model_params_custom.json \
     --input_cloud ./data/custom_scene.txt
 ```
 
+### Public Datasets for Infrastructure & Urban Point Clouds
+
+Below is a curated list of **publicly available, labeled point cloud datasets** for outdoor / infrastructure domains (bridge, tunnel, railway, earthwork/utilities, urban and aerial scenes). Because PointEdgeSegNet reads a configurable input format (`input` / `features` blocks in `model_params.json`: enable/disable RGB, set `spatial_scale`, map input columns), these datasets can be adapted for training after converting them to the `X Y Z [R G B ...]` text/array format the preprocessor expects. Most are distributed as **LAS/PLY**, so a one-time conversion (e.g. with `laspy`, `open3d`, or `PDAL`) is usually required, and `spatial_scale` should be tuned to each domain's point spacing (indoor ≈ 0.1 m, bridge/tunnel ≈ 0.3–1 m, aerial/terrain ≈ 1–10 m).
+
+> Always check each dataset's own **license / terms of use** before training or redistribution. Several require a short data-request form.
+
+| Domain | Dataset | Description (sensor · scale · classes) | Format | Access / Download |
+|--------|---------|----------------------------------------|--------|-------------------|
+| **Bridge** | SemanticBridge | TLS + MLS scans of **20 bridges** (UK & Germany), ~245M points, **9 classes** (abutment, superstructure, deck, pillar, railing, vegetation, ground, sign, unlabeled); includes sensor domain-gap analysis | PLY/LAS | [GitHub](https://github.com/mvg-inatech/3d_bridge_segmentation) · [paper](https://arxiv.org/abs/2512.15369) |
+| **Bridge** | BrPCD (Bridge Point Cloud Databank) | Multi-type bridge databank, **98 bridges** (10 real-scanned + 88 augmented/virtual), 2,827 labeled components; suspension / cable-stayed / girder types | PCD | [paper (Google Drive link inside)](https://onlinelibrary.wiley.com/doi/10.1111/mice.13384) |
+| **Tunnel** | STSD (Subway Tunnel Seg. Dataset) | rMMS mobile LiDAR, **>2.26B points** over 2,700 m, **12 classes**, 3 tunnel shapes; point clouds + projected images | LAS (+images) | [GitHub](https://github.com/lichking2017/STSD) (data-request form; GPL-3.0) |
+| **Tunnel** | Seg2Tunnel | Segmental tunnel-lining point clouds from **5 tunnels / 1,300 rings**, hierarchical (ring / block / component) annotations | LAS/PLY | [paper](https://www.sciencedirect.com/science/article/abs/pii/S0886779824001536) (data on request) |
+| **Railway** | WHU-Railway3D | Mobile LiDAR, **~4.6B points** over ~30 km (urban/rural/plateau), **11 classes** (rails, masts, overhead lines, fences, …); includes intensity, scan angle, returns | PLY + `.npy` labels | [GitHub](https://github.com/WHU-USI3DV/WHU-Railway3D) (data-request form) |
+| **Earthwork / Utilities** | OpenTrench3D | Open-trench underground-utility scans, **310 clouds / 528M points**, **5 classes** (utilities, surroundings, …); first public trench dataset (CVPRW 2024) | PLY | [GitHub](https://github.com/SimonBuusJensen/OpenTrench3D) |
+| **Urban (MLS)** | Toronto-3D | Mobile LiDAR of ~1 km urban roadway, **78.3M points**, **8 classes** (road, marking, natural, building, utility line, pole, car, fence); XYZ+RGB+intensity | LAS/PLY | [GitHub](https://github.com/WeikaiTan/Toronto-3D) (CC BY-NC 4.0) |
+| **Urban (UAV)** | SensatUrban | UAV photogrammetry of UK cities, **~3B points** over ~6 km², **13 classes** | PLY | [GitHub](https://github.com/QingyongHu/SensatUrban) (form; MIT code) |
+| **Aerial (ALS)** | DALES | Airborne LiDAR, **>0.5B points** over 10 km² (40 scenes), **8 classes** (ground, vegetation, cars, trucks, poles, power lines, fences, buildings) | multiple (PLY/LAS/…) | [Project page](https://sites.google.com/a/udayton.edu/vasari1/research/earth-vision/dales) · [paper](https://arxiv.org/abs/2004.11985) |
+| **Aerial (photogrammetry)** | STPLS3D | Real + synthetic aerial photogrammetry, **>17 km²**, up to **18 classes**, 0.1 m spacing; includes terrain/ground | PLY | [Website](https://www.stpls3d.com/data) · [GitHub](https://github.com/meidachen/STPLS3D) |
+
+Notes:
+- **Indoor reference:** the default configuration targets **S3DIS** (indoor), described below.
+- **Roads / driving** (not infrastructure-specific but widely used): [SemanticKITTI](http://semantic-kitti.org/), [Paris-Lille-3D](https://npm3d.fr/paris-lille-3d), and [nuScenes-lidarseg](https://www.nuscenes.org/nuscenes) provide additional large-scale urban/road point clouds.
+- After conversion, set the appropriate `num_classes`, `class_names`, `class_colors`, `input.rgb_cols` (or `use_rgb: false` for colorless LiDAR), and `features.spatial_scale` in `model_params.json` (see [model_params_example_terrain.json](model_params_example_terrain.json) for a colorless, large-scale example).
+
+#### Converting a dataset to this repo's format
+
+Use [convert_dataset.py](convert_dataset.py) to turn a downloaded dataset into the processed `.pt` format the training pipeline consumes (same `Data(pos, x, y)` objects as the S3DIS preprocessor). It reads **PLY / LAS / TXT / paired-NPY**, remaps each dataset's class ids, extracts the configured features, writes `processed_<name>/train|test/<scene>.pt`, and can emit a ready-to-use `model_params_<name>.json`.
+
+Built-in profiles (override any field from the CLI): `toronto3d`, `sensaturban`, `dales`, `stpls3d`, `opentrench3d`, `whu_railway3d`, `semanticbridge`.
+
+```bash
+# 0) install optional readers for the format you downloaded
+pip install plyfile        # .ply    (Toronto-3D, SensatUrban, OpenTrench3D, STPLS3D, DALES-ply)
+pip install laspy          # .las/.laz (DALES-las, some bridge/tunnel exports)
+
+# 1) inspect first (no files written): checks parsing, point counts, labeled ratio
+python convert_dataset.py --dataset opentrench3d --input_dir ./raw/OpenTrench3D --dry_run
+
+# 2) convert + emit a matching config
+python convert_dataset.py --dataset opentrench3d --input_dir ./raw/OpenTrench3D \
+    --output_dir ./processed_opentrench3d --emit_config
+
+# 3) train with the generated config
+python train_model.py --config model_params_opentrench3d.json \
+    --processed_data_path ./processed_opentrench3d --train_areas train --test_area test \
+    --block_mode column --no_wandb --cooldown_sec 0
+
+# Colorless aerial LiDAR that ships pre-split into train/ and test/ folders (e.g. DALES):
+python convert_dataset.py --dataset dales --input_dir ./raw/DALES/train --split train --no_rgb --emit_config
+python convert_dataset.py --dataset dales --input_dir ./raw/DALES/test  --split test  --no_rgb
+```
+
+Notes on the converter:
+- `.ply`/`.las` field names differ between download versions — override with `--label_field`, force color with `--rgb`/`--no_rgb`, and tune the analysis scale with `--spatial_scale`.
+- Large-coordinate clouds (UTM, e.g. Toronto-3D) are auto-translated to a local origin to avoid float32 precision loss (disable with `--no_recenter`).
+- Very large scenes (hundreds of millions of points) should be tiled before conversion, since normal/curvature/spatial features are computed per file.
+
 ### Stanford 3D Indoor Spaces Dataset (S3DIS)
 
 1. Download the S3DIS dataset from [Stanford Vision Lab](https://cvgl.stanford.edu/resources.html) and [point cloud storage](https://sdss.redivis.com/datasets/9q3m-9w5pa1a2h/files)

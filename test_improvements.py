@@ -162,5 +162,42 @@ except AssertionError:
     raised = True
 check("mismatched feature_dims vs num_features raises", raised)
 
+print("\n[8] convert_dataset: label remap + build_arrays + config emit (no torch_geometric)")
+import convert_dataset as cv
+
+# label remap: source ids 1..3 -> 0..2, 0 ignored
+lab = np.array([0, 1, 2, 3, 1, 0], dtype=np.int64)
+r = cv.remap_labels(lab, label_map={1: 0, 2: 1, 3: 2}, ignore={0})
+check("remap maps ids and ignores 0 -> -1", r.tolist() == [-1, 0, 1, 2, 0, -1], f"(got {r.tolist()})")
+r2 = cv.remap_labels(np.array([255, 0, 5], dtype=np.int64), label_map=None, ignore={255})
+check("identity remap with ignore sentinel", r2.tolist() == [-1, 0, 5], f"(got {r2.tolist()})")
+
+# build_arrays with RGB (toronto3d-like) -> 10D; recenter shifts min to 0
+xyz = np.random.rand(1200, 3) * 3 + np.array([627285.0, 4841948.0, 10.0])  # UTM-like offset
+rgb = (np.random.rand(1200, 3) * 255)
+labels = np.random.randint(0, 8, 1200)
+spec_rgb = cv.build_spec(cv.PROFILES["toronto3d"])
+feats, pos, y = cv.build_arrays(xyz, rgb, labels, spec_rgb, recenter=True)
+check("build_arrays(rgb) -> 10D features", feats.shape == (1200, 10), f"(got {feats.shape})")
+check("pos and y aligned to points", pos.shape == (1200, 3) and y.shape == (1200,))
+check("recenter translates min to ~0", float(np.abs(pos.min(axis=0)).max()) < 1e-3)
+
+# build_arrays without RGB (dales-like) -> 7D, colorless input (3 cols)
+spec_norgb = cv.build_spec(cv.PROFILES["dales"])
+feats2, pos2, y2 = cv.build_arrays(np.random.rand(1000, 3) * 50, None, np.random.randint(0, 8, 1000), spec_norgb)
+check("build_arrays(no rgb) -> 7D features", feats2.shape == (1000, 7), f"(got {feats2.shape})")
+
+# emit config -> valid json with matching dims
+import json as _json, tempfile
+cfg_path = os.path.join(os.environ.get("TEMP", "."), "model_params_opentrench3d_test.json")
+cv.emit_model_params("opentrench3d", cv.PROFILES["opentrench3d"], cv.build_spec(cv.PROFILES["opentrench3d"]), cfg_path)
+cfg = _json.load(open(cfg_path))
+check("emitted config: 5 classes, 10D (rgb)", cfg["num_classes"] == 5 and cfg["num_features"] == 10)
+check("emitted config: rgb_cols set", cfg["input"]["rgb_cols"] == [3, 4, 5])
+cfg_d = os.path.join(os.environ.get("TEMP", "."), "model_params_dales_test.json")
+cv.emit_model_params("dales", cv.PROFILES["dales"], cv.build_spec(cv.PROFILES["dales"]), cfg_d)
+cfgd = _json.load(open(cfg_d))
+check("emitted DALES config: 8 classes, 7D, no rgb", cfgd["num_classes"] == 8 and cfgd["num_features"] == 7 and cfgd["input"]["rgb_cols"] is None)
+
 print(f"\n==== SMOKE TEST RESULT: {PASS} passed, {FAIL} failed ====")
 sys.exit(1 if FAIL else 0)
