@@ -4,10 +4,9 @@
 # Purpose: Trains and validates the PointEdgeSegNet model.
 # Dependencies: torch, torch_geometric, matplotlib, scikit-learn, tqdm
 
-import os, torch, torch.optim as optim, json, csv, argparse, time, numpy as np, random, wandb
+import os, torch, torch.optim as optim, json, csv, argparse, time, numpy as np, random
 import torch.nn as nn, torch.nn.functional as F, matplotlib.pyplot as plt, gc
 from torch_geometric.loader import DataLoader
-from dotenv import load_dotenv
 from glob import glob
 from model import PointEdgeSegNet
 from tqdm import tqdm
@@ -15,8 +14,12 @@ from sklearn.model_selection import train_test_split
 from datetime import datetime
 from diagnose_kpi_grad import monitor_kpi
 from data_processing import (
-    apply_torch_color_augmentation, 
+    apply_torch_color_augmentation,
     apply_torch_enhanced_color_augmentation,
+    augment_training_block,
+    partition_columns,
+    spatial_split_is_val,
+    resolve_feature_config,
     CLASS_NAMES,
     extract_features_from_room_data,
     load_model_config,
@@ -26,10 +29,26 @@ from data_processing import (
 )
 from torch.cuda.amp import autocast, GradScaler
 
-# Load wandb API key from .env file (single line)
-load_dotenv(os.path.join('logs', '.env'))
+# wandb is optional. Training must not hard-fail when it is not installed or the
+# user is offline / not logged in. Gated by USE_WANDB (set from --no_wandb in main()).
+try:
+    import wandb
+    _WANDB_AVAILABLE = True
+except ImportError:
+    wandb = None
+    _WANDB_AVAILABLE = False
+USE_WANDB = False  # resolved in main(): _WANDB_AVAILABLE and not args.no_wandb
 
-random.seed(42)  
+# .env loading is optional (only needed for wandb API key)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join('logs', '.env'))
+except ImportError:
+    pass
+
+random.seed(42)
+np.random.seed(42)
+torch.manual_seed(42)
 
 # GPU optimization settings (optional)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -67,6 +86,32 @@ MAX_GRADIENT_NORM = 20.0     # Maximum gradient norm threshold (increased)
 
 # Gradient Accumulation settings (virtual batch size increase)
 ACCUMULATION_STEPS = 4  # Effective batch size: 14 × 4 = 56
+
+# Thermal cool-down for laptops/small GPUs. 0.0 disables all the throughput-killing
+# time.sleep() pauses that were previously hard-coded (10s every 200 batches, etc.).
+# Set >0 (e.g. 5.0) only if you actually need to protect a thermally-limited laptop.
+COOLDOWN_SEC = 0.0
+
+# Focal Loss focusing parameter. Previously train used 1.5 while test used 2.5, which
+# made the reported test loss incomparable to the training/val loss. Now shared.
+FOCAL_GAMMA = 2.0
+
+# Probability of dropping (zeroing) RGB per training block. >0 trains a model that
+# still works when the input point cloud has no color (the configurable-feature goal).
+RGB_DROPOUT_PROB = 0.0
+
+# Block partitioning strategy:
+#   'grid'   - legacy 0.5 m cubic-cell hashing (loses vertical context, drops sparse cells)
+#   'column' - overlapping full-height columns (preserves up/down/left/right context)
+# 'column' is recommended; kept non-default so existing block_s3dis/weights still work.
+BLOCK_MODE = 'grid'
+COLUMN_WINDOW = 1.5     # XY column side length (m)
+COLUMN_STRIDE = 0.75    # XY step between columns (m); 0.75 => 50% overlap
+
+# Feature layout (geo, rgb, spatial), resolved from model_params.json in main().
+# Default (4,3,3)=10D reproduces the original S3DIS model; other domains override it.
+FEATURE_DIMS = (4, 3, 3)
+NORMALS_PRESENT = True
 
 class FocalLoss(nn.Module):
 	"""Focal Loss with per-class weights for addressing class imbalance."""
@@ -345,8 +390,8 @@ def preprocess_dataset():
 						torch.save(block_data, os.path.join(BLOCK_DATA_PATH, block_filename))
 						block_counter += 1
 
-						if block_counter % 100 == 0: # Brief pause for GPU cooling
-							time.sleep(10.0)  
+						if COOLDOWN_SEC > 0 and block_counter % 100 == 0: # Optional pause for GPU cooling
+							time.sleep(COOLDOWN_SEC)
 		
 			except Exception as e:
 				print(f"Error processing file {pt_file}: {e}")
@@ -357,6 +402,70 @@ def preprocess_dataset():
 	print(f"Preprocessing completed in {preprocessing_time:.2f} seconds")
 	print(f"Total blocks created: {block_counter}")
 	print(f"Average time per block: {preprocessing_time/block_counter:.4f} seconds")
+	return block_counter
+
+def preprocess_dataset_columns():
+	"""
+	Spatial-context-preserving alternative to preprocess_dataset().
+
+	Splits each processed room into OVERLAPPING full-height columns via
+	partition_columns() instead of tiny cubic grid cells. Benefits:
+	  - vertical/side context preserved (walls, columns, doors seen whole),
+	  - no silent dropping of sparse regions (every point is covered),
+	  - room encoded in the filename ('block_<n>_<room>__<area>.pt') so the
+	    train/val split can be room-disjoint (see split_train_val()).
+
+	Enable with --block_mode column. Blocks are written to BLOCK_DATA_PATH exactly
+	like the grid path, so the rest of the pipeline is unchanged.
+	"""
+	from torch_geometric.data import Data
+	print("Starting COLUMN-mode dataset preprocessing (overlapping full-height columns)...")
+	if os.path.exists(BLOCK_DATA_PATH) and len(glob(os.path.join(BLOCK_DATA_PATH, '*.pt'))) > 0:
+		return
+	os.makedirs(BLOCK_DATA_PATH, exist_ok=True)
+
+	all_areas = TRAIN_AREAS + [TEST_AREA]
+	block_counter = 0
+	for area in tqdm(all_areas, desc="Processing areas"):
+		area_path = os.path.join(PROCESSED_DATA_PATH, area)
+		if not os.path.exists(area_path):
+			continue
+		pt_files = glob(os.path.join(area_path, '*.pt'))
+		for pt_file in tqdm(pt_files, desc=f"Processing {area} files", leave=False):
+			try:
+				data = torch.load(pt_file, weights_only=False)
+				points = data.pos.numpy()
+				features = data.x.numpy()
+				labels = data.y.numpy()
+				# sanitize room name for the filename (area token must stay last, after '__')
+				room = os.path.splitext(os.path.basename(pt_file))[0]
+				room = ''.join(c if (c.isalnum() or c in '-') else '-' for c in room)
+
+				blocks = partition_columns(points, block_size=BLOCK_SIZE,
+										   window=COLUMN_WINDOW, stride=COLUMN_STRIDE, seed=block_counter)
+				for idx, num_real in blocks:
+					block_x = torch.FloatTensor(features[idx])
+					block_pos = torch.FloatTensor(points[idx])
+					block_y = torch.LongTensor(labels[idx])
+					valid_mask = torch.ones(BLOCK_SIZE, dtype=torch.bool)
+					if num_real < BLOCK_SIZE:
+						block_y[num_real:] = -1        # ignore padded points in the loss
+						valid_mask[num_real:] = False
+					# Deterministic spatial train/val tag (no room labels needed). Blocks in
+					# the same coarse super-cell of the same source share a tag, so adjacent
+					# / overlapping blocks never split across train and val.
+					centroid_xy = points[idx[:num_real], :2].mean(axis=0)
+					is_val = spatial_split_is_val(room, centroid_xy, super_size=4.0, val_ratio=0.2, seed=42)
+					tag = 'val' if is_val else 'train'
+					block_data = Data(x=block_x, pos=block_pos, y=block_y,
+									  valid_mask=valid_mask, num_valid_points=num_real, area=area)
+					block_filename = f"block_{block_counter:012d}_{room}__{tag}__{area}.pt"
+					torch.save(block_data, os.path.join(BLOCK_DATA_PATH, block_filename))
+					block_counter += 1
+			except Exception as e:
+				print(f"Error processing file {pt_file}: {e}")
+				continue
+	print(f"Total column blocks created: {block_counter}")
 	return block_counter
 
 def validate_block_files(file_list):
@@ -396,11 +505,15 @@ def get_augment_prob_and_strength(epoch, max_epochs):
 	return 0.1, 0.2  # Almost no augmentation
 
 class BlockDataset(torch.utils.data.Dataset):
-	def __init__(self, file_list, augment=False, augment_prob=0.0, augment_strength=1.0):
+	def __init__(self, file_list, augment=False, augment_prob=0.0, augment_strength=1.0, rgb_dropout_prob=0.0,
+				 feature_dims=(4, 3, 3), normals_present=True):
 		self.file_list = file_list
 		self.augment = augment
 		self.augment_prob = augment_prob  # Probability of applying augmentation
 		self.augment_strength = augment_strength  # Strength of augmentation
+		self.rgb_dropout_prob = rgb_dropout_prob  # Prob. of zeroing RGB (RGB-free robustness)
+		self.feature_dims = feature_dims          # (geo, rgb, spatial) for augmentation offsets
+		self.normals_present = normals_present    # whether x[:,0:3] are normals (co-rotate)
 		self.error_count = 0
 		self.max_error_rate = 0.1  # Allow up to 10% error rate
 	
@@ -413,11 +526,20 @@ class BlockDataset(torch.utils.data.Dataset):
 			try:
 				data = torch.load(self.file_list[idx], weights_only=False)
 				if hasattr(data, 'x') and hasattr(data, 'pos') and hasattr(data, 'y'):
-					# Convert 10D storage format to 10D training format
-					# No conversion needed - use all features directly
 					# Format: geo(4) + RGB(3) + spatial(3) = 10D
-					
-					# No color augmentation for pure geometric+color learning
+					# On-the-fly geometric + color augmentation (was previously a no-op).
+					# Applied per-block with probability augment_prob; rotation about Z,
+					# jitter, scaling and RGB jitter/dropout. Rotation also rotates the
+					# stored normal vectors so geometry + features stay consistent.
+					if self.augment and self.augment_prob > 0 and random.random() < self.augment_prob:
+						data = augment_training_block(
+							data,
+							strength=self.augment_strength,
+							geo_dim=self.feature_dims[0],
+							rgb_dim=self.feature_dims[1],
+							normals_present=self.normals_present,
+							rgb_dropout_prob=self.rgb_dropout_prob,
+						)
 					return data
 				print(f"Invalid data structure in file {self.file_list[idx]}")
 				return None
@@ -446,71 +568,153 @@ def collate_fn(batch):
 	from torch_geometric.data import Batch
 	return Batch.from_data_list(valid_batch)
 
-# Data loader preparation
-# Run preprocessing if block data doesn't exist
-if not os.path.exists(BLOCK_DATA_PATH) or len(glob(os.path.join(BLOCK_DATA_PATH, '*.pt'))) == 0:
-	print("Block data not found. Running preprocessing...")
-	preprocess_dataset()
-
-# Separate block files by area
-all_block_files = glob(os.path.join(BLOCK_DATA_PATH, '*.pt'))
-train_block_files = []
+# Globals populated by build_dataloaders() and run_training().
+# IMPORTANT (v0.3 bug fix): dataset/loader construction used to run at *import time*,
+# i.e. BEFORE main() parsed --config / --block_data_path / --train_areas / --block_size
+# and overrode the globals. As a result those CLI/config options were silently ignored
+# (loaders were always built from the module defaults). Construction is now deferred to
+# build_dataloaders(), invoked from run_training() after main() has applied the config.
+train_loader = None
+val_loader = None
+train_dataset = None
+val_dataset = None
 test_block_files = []
-
-print("Categorizing block files by area...")
-for block_file in tqdm(all_block_files, desc="Categorizing blocks"):
-	filename = os.path.basename(block_file)
-	if TEST_AREA in filename:
-		test_block_files.append(block_file)
-	else:
-		# Blocks belonging to TRAIN_AREAS
-		for area in TRAIN_AREAS:
-			if area in filename:
-				train_block_files.append(block_file)
-				break
-
-# Split training blocks into 8:2 using train_test_split
-# Validate block files before using them
-# print("Validating training block files...")
-# train_block_files = validate_block_files(train_block_files)
-# print("Validating test block files...")
-# test_block_files = validate_block_files(test_block_files)
-
-# random.shuffle(train_block_files)
-# random.shuffle(test_block_files)
-# train_files = train_block_files
-# val_files = test_block_files 
-train_files, val_files = train_test_split(train_block_files, test_size=0.2, random_state=42)
-
-print(f"Total training blocks: {len(train_files)}")
-print(f"Total validation blocks: {len(val_files)}")
-print(f"Total test blocks: {len(test_block_files)}")
-print(f"Block size: {BLOCK_SIZE} points per block")
-
-train_dataset = BlockDataset(train_files, augment=True, augment_prob=0.5, augment_strength=0.5)  # Reduced
-val_dataset = BlockDataset(val_files, augment=False, augment_prob=0.0, augment_strength=0.0)
-
-# Apply collate_fn to DataLoader (set num_workers=0 to prevent Windows multiprocessing issues)
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, collate_fn=collate_fn)
-val_loader = DataLoader(val_dataset, batch_size=VAL_BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
-
-# DataLoader
-print(f"Training dataset size: {len(train_dataset)}")
-print(f"Validation dataset size: {len(val_dataset)}")
-print(f"Training batches: {len(train_loader)}")
-print(f"Validation batches: {len(val_loader)}")
-
-if len(train_loader) == 0:
-	raise ValueError("Training loader is empty! Check your data files.")
-if len(val_loader) == 0:
-	raise ValueError("Validation loader is empty! Check your data files.")
-
-# Model, optimizer, criterion, scaler will be created in run_training() after config load
-# Declared as global to be accessed by train() and validate() functions
 model = None
 optimizer = None
 criterion = None
 scaler = None
+
+def _split_tag(block_path):
+	"""Return 'train'/'val' if the block name carries an explicit spatial split tag.
+
+	Column-mode blocks are named 'block_<n>_<source>__<tag>__<area>.pt' where <tag> is a
+	deterministic *spatial* assignment (see data_processing.spatial_split_is_val). This
+	needs no room labelling and works even when a whole area is a single source file.
+	"""
+	name = os.path.splitext(os.path.basename(block_path))[0]
+	if '__val__' in name:
+		return 'val'
+	if '__train__' in name:
+		return 'train'
+	return None
+
+def _source_group_key(block_path):
+	"""Best-effort *source-file* group id (NOT a semantic room label).
+
+	This is simply the preprocessing source (an S3DIS room happens to map to one source
+	.pt). Used only as a fallback grouping when no spatial tag is present. Legacy
+	grid-mode blocks ('block_<n>_<area>.pt') carry no source id -> returns None.
+	"""
+	name = os.path.splitext(os.path.basename(block_path))[0]
+	if '__' in name:
+		parts = name.split('__', 1)[0].split('_', 2)   # block_<n>_<source>
+		if len(parts) == 3:
+			return parts[2]
+	return None
+
+def split_train_val(train_block_files, val_ratio=0.2, seed=42):
+	"""Leakage-controlled train/val split with graceful degradation.
+
+	Precedence:
+	  1. Explicit spatial tag in the filename ('__train__'/'__val__', written by the
+	     column preprocessor). This is coordinate-based, needs no room labels, and keeps
+	     adjacent/overlapping blocks together -> the correct general solution.
+	  2. Source-file grouping (hold out whole source clouds). Only meaningful when there
+	     are several sources; requires the input to actually be split into multiple files
+	     (e.g. S3DIS rooms) - which is NOT guaranteed for arbitrary datasets.
+	  3. Plain random block split (last resort; may leak context across train/val).
+
+	Note: this pipeline has no room *labels*. Random block-level splitting leaks context
+	because adjacent (and padded-duplicate) blocks land in both train and val, making val
+	accuracy optimistic (part of the val 90% vs Area5 test 80% gap).
+	"""
+	# 1) explicit spatial tags
+	tags = [_split_tag(f) for f in train_block_files]
+	if all(t is not None for t in tags) and any(t == 'val' for t in tags):
+		train_files = [f for f, t in zip(train_block_files, tags) if t == 'train']
+		val_files = [f for f, t in zip(train_block_files, tags) if t == 'val']
+		if train_files and val_files:
+			print(f"Spatial split: {len(train_files)} train / {len(val_files)} val blocks (super-cell holdout)")
+			return train_files, val_files
+
+	# 2) source-file group holdout
+	groups = {}
+	for f in train_block_files:
+		groups.setdefault(_source_group_key(f), []).append(f)
+	if None not in groups and len(groups) >= 5:
+		names = sorted(groups.keys())
+		rng = random.Random(seed)
+		rng.shuffle(names)
+		n_val = max(1, int(len(names) * val_ratio))
+		val_names = set(names[:n_val])
+		train_files, val_files = [], []
+		for g, files in groups.items():
+			(val_files if g in val_names else train_files).extend(files)
+		print(f"Source-group split: {len(names)-n_val} train / {n_val} val source clouds")
+		return train_files, val_files
+
+	# 3) random fallback
+	print("No spatial tag / insufficient source groups -> random block split (context leakage possible).")
+	return train_test_split(train_block_files, test_size=val_ratio, random_state=seed)
+
+def build_dataloaders(rgb_dropout_prob=0.0):
+	"""Build train/val datasets + loaders using the *current* global config.
+
+	Must be called after main() has applied CLI args / config, not at import time.
+	"""
+	global train_loader, val_loader, train_dataset, val_dataset, test_block_files
+
+	# Run preprocessing if block data doesn't exist
+	if not os.path.exists(BLOCK_DATA_PATH) or len(glob(os.path.join(BLOCK_DATA_PATH, '*.pt'))) == 0:
+		print(f"Block data not found. Running preprocessing (mode={BLOCK_MODE})...")
+		if BLOCK_MODE == 'column':
+			preprocess_dataset_columns()
+		else:
+			preprocess_dataset()
+
+	# Separate block files by area
+	all_block_files = glob(os.path.join(BLOCK_DATA_PATH, '*.pt'))
+	train_block_files = []
+	test_block_files = []
+
+	print("Categorizing block files by area...")
+	for block_file in tqdm(all_block_files, desc="Categorizing blocks"):
+		filename = os.path.basename(block_file)
+		if TEST_AREA in filename:
+			test_block_files.append(block_file)
+		else:
+			for area in TRAIN_AREAS:
+				if area in filename:
+					train_block_files.append(block_file)
+					break
+
+	# Room-disjoint (preferred) or random 8:2 split
+	train_files, val_files = split_train_val(train_block_files, val_ratio=0.2, seed=42)
+
+	print(f"Total training blocks: {len(train_files)}")
+	print(f"Total validation blocks: {len(val_files)}")
+	print(f"Total test blocks: {len(test_block_files)}")
+	print(f"Block size: {BLOCK_SIZE} points per block")
+
+	train_dataset = BlockDataset(train_files, augment=True, augment_prob=0.5, augment_strength=0.5,
+								 rgb_dropout_prob=rgb_dropout_prob,
+								 feature_dims=FEATURE_DIMS, normals_present=NORMALS_PRESENT)
+	val_dataset = BlockDataset(val_files, augment=False, augment_prob=0.0, augment_strength=0.0,
+								 feature_dims=FEATURE_DIMS, normals_present=NORMALS_PRESENT)
+
+	# num_workers=0 to prevent Windows multiprocessing issues
+	train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, collate_fn=collate_fn)
+	val_loader = DataLoader(val_dataset, batch_size=VAL_BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
+
+	print(f"Training dataset size: {len(train_dataset)}")
+	print(f"Validation dataset size: {len(val_dataset)}")
+	print(f"Training batches: {len(train_loader)}")
+	print(f"Validation batches: {len(val_loader)}")
+
+	if len(train_loader) == 0:
+		raise ValueError("Training loader is empty! Check your data files.")
+	if len(val_loader) == 0:
+		raise ValueError("Validation loader is empty! Check your data files.")
 
 def train(epoch):
 	model.train()
@@ -600,9 +804,9 @@ def train(epoch):
 				scaler.update()
 				optimizer.zero_grad()
 			
-			if batch_idx % 200 == 0:
-				time.sleep(10.0)
-			
+			if COOLDOWN_SEC > 0 and batch_idx % 200 == 0:
+				time.sleep(COOLDOWN_SEC)
+
 			total_loss += loss.item() * ACCUMULATION_STEPS  # Unscale for logging
 			
 			# Calculate accuracy (valid points only)
@@ -618,7 +822,7 @@ def train(epoch):
 					class_correct[cls] += (pred[cls_mask] == cls).sum().item()
 			
 			# Log feature gates to wandb (batch-level)
-			if hasattr(model, 'last_gates'):
+			if USE_WANDB and hasattr(model, 'last_gates'):
 				gates = model.last_gates
 				current_batch_acc = pred.eq(valid_y).sum().item() / valid_mask.sum().item()
 				wandb.log({
@@ -629,12 +833,11 @@ def train(epoch):
 					"batch/accuracy": current_batch_acc,
 				}, step=epoch * len(train_loader) + batch_idx)
 
-			# Memory cleanup every 10 batches to prevent accumulation
-			if batch_idx % 10 == 0:
+			# Periodic memory cleanup. empty_cache()+gc.collect() force a CUDA sync and
+			# are expensive; doing it every 10 batches throttled throughput badly. Every
+			# 100 batches is plenty to keep the allocator from fragmenting.
+			if batch_idx % 100 == 0:
 				torch.cuda.empty_cache()
-				# Force garbage collection for Python objects
-				import gc
-				gc.collect()
 			
 		except RuntimeError as e:
 			print(f"Runtime error at epoch {epoch}, batch {batch_idx}: {str(e)}")
@@ -767,41 +970,46 @@ def run_training(args=None):
 	# Log setup
 	log_dir, csv_log_path = setup_logging()
 	print(f"Logging to directory: {log_dir}")
-	
+
+	# Build datasets/loaders now that main() has applied CLI args + config (deferred
+	# from import time so --config / --block_data_path / --train_areas take effect).
+	build_dataloaders(rgb_dropout_prob=RGB_DROPOUT_PROB)
+
 	# Load configuration and create model/optimizer/criterion (after config is loaded in main)
 	config = get_model_config()
 	print(f"\nInitializing model with {NUM_CLASSES} classes, {NUM_FEATURES} features...")
-	
+
 	# Create model
-	model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES).to(device)
+	model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES, feature_dims=FEATURE_DIMS).to(device)
 	optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
-	
+
 	# Load class weights from configuration
 	class_weights = get_class_weights(as_tensor=True, device=device)
-	criterion = FocalLoss(class_weights=class_weights, gamma=1.5, ignore_index=-1)
-	
+	criterion = FocalLoss(class_weights=class_weights, gamma=FOCAL_GAMMA, ignore_index=-1)
+
 	# Initialize GradScaler for mixed precision
 	scaler = GradScaler()
-	
+
 	# Learning rate scheduler
 	scheduler = optim.lr_scheduler.CosineAnnealingLR(
 	    optimizer, T_max=NUM_EPOCHS*2, eta_min=5e-4
 	)
-	
-	# Initialize wandb (online mode for cloud sync)
-	dataset_name = config.get('dataset_name', 'custom').lower().replace('_', '-')
-	wandb.init(
-		project=f"pointedge-{dataset_name}",
-		name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-		config={
-			"learning_rate": LEARNING_RATE,
-			"batch_size": BATCH_SIZE,
-			"num_epochs": NUM_EPOCHS,
-			"num_features": NUM_FEATURES,
-			"block_size": BLOCK_SIZE,
-		}
-	)
-	wandb.watch(model, log="all", log_freq=100)
+
+	# Initialize wandb (online mode for cloud sync) - optional
+	if USE_WANDB:
+		dataset_name = config.get('dataset_name', 'custom').lower().replace('_', '-')
+		wandb.init(
+			project=f"pointedge-{dataset_name}",
+			name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+			config={
+				"learning_rate": LEARNING_RATE,
+				"batch_size": BATCH_SIZE,
+				"num_epochs": NUM_EPOCHS,
+				"num_features": NUM_FEATURES,
+				"block_size": BLOCK_SIZE,
+			}
+		)
+		wandb.watch(model, log="all", log_freq=100)
 	
 	# Initial GPU memory check
 	if torch.cuda.is_available():
@@ -891,22 +1099,24 @@ def run_training(args=None):
 				model_best_fname = os.path.join(log_dir, 'best_model.pth')
 				torch.save(model.state_dict(), model_best_fname)
 				torch.cuda.empty_cache()
-				time.sleep(2.0)  
+				if COOLDOWN_SEC > 0:
+					time.sleep(COOLDOWN_SEC)
 			
 			# Early stopping check
 			if early_stop_counter >= early_stop_patience:
 				print(f"Early stopping triggered! No improvement for {early_stop_patience} epochs.")
 				break
 			
-			wandb.log({
-				"epoch/train_loss": train_loss,
-				"epoch/train_acc": train_acc,
-				"epoch/val_loss": val_loss,
-				"epoch/val_acc": val_acc,
-				"epoch/loss_diff": val_loss - train_loss,
-				"epoch/acc_diff": train_acc - val_acc,
-				"epoch/lr": new_lr,
-			}, step=global_step)  # global_step
+			if USE_WANDB:
+				wandb.log({
+					"epoch/train_loss": train_loss,
+					"epoch/train_acc": train_acc,
+					"epoch/val_loss": val_loss,
+					"epoch/val_acc": val_acc,
+					"epoch/loss_diff": val_loss - train_loss,
+					"epoch/acc_diff": train_acc - val_acc,
+					"epoch/lr": new_lr,
+				}, step=global_step)  # global_step
 			
 			# Update epoch progress
 			epoch_pbar.set_postfix({
@@ -935,7 +1145,8 @@ def run_training(args=None):
 		print(f"Memory used during training: {final_memory - initial_memory:.1f}GB")
 	
 	# Finish wandb run
-	wandb.finish()
+	if USE_WANDB:
+		wandb.finish()
 
 	return model_best_fname
 
@@ -946,7 +1157,7 @@ def test_model(model_path):
 	
 	# Load trained model (create model using current NUM_CLASSES)
 	try:
-		model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES).to(device)
+		model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES, feature_dims=FEATURE_DIMS).to(device)
 		model.load_state_dict(torch.load(model_path, map_location=device, weights_only=False))
 		model.eval()
 		print("Model loaded successfully")
@@ -968,7 +1179,7 @@ def test_model(model_path):
 	
 	# Test metrics - load class weights from configuration
 	class_weights = get_class_weights(as_tensor=True, device=device)
-	criterion_test = FocalLoss(class_weights=class_weights, gamma=2.5, ignore_index=-1)
+	criterion_test = FocalLoss(class_weights=class_weights, gamma=FOCAL_GAMMA, ignore_index=-1)
 	correct_nodes, total_nodes, total_loss = 0, 0, 0.0
 	valid_batches = 0
 	
@@ -1086,7 +1297,9 @@ def test_model(model_path):
 def main():
 	global PROCESSED_DATA_PATH, BLOCK_DATA_PATH, TRAIN_AREAS, TEST_AREA
 	global NUM_EPOCHS, BATCH_SIZE, VAL_BATCH_SIZE, LEARNING_RATE, NUM_FEATURES, NUM_CLASSES, BLOCK_SIZE
-	
+	global USE_WANDB, COOLDOWN_SEC, FOCAL_GAMMA, RGB_DROPOUT_PROB, BLOCK_MODE
+	global FEATURE_DIMS, NORMALS_PRESENT
+
 	parser = argparse.ArgumentParser(description='PointEdgeSegNet Training')
 	parser.add_argument('--config', type=str, default='model_params.json', help='Path to model configuration JSON file')
 	parser.add_argument('--processed_data_path', default=PROCESSED_DATA_PATH, help='Processed data path')
@@ -1102,7 +1315,23 @@ def main():
 	parser.add_argument('--block_size', type=int, default=BLOCK_SIZE, help='Block size')
 	parser.add_argument('--diagnose', type=bool, default=False, help='Enable KPI monitoring and diagnostics')
 	parser.add_argument('--test_model_path', type=str, default='', help='Path to trained model for testing') # D:\\projects\\point_edge_seg_net\\logs\\20260107_080233\\best_model.pth
+	parser.add_argument('--no_wandb', action='store_true', help='Disable Weights & Biases logging')
+	parser.add_argument('--cooldown_sec', type=float, default=COOLDOWN_SEC, help='Thermal cool-down seconds (0 disables all sleeps)')
+	parser.add_argument('--focal_gamma', type=float, default=FOCAL_GAMMA, help='Focal Loss focusing parameter (shared by train/test)')
+	parser.add_argument('--rgb_dropout', type=float, default=RGB_DROPOUT_PROB, help='Prob. of zeroing RGB per block for RGB-free robustness')
+	parser.add_argument('--block_mode', type=str, default=BLOCK_MODE, choices=['grid', 'column'], help="Block partitioning: 'grid' (legacy) or 'column' (overlapping full-height, preserves context)")
 	args = parser.parse_args()
+
+	# Resolve runtime toggles
+	USE_WANDB = _WANDB_AVAILABLE and (not args.no_wandb)
+	if args.no_wandb:
+		print("wandb disabled by --no_wandb")
+	elif not _WANDB_AVAILABLE:
+		print("wandb not installed -> logging disabled (pip install wandb to enable)")
+	COOLDOWN_SEC = args.cooldown_sec
+	FOCAL_GAMMA = args.focal_gamma
+	RGB_DROPOUT_PROB = args.rgb_dropout
+	BLOCK_MODE = args.block_mode
 	
 	# Load model configuration from JSON file
 	try:
@@ -1138,7 +1367,20 @@ def main():
 	NUM_FEATURES = args.num_features
 	NUM_CLASSES = args.num_classes
 	BLOCK_SIZE = args.block_size
-	
+
+	# Resolve the configurable feature layout (domain-agnostic). This determines the
+	# actual feature dimensions and the model's input group split; NUM_FEATURES is taken
+	# from the enabled feature groups so it always matches what the pipeline produces.
+	try:
+		spec = resolve_feature_config(get_model_config())
+		FEATURE_DIMS = (spec['geo_dim'], spec['rgb_dim'], spec['spatial_dim'])
+		NORMALS_PRESENT = spec['use_normals']
+		NUM_FEATURES = spec['num_features']
+		print(f"  Feature layout: {FEATURE_DIMS} (normals={spec['use_normals']}, curv={spec['use_curvature']}, "
+			  f"rgb={spec['use_rgb']}, spatial={spec['use_spatial']}, scale={spec['spatial_scale']})")
+	except Exception as e:
+		print(f"Warning: feature spec resolution failed ({e}); using default {FEATURE_DIMS}.")
+
 	print(f"Training configuration:")
 	print(f"  Epochs: {NUM_EPOCHS}, Batch size: {BATCH_SIZE}, Learning rate: {LEARNING_RATE}")
 	print(f"  Train areas: {TRAIN_AREAS}, Test area: {TEST_AREA}")

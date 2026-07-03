@@ -7,13 +7,14 @@ import os, numpy as np, torch, open3d as o3d, glob, warnings, argparse, shutil
 from torch_geometric.data import Data
 from tqdm import tqdm
 from data_processing import (
-    extract_features_from_room_data, 
-    get_class_label, 
+    extract_features_from_room_data,
+    get_class_label,
     CLASS_NAMES,
     create_point_cloud_visualization,
     convert_numpy_to_torch,
     validate_point_cloud_data,
-    load_model_config
+    load_model_config,
+    resolve_feature_config
 )
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -29,6 +30,8 @@ class_names = CLASS_NAMES
 
 def process_area(area_path, args):
 	save_path = args.save_path
+	spec = getattr(args, 'feature_spec', None) or resolve_feature_config()
+	min_cols = 1 + max(spec['xyz_cols'])  # need at least XYZ columns
 	print(f"Processing {os.path.basename(area_path)}...")
 	area_save_path = os.path.join(save_path, os.path.basename(area_path))
 	if os.path.exists(area_save_path):
@@ -56,8 +59,10 @@ def process_area(area_path, args):
 					continue
 				
 				obj_data = np.loadtxt(annotation_file, dtype=np.float32)
-				# Skip if data is empty or format is incorrect
-				if obj_data.ndim != 2 or obj_data.shape[1] != 6:
+				# Skip only if we don't even have XYZ. Extra/attribute columns (intensity,
+				# classification, ...) or missing color are handled by the feature spec,
+				# so we no longer hard-require exactly 6 (XYZRGB) columns.
+				if obj_data.ndim != 2 or obj_data.shape[1] < min_cols:
 					continue
 				
 				points_list.append(obj_data)
@@ -73,15 +78,21 @@ def process_area(area_path, args):
 		points_room = np.concatenate(points_list, axis=0)
 		labels_room = np.concatenate(labels_list, axis=0)
 		
-		coords_room = points_room[:, :3]
-		colors_room = points_room[:, 3:6] / 255.0
+		coords_room = points_room[:, spec['xyz_cols']]
+		# Colors are only for optional visualization; fall back to gray when absent.
+		rgb_cols = spec.get('rgb_cols')
+		if rgb_cols is not None and points_room.shape[1] > max(rgb_cols):
+			colors_room = points_room[:, rgb_cols] / spec.get('rgb_max', 255.0)
+		else:
+			colors_room = np.full((len(coords_room), 3), 0.5, dtype=np.float32)
 
-		# Use shared feature extraction function
+		# Use shared, config-driven feature extraction
 		print(f"Computing features for {os.path.basename(room_folder)} ({len(coords_room)} points)...")
-		
+
 		features_room = extract_features_from_room_data(
-			points_room, 
-			normalize_colors=True
+			points_room,
+			normalize_colors=True,
+			feature_config=spec
 		)
 		
 		# Validate data consistency
@@ -104,8 +115,9 @@ def process_area(area_path, args):
 
 		if args.visualize:  # Visualization for verification with normal vectors
 			# Keyboard controls. H=help, Q=quit, F=fullscreen, N=toggle normals, W=toggle wireframe, R=reset view, +-=normal vector size, []=view projection scale, L=turn on/off lighting, 0..9=change color
+			normals_for_vis = features_room[:, :3] if spec['use_normals'] else None
 			pcd = create_point_cloud_visualization(
-				coords_room, colors_room, features_room[:, :3], show_normals=True
+				coords_room, colors_room, normals_for_vis, show_normals=spec['use_normals']
 			)
 			o3d.visualization.draw_geometries([pcd], point_show_normal=True, window_name=os.path.basename(room_folder))
 			print("Visualization done.")
@@ -136,6 +148,12 @@ def main():
 	except Exception as e:
 		print(f"Warning: Could not load config file: {e}")
 		print("Using default configuration...")
+
+	# Resolve the domain-agnostic feature spec once and reuse for all areas.
+	args.feature_spec = resolve_feature_config()
+	print(f"Feature spec: normals={args.feature_spec['use_normals']}, curvature={args.feature_spec['use_curvature']}, "
+		  f"rgb={args.feature_spec['use_rgb']}, spatial={args.feature_spec['use_spatial']} "
+		  f"-> {args.feature_spec['num_features']}D (spatial_scale={args.feature_spec['spatial_scale']})")
 	
 	print(f"Starting data preparation for {len(args.areas)} areas...")
 	for area in tqdm(args.areas, desc="Processing areas"):

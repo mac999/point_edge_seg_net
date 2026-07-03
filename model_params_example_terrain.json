@@ -1,0 +1,27 @@
+{
+  "dataset_name": "Terrain_LiDAR_example",
+  "num_classes": 6,
+  "class_names": ["ground", "vegetation_low", "vegetation_high", "building", "water", "others"],
+  "class_colors": [[139, 69, 19], [34, 139, 34], [0, 100, 0], [255, 0, 0], [0, 0, 255], [128, 0, 128]],
+  "class_weights": [0.7, 1.0, 0.9, 0.8, 1.2, 1.0],
+  "num_features": 7,
+  "block_size": 8192,
+  "input": {
+    "xyz_cols": [0, 1, 2],
+    "rgb_cols": null,
+    "rgb_max": 255.0
+  },
+  "features": {
+    "use_normals": true,
+    "use_curvature": true,
+    "use_rgb": false,
+    "use_spatial": true,
+    "spatial_scale": 5.0,
+    "neighbor_knn": 20
+  },
+  "preprocessing": {
+    "grid_min_coords": [0.0, 0.0, 0.0],
+    "grid_resolution": 5.0
+  },
+  "description": "Example of a COLORLESS, large-scale outdoor/terrain config. use_rgb=false (XYZ-only LiDAR), spatial_scale=5m matches sparse terrain point spacing -> 7D features (normals3+curv1+spatial3). Demonstrates domain variability without RGB."
+}

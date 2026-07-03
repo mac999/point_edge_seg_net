@@ -11,37 +11,52 @@ from torch_geometric.utils import scatter
 from torch.cuda.amp import autocast, GradScaler
 
 class FeatureGate(nn.Module):
-	"""Lightweight feature-wise gating for Geo, RGB and Spatial features."""
+	"""Lightweight feature-wise gating for Geo, RGB and Spatial feature groups.
+
+	Now adapts to the configured feature layout: any group whose dim is 0 (e.g. a
+	colorless cloud with rgb_dim=0) is skipped, and a gate is learned only for the
+	present groups. With the default (geo=4, rgb=3, spatial=3) this is byte-identical
+	to the original 10D gate, so existing weights load unchanged.
+	"""
 	def __init__(self, geo_dim=4, rgb_dim=3, spatial_dim=3):
 		super(FeatureGate, self).__init__()
 		self.geo_dim = geo_dim
 		self.rgb_dim = rgb_dim
 		self.spatial_dim = spatial_dim
+		self.dims = [geo_dim, rgb_dim, spatial_dim]
+		self.offsets = [0, geo_dim, geo_dim + rgb_dim]
+		self.present = [i for i, d in enumerate(self.dims) if d > 0]  # which of geo/rgb/spatial exist
 		total_dim = geo_dim + rgb_dim + spatial_dim
-		
-		# Shared feature encoder (minimal overhead: ~200 params)
+		num_gates = len(self.present)
+
+		# Shared feature encoder (minimal overhead); one gate per present group
 		self.encoder = nn.Sequential(
 			nn.Linear(total_dim, 16),
 			nn.ReLU(),
-			nn.Linear(16, 3)  # 3 gates: geo, rgb, spatial
+			nn.Linear(16, num_gates)
 		)
 		self.sigmoid = nn.Sigmoid()
-	
+
 	def forward(self, x):
-		# x: [N, 10] = [geo(4) + rgb(3) + spatial(3)]
-		gates = self.sigmoid(self.encoder(x))  # [N, 3]
-		
-		# Split features
-		geo = x[:, :self.geo_dim]
-		rgb = x[:, self.geo_dim:self.geo_dim+self.rgb_dim]
-		spatial = x[:, self.geo_dim+self.rgb_dim:]
-		
-		# Apply gates
-		geo_gated = geo * gates[:, 0:1]
-		rgb_gated = rgb * gates[:, 1:2]
-		spatial_gated = spatial * gates[:, 2:3]
-		
-		return torch.cat([geo_gated, rgb_gated, spatial_gated], dim=1), gates
+		# x: [N, total_dim] laid out as [geo | rgb | spatial] (absent groups omitted)
+		gates = self.sigmoid(self.encoder(x))  # [N, num_gates]
+
+		out = []
+		# full_gates keeps a stable [N, 3] (geo, rgb, spatial) view for logging/analysis;
+		# absent groups report gate 0.
+		full_gates = x.new_zeros(x.size(0), 3)
+		gi = 0
+		for group_idx, d in enumerate(self.dims):
+			if d == 0:
+				continue
+			off = self.offsets[group_idx]
+			seg = x[:, off:off + d]
+			g = gates[:, gi:gi + 1]
+			out.append(seg * g)
+			full_gates[:, group_idx] = gates[:, gi]
+			gi += 1
+
+		return torch.cat(out, dim=1), full_gates
 
 class AttentionModule(nn.Module):
 	def __init__(self, channels):
@@ -89,8 +104,9 @@ class EdgeConv(nn.Module):
 
 class LightweightTransformer(nn.Module):
 	"""Lightweight Transformer for Bottleneck (XYZ + Spatial Position Encoding)"""
-	def __init__(self, dim=512, num_heads=4, dropout=0.1):
+	def __init__(self, dim=512, num_heads=4, dropout=0.1, spatial_dim=3):
 		super().__init__()
+		self.spatial_dim = spatial_dim
 		self.norm1 = nn.LayerNorm(dim)
 		self.attn = nn.MultiheadAttention(dim, num_heads, dropout=dropout, batch_first=True)
 		self.norm2 = nn.LayerNorm(dim)
@@ -101,10 +117,11 @@ class LightweightTransformer(nn.Module):
 			nn.Linear(dim * 2, dim),
 			nn.Dropout(dropout)
 		)
-		
-		# XYZ(3) + Spatial(3) = 6D Position Encoding
+
+		# Position encoding over XYZ(3) + Spatial(spatial_dim). Default spatial_dim=3 -> 6D,
+		# identical to the original; when spatial features are disabled it falls back to 3D (XYZ).
 		self.pos_enc = nn.Sequential(
-			nn.Linear(6, dim // 4),
+			nn.Linear(3 + spatial_dim, dim // 4),
 			nn.ReLU(),
 			nn.Linear(dim // 4, dim)
 		)
@@ -114,35 +131,39 @@ class LightweightTransformer(nn.Module):
 		Args:
 			x: [Total_Points, 512] (features)
 			pos: [Total_Points, 3] (xyz coordinates)
-			spatial: [Total_Points, 3] (density, anisotropy, structure)
+			spatial: [Total_Points, spatial_dim] or None (density, anisotropy, structure)
 			batch: [Total_Points] (batch assignment)
 		"""
+		use_spatial = self.spatial_dim > 0 and spatial is not None
 		# Force float32 for indexing operations (FP16 not supported)
 		original_dtype = x.dtype
 		if x.dtype == torch.float16:
 			x = x.float()
 			pos = pos.float()
-			spatial = spatial.float()
-		
+			if use_spatial:
+				spatial = spatial.float()
+
 		batch_size = batch.max().item() + 1
 		max_points = scatter(torch.ones_like(batch), batch, reduce='sum').max().item()
-		
+
 		# Use original dtype for tensor creation
 		x_batched = torch.zeros(batch_size, max_points, x.size(1), device=x.device, dtype=x.dtype)
 		pos_batched = torch.zeros(batch_size, max_points, 3, device=x.device, dtype=x.dtype)
-		spatial_batched = torch.zeros(batch_size, max_points, 3, device=x.device, dtype=x.dtype)
 		batch_mask = torch.zeros(batch_size, max_points, dtype=torch.bool, device=x.device)
-		
+		if use_spatial:
+			spatial_batched = torch.zeros(batch_size, max_points, self.spatial_dim, device=x.device, dtype=x.dtype)
+
 		for b in range(batch_size):
 			mask = (batch == b)
 			num_points = mask.sum().item()
 			x_batched[b, :num_points] = x[mask]
 			pos_batched[b, :num_points] = pos[mask]
-			spatial_batched[b, :num_points] = spatial[mask]
+			if use_spatial:
+				spatial_batched[b, :num_points] = spatial[mask]
 			batch_mask[b, :num_points] = True
-		
-		# Combine XYZ and Spatial features
-		combined_pos = torch.cat([pos_batched, spatial_batched], dim=2)
+
+		# Combine XYZ (+ Spatial) for position encoding
+		combined_pos = torch.cat([pos_batched, spatial_batched], dim=2) if use_spatial else pos_batched
 		pos_emb = self.pos_enc(combined_pos)
 		x_batched = x_batched + pos_emb
 		
@@ -168,12 +189,23 @@ class LightweightTransformer(nn.Module):
 		return x_out
 
 class PointEdgeSegNet(nn.Module):
-	def __init__(self, num_features, num_classes):
+	def __init__(self, num_features, num_classes, feature_dims=(4, 3, 3)):
 		super(PointEdgeSegNet, self).__init__()
-		
+
+		# Feature layout is configurable (geo, rgb, spatial). Default (4,3,3)=10D reproduces
+		# the original S3DIS model exactly, so existing weights load unchanged. Other domains
+		# (colorless clouds, no-spatial, etc.) pass different dims from model_params.json.
+		geo_dim, rgb_dim, spatial_dim = feature_dims
+		assert geo_dim + rgb_dim + spatial_dim == num_features, (
+			f"feature_dims {feature_dims} sum ({geo_dim+rgb_dim+spatial_dim}) != num_features ({num_features})")
+		self.geo_dim = geo_dim
+		self.rgb_dim = rgb_dim
+		self.spatial_dim = spatial_dim
+		self.spatial_start = geo_dim + rgb_dim
+
 		# Add Feature Gate at input (minimal memory: ~2MB for 20 batches)
-		self.feature_gate = FeatureGate(geo_dim=4, rgb_dim=3, spatial_dim=3)
-		
+		self.feature_gate = FeatureGate(geo_dim=geo_dim, rgb_dim=rgb_dim, spatial_dim=spatial_dim)
+
 		# Optimized Encoder - reduced channels and removed deepest layer
 		self.conv1 = EdgeConv(num_features, 64)
 		self.conv1_2 = EdgeConv(64, 64, residual=True)
@@ -182,8 +214,8 @@ class PointEdgeSegNet(nn.Module):
 		self.conv3 = EdgeConv(128, 256)
 		self.conv3_2 = EdgeConv(256, 256, residual=True)
 		self.conv4 = EdgeConv(256, 512)
-		# Bottleneck Transformer with Absolute Position Encoding
-		self.bottleneck_transformer = LightweightTransformer(dim=512, num_heads=4, dropout=0.1)
+		# Bottleneck Transformer with Absolute Position Encoding (spatial-dim aware)
+		self.bottleneck_transformer = LightweightTransformer(dim=512, num_heads=4, dropout=0.1, spatial_dim=spatial_dim)
 
 		# Simplified Decoder
 		self.deconv1_mlp = nn.Sequential(
@@ -242,14 +274,17 @@ class PointEdgeSegNet(nn.Module):
 		idx3 = fps(pos2, batch2, ratio=0.25)
 		pos3, x3_sampled, batch3 = pos2[idx3], x3[idx3], batch2[idx3]
 		
-		# Extract spatial features from original gated features
-		spatial0 = x_gated[:, 7:]  # Extract spatial(3) from [geo(4) + rgb(3) + spatial(3)]
-		# Downsample spatial features following the same FPS indices
-		spatial3 = spatial0[idx1][idx2][idx3]
-		
+		# Extract spatial features from original gated features (configured slice)
+		if self.spatial_dim > 0:
+			spatial0 = x_gated[:, self.spatial_start:self.spatial_start + self.spatial_dim]
+			# Downsample spatial features following the same FPS indices
+			spatial3 = spatial0[idx1][idx2][idx3]
+		else:
+			spatial3 = None  # transformer falls back to XYZ-only position encoding
+
 		# Final encoder layer (bottleneck)
 		x4_bottleneck = self.conv4(x3_sampled, pos3, batch3)
-		# Apply Transformer with XYZ and Spatial position encoding
+		# Apply Transformer with XYZ (and Spatial, if present) position encoding
 		x4_bottleneck = self.bottleneck_transformer(x4_bottleneck, pos3, spatial3, batch3)
 
 		# Simplified decoder
