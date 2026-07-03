@@ -7,11 +7,14 @@
 import torch, numpy as np, open3d as o3d, os, argparse
 from model import PointEdgeSegNet
 from data_processing import (
-    calculate_features_with_open3d, 
-    CLASS_NAMES, 
+    calculate_features_with_open3d,
+    CLASS_NAMES,
     extract_features_from_room_data,
     load_model_config,
-    get_class_colors
+    get_class_colors,
+    partition_columns,
+    merge_block_votes,
+    resolve_feature_config
 )
 from torch_geometric.data import Data, Batch
 from torch_geometric.loader import DataLoader
@@ -26,18 +29,19 @@ INFERENCE_BLOCK_PATH = './inference_blocks'
 BLOCK_SIZE = 8192
 NUM_FEATURES = 10  # geo(4) + RGB(3) + spatial(3) = 10D
 
-def create_inference_blocks(point_cloud_path, block_output_dir, block_size=8192, num_features=NUM_FEATURES):
+def create_inference_blocks(point_cloud_path, block_output_dir, block_size=8192, num_features=NUM_FEATURES,
+                            feature_config=None):
     """Load point cloud, split into blocks, and save to files"""
     print(f"Loading point cloud: {point_cloud_path}")
     points = np.loadtxt(point_cloud_path)
-    
-    # Validate input format    
-    print(f"Calculating {num_features}D features: geo(4) + RGB(3) + spatial(3)...")
-    features = extract_features_from_room_data(points, normalize_colors=True)
-    coords = points[:, :3]
-    
-    # extract_features_from_room_data already returns correct order: geo(4) + RGB(3) + spatial(3)    
-    # Validate feature dimensions
+
+    spec = feature_config or resolve_feature_config()
+    num_features = spec['num_features']
+    print(f"Calculating {num_features}D features "
+          f"(normals={spec['use_normals']}, curv={spec['use_curvature']}, rgb={spec['use_rgb']}, spatial={spec['use_spatial']})...")
+    features = extract_features_from_room_data(points, normalize_colors=True, feature_config=spec)
+    coords = points[:, spec['xyz_cols']]
+
     if features.shape[1] != num_features:
         raise ValueError(f"Feature dimension mismatch! Expected {num_features}D, got {features.shape[1]}D")
     
@@ -98,6 +102,66 @@ def create_inference_blocks(point_cloud_path, block_output_dir, block_size=8192,
     
     print(f"Created {len(block_files)} block files in {block_output_dir}")
     return block_files, coords
+
+def create_inference_blocks_columns(point_cloud_path, block_output_dir, block_size=8192,
+                                    window=1.5, stride=0.75, num_features=NUM_FEATURES,
+                                    feature_config=None):
+    """
+    Inference blocking that MATCHES training's column mode (--block_mode column).
+
+    The default create_inference_blocks() slices the file into arbitrary sequential
+    chunks - a distribution the model never saw in training (which uses spatially
+    coherent blocks), so EdgeConv's k-NN graph and FPS behave differently at test
+    time. Here we build the SAME overlapping full-height columns used for training and
+    remember each block's original point indices so predictions can be voted together.
+    """
+    print(f"Loading point cloud: {point_cloud_path}")
+    points = np.loadtxt(point_cloud_path)
+    spec = feature_config or resolve_feature_config()
+    num_features = spec['num_features']
+    features = extract_features_from_room_data(points, normalize_colors=True, feature_config=spec)
+    coords = points[:, spec['xyz_cols']]
+    if features.shape[1] != num_features:
+        raise ValueError(f"Feature dimension mismatch! Expected {num_features}D, got {features.shape[1]}D")
+
+    os.makedirs(block_output_dir, exist_ok=True)
+    for file in os.listdir(block_output_dir):
+        if file.startswith('block_') and file.endswith('.pt'):
+            os.remove(os.path.join(block_output_dir, file))
+
+    blocks = partition_columns(coords, block_size=block_size, window=window, stride=stride, seed=0)
+    print(f"Split {len(coords)} points into {len(blocks)} overlapping column blocks...")
+
+    block_files = []
+    for bi, (idx, num_real) in enumerate(tqdm(blocks, desc="Creating column blocks")):
+        data = Data(
+            x=torch.tensor(features[idx], dtype=torch.float),
+            pos=torch.tensor(coords[idx], dtype=torch.float),
+            valid_mask=torch.tensor(np.arange(block_size) < num_real, dtype=torch.bool),
+            num_valid_points=num_real,
+            point_indices=torch.tensor(idx, dtype=torch.long),
+        )
+        fp = os.path.join(block_output_dir, f"block_{bi:06d}.pt")
+        torch.save(data, fp)
+        block_files.append(fp)
+    return block_files, coords, len(coords)
+
+def run_inference_with_voting(model, block_files, device, total_points, num_classes):
+    """Run inference on overlapping column blocks and majority-vote per point."""
+    dataset = InferenceBlockDataset(block_files)
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
+    per_block = []
+    model.eval()
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Inference (voting)"):
+            batch = batch.to(device)
+            out = model(batch)
+            preds = out.argmax(dim=-1).cpu().numpy()
+            num_valid = batch.num_valid_points[0].item()
+            idx = batch.point_indices.cpu().numpy()[:num_valid]
+            per_block.append((preds[:num_valid], idx))
+    final_labels, vote_counts = merge_block_votes(total_points, num_classes, per_block)
+    return final_labels
 
 class InferenceBlockDataset(Dataset):
     """Dataset for loading inference block files"""
@@ -162,7 +226,9 @@ def parse_arguments():
                        help='Directory for inference blocks')
     parser.add_argument('--no_visualization', '--no_vis', action='store_true',
                        help='Skip visualization')
-    
+    parser.add_argument('--voting', action='store_true',
+                       help='Use overlapping column blocks + majority voting (matches --block_mode column training)')
+
     return parser.parse_args()
 
 def main():
@@ -175,9 +241,15 @@ def main():
     config = load_model_config(args.config)
     NUM_CLASSES = config['num_classes']
     class_colors = get_class_colors(as_numpy=True) / 255.0
-    
+
+    # Resolve the domain-agnostic feature spec (must match how the model was trained).
+    spec = resolve_feature_config(config)
+    num_features = spec['num_features']
+    feature_dims = (spec['geo_dim'], spec['rgb_dim'], spec['spatial_dim'])
+
     print(f"Dataset: {config.get('dataset_name', 'Custom')}")
     print(f"Number of classes: {NUM_CLASSES}")
+    print(f"Features: {num_features}D {feature_dims} (normals={spec['use_normals']}, curv={spec['use_curvature']}, rgb={spec['use_rgb']}, spatial={spec['use_spatial']})")
     
     # Print configuration
     print("PointEdgeSegNet Inference")
@@ -190,30 +262,43 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES)
+    model = PointEdgeSegNet(num_features=num_features, num_classes=NUM_CLASSES, feature_dims=feature_dims)
     model.load_state_dict(torch.load(args.model_weights, map_location=device, weights_only=False))
     model = model.to(device)
     model.eval()
     print("Model loaded successfully!")
-    
-    # Step 1: Create inference blocks
-    block_files, original_coords = create_inference_blocks(
-        args.input_cloud, 
-        args.block_path, 
-        BLOCK_SIZE
-    )
-    
-    # Step 2: Run inference on blocks
-    pred_labels = run_inference_on_blocks(model, block_files, device)
+
+    # Step 1 + 2: Create inference blocks and run inference
+    if args.voting:
+        block_files, original_coords, total_points = create_inference_blocks_columns(
+            args.input_cloud, args.block_path, BLOCK_SIZE, feature_config=spec
+        )
+        pred_labels = run_inference_with_voting(model, block_files, device, total_points, NUM_CLASSES)
+    else:
+        block_files, original_coords = create_inference_blocks(
+            args.input_cloud,
+            args.block_path,
+            BLOCK_SIZE,
+            feature_config=spec
+        )
+        pred_labels = run_inference_on_blocks(model, block_files, device)
     
     # Load original points for visualization
     print("Loading original point cloud for visualization...")
     original_points = np.loadtxt(args.input_cloud)
     
-    # Save results (optional)
+    # Save results (optional). Build the column format from the actual input width so
+    # colorless (XYZ) or attribute-carrying clouds are written correctly, not just XYZRGB.
     output_file = args.input_cloud.replace('.txt', '_segmented.txt')
+    if original_points.ndim == 1:
+        original_points = original_points.reshape(1, -1)
     segmented_points = np.column_stack([original_points, pred_labels])
-    np.savetxt(output_file, segmented_points, fmt='%.6f %.6f %.6f %d %d %d %d')
+    n_in = original_points.shape[1]
+    rgb_cols = spec.get('rgb_cols') or []
+    # integer format for color/label columns, float for coordinates/attributes
+    int_cols = set(rgb_cols) | {n_in}  # rgb columns + the appended label column
+    fmt = ' '.join('%d' if c in int_cols else '%.6f' for c in range(n_in + 1))
+    np.savetxt(output_file, segmented_points, fmt=fmt)
     print(f"Segmentation results saved to: {output_file}")
     
     # 3D visualization (if not disabled)
@@ -229,8 +314,12 @@ def main():
 
         original_pcd = o3d.geometry.PointCloud()
         original_pcd.points = o3d.utility.Vector3dVector(original_coords)
-        original_pcd.colors = o3d.utility.Vector3dVector(original_points[:, 3:6] / 255.0)
-        
+        rgb_cols = spec.get('rgb_cols')
+        if rgb_cols is not None and original_points.shape[1] > max(rgb_cols):
+            original_pcd.colors = o3d.utility.Vector3dVector(original_points[:, rgb_cols] / spec.get('rgb_max', 255.0))
+        else:
+            original_pcd.paint_uniform_color([0.5, 0.5, 0.5])
+
         o3d.visualization.draw_geometries([original_pcd], window_name="Original Colors (Press Q to close)")
     
     print("Inference completed successfully!")

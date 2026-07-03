@@ -24,3 +24,8 @@ open3d
 # --- Utilities and Visualization ---
 tqdm
 matplotlib
+
+# --- Optional: experiment tracking ---
+# Training runs fine without these (use --no_wandb, which is auto-detected).
+# wandb
+# python-dotenv
