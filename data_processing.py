@@ -892,6 +892,79 @@ def partition_columns(points: np.ndarray,
 
     return blocks
 
+def partition_columns_cover(points: np.ndarray,
+                            block_size: int = 8192,
+                            window: float = 2.0,
+                            stride: float = 2.0,
+                            min_points: int = 1,
+                            seed: Optional[int] = None):
+    """INFERENCE-only column partition that covers EVERY point (no point dropped).
+
+    Why this exists (the inference coverage bug): partition_columns() takes a single
+    block_size subsample per column and discards the rest. For training that is fine (each
+    epoch resamples a different view), but at inference a dense column (e.g. ~200k points
+    in a 2 m column of a 1 M-point room) has ~96% of its points thrown away, never
+    predicted, and then silently defaulted to class 0 by merge_block_votes -> the whole
+    cloud collapses to "ceiling". Here each column's points are instead TILED into
+    ceil(n/block_size) blocks (last block padded), so every point is predicted at least
+    once while each block is still a training-distribution-like block_size-point column.
+    Overlapping columns (stride < window) additionally give multiple votes per point.
+
+    Same return contract as partition_columns(): list of (indices, num_real).
+    """
+    rng = np.random.default_rng(seed)
+    n = len(points)
+    if n == 0:
+        return []
+
+    xy = points[:, :2]
+    min_xy = xy.min(axis=0)
+    max_xy = xy.max(axis=0)
+
+    def _origins(lo, hi):
+        span = hi - lo
+        if span <= window:
+            return np.array([lo])
+        k = int(np.ceil((span - window) / stride)) + 1
+        origins = lo + np.arange(k) * stride
+        origins[-1] = hi - window  # snap last window to the far edge (full coverage)
+        return origins
+
+    xs = _origins(min_xy[0], max_xy[0])
+    ys = _origins(min_xy[1], max_xy[1])
+
+    def _emit(idx, blocks):
+        """Tile idx into ceil(len/block_size) blocks, padding the last, covering all."""
+        idx = np.asarray(idx)
+        rng.shuffle(idx)  # so a tile is a spatially-spread subset, not a coordinate stripe
+        for s in range(0, len(idx), block_size):
+            chunk = idx[s:s + block_size]
+            num_real = len(chunk)
+            if num_real < block_size:
+                pad = rng.choice(chunk, block_size - num_real, replace=True)
+                chunk = np.concatenate([chunk, pad])
+            blocks.append((chunk.astype(np.int64), int(num_real)))
+
+    blocks = []
+    covered = np.zeros(n, dtype=bool)
+    for x0 in xs:
+        in_x = (xy[:, 0] >= x0) & (xy[:, 0] <= x0 + window)
+        for y0 in ys:
+            mask = in_x & (xy[:, 1] >= y0) & (xy[:, 1] <= y0 + window)
+            idx = np.nonzero(mask)[0]
+            if len(idx) < min_points:
+                continue
+            covered[idx] = True
+            _emit(idx, blocks)
+
+    # Guarantee coverage: any point missed (sparse cells below min_points) gets its own
+    # block(s) so it is never dropped - unlike partition_columns which could lose it.
+    missed = np.nonzero(~covered)[0]
+    if len(missed) > 0:
+        _emit(missed, blocks)
+
+    return blocks
+
 def spatial_split_is_val(source_key: str,
                          centroid_xy,
                          super_size: float = 4.0,
@@ -932,7 +1005,8 @@ def spatial_split_is_val(source_key: str,
 
 def merge_block_votes(total_points: int,
                       num_classes: int,
-                      block_logits_indices):
+                      block_logits_indices,
+                      coords: Optional[np.ndarray] = None):
     """
     Merge overlapping-block predictions by majority vote (multi-view voting).
 
@@ -955,6 +1029,25 @@ def merge_block_votes(total_points: int,
         np.add.at(votes, (point_indices, pred_labels), 1)
     final_labels = votes.argmax(axis=1)
     vote_counts = votes.max(axis=1)
+
+    # A point that received NO vote would otherwise silently take argmax([0,0,...]) = class 0
+    # (ceiling for S3DIS). With a coverage-guaranteeing blocker this set is empty, but guard
+    # anyway: fill each uncovered point from its nearest voted neighbour instead of class 0.
+    uncovered = np.nonzero(vote_counts == 0)[0]
+    if len(uncovered) > 0:
+        if coords is not None:
+            covered = np.nonzero(vote_counts > 0)[0]
+            if len(covered) > 0:
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(np.asarray(coords)[covered])
+                kdt = o3d.geometry.KDTreeFlann(pcd)
+                for p in uncovered:
+                    _, nn, _ = kdt.search_knn_vector_3d(np.asarray(coords)[p], 1)
+                    final_labels[p] = final_labels[covered[nn[0]]]
+                print(f"merge_block_votes: filled {len(uncovered)} uncovered points from nearest voted neighbour")
+        else:
+            print(f"WARNING: merge_block_votes: {len(uncovered)} points had no vote and defaulted to class 0 "
+                  f"(pass coords= to fill from nearest neighbour, or use a coverage-guaranteeing blocker)")
     return final_labels, vote_counts
 
 # Spatial context features
