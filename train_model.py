@@ -1032,8 +1032,10 @@ def run_training(args=None):
 	consecutive_failures = 0
 	max_consecutive_failures = 3
 	
-	# Early stopping parameters - more aggressive
-	early_stop_patience = 7   
+	# Early stopping parameters. Keyed off val_acc (the SAME metric that selects the saved
+	# best_model.pth), so training is not cut short while val_acc is still climbing. Patience
+	# raised 7->10 to ride out the noisy mid-training val plateau before the LR anneals.
+	early_stop_patience = 10
 	early_stop_counter = 0
 	best_val_loss = float('inf')
 	
@@ -1088,19 +1090,20 @@ def run_training(args=None):
 			history['val_loss'].append(val_loss)
 			history['val_acc'].append(val_acc)
 			
-			# Track best performance and early stopping
+			# Track best model + early stopping on the SAME metric (val_acc). Previously the
+			# counter keyed off val_loss while the checkpoint saved on val_acc, so a noisy
+			# val_loss could stop training before val_acc peaked (a run stopped at epoch 40
+			# though the best-acc epoch was ~47). best_val_loss is kept for logging only.
 			if val_loss < best_val_loss:
 				best_val_loss = val_loss
-				early_stop_counter = 0
-			else:
-				early_stop_counter += 1
-				
+
 			if val_acc > best_val_acc:
 				best_val_acc = val_acc
 				best_epoch = epoch
+				early_stop_counter = 0  # new best model found -> reset patience
 
 				# Force memory cleanup before model saving
-				torch.cuda.synchronize(); 
+				torch.cuda.synchronize();
 				torch.cuda.empty_cache()
 				gc.collect()
 				model_best_fname = os.path.join(log_dir, 'best_model.pth')
@@ -1108,10 +1111,12 @@ def run_training(args=None):
 				torch.cuda.empty_cache()
 				if COOLDOWN_SEC > 0:
 					time.sleep(COOLDOWN_SEC)
-			
+			else:
+				early_stop_counter += 1
+
 			# Early stopping check
 			if early_stop_counter >= early_stop_patience:
-				print(f"Early stopping triggered! No improvement for {early_stop_patience} epochs.")
+				print(f"Early stopping triggered! No val_acc improvement for {early_stop_patience} epochs.")
 				break
 			
 			if USE_WANDB:
@@ -1191,10 +1196,13 @@ def test_model(model_path):
 	correct_nodes, total_nodes, total_loss = 0, 0, 0.0
 	valid_batches = 0
 	
-	# Per-class metrics
+	# Per-class metrics. class_correct/class_total give accuracy (recall); class_union adds
+	# the denominator for IoU. mIoU is the standard S3DIS metric (accuracy/mAcc alone are not
+	# comparable to the literature). intersection == class_correct (TP); IoU = TP/(TP+FP+FN).
 	class_correct = np.zeros(NUM_CLASSES)
 	class_total = np.zeros(NUM_CLASSES)
-	
+	class_union = np.zeros(NUM_CLASSES)
+
 	print(f"Starting evaluation on {len(test_loader)} batches...")
 	pbar = tqdm(test_loader, desc=f'[Test {TEST_AREA}]')
 	
@@ -1220,12 +1228,14 @@ def test_model(model_path):
 				correct_nodes += pred.eq(valid_y).sum().item()
 				total_nodes += valid_mask.sum().item()
 				
-				# Per-class accuracy
+				# Per-class accuracy (recall) + union for IoU
 				for cls in range(NUM_CLASSES):
 					cls_mask = (valid_y == cls)
+					pred_mask = (pred == cls)
 					if cls_mask.sum() > 0:
 						class_total[cls] += cls_mask.sum().item()
 						class_correct[cls] += (pred[cls_mask] == cls).sum().item()
+					class_union[cls] += (cls_mask | pred_mask).sum().item()
 				
 				# Update progress
 				current_acc = correct_nodes / total_nodes if total_nodes > 0 else 0
@@ -1253,27 +1263,44 @@ def test_model(model_path):
 	print(f"Overall Accuracy: {final_acc:.4f} ({final_acc*100:.2f}%)")
 	print(f"Total Points: {total_nodes}")
 	print(f"Correct Predictions: {correct_nodes}")
-	print(f"\nPer-Class Accuracy:")
-	
-	# Prepare per-class results for JSON
+	print(f"\nPer-Class Accuracy (recall) and IoU:")
+	print(f"{'class':15s} {'acc(recall)':>12s} {'IoU':>9s}")
+
+	# Prepare per-class results for JSON; collect present-class acc/IoU for the means.
 	per_class_results = {}
+	acc_list, iou_list = [], []
 	for cls in range(NUM_CLASSES):
 		cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f"Class_{cls}"
 		if class_total[cls] > 0:
 			cls_acc = class_correct[cls] / class_total[cls]
-			print(f"{cls_name:15s}: {cls_acc*100:6.2f}% ({int(class_correct[cls])}/{int(class_total[cls])})")
+			cls_iou = class_correct[cls] / class_union[cls] if class_union[cls] > 0 else 0.0
+			acc_list.append(cls_acc)
+			iou_list.append(cls_iou)
+			print(f"{cls_name:15s} {cls_acc*100:11.2f}% {cls_iou*100:8.2f}%")
 			per_class_results[cls_name] = {
 				"accuracy": float(cls_acc),
+				"iou": float(cls_iou),
 				"correct": int(class_correct[cls]),
-				"total": int(class_total[cls])
+				"total": int(class_total[cls]),
+				"union": int(class_union[cls])
 			}
 		else:
-			print(f"{cls_name:15s}: N/A (no samples)")
+			print(f"{cls_name:15s} {'N/A':>12s} {'N/A':>9s}")
 			per_class_results[cls_name] = {
 				"accuracy": None,
+				"iou": None,
 				"correct": 0,
-				"total": 0
+				"total": 0,
+				"union": 0
 			}
+
+	# Standard segmentation summary metrics
+	mAcc = float(np.mean(acc_list)) if acc_list else 0.0
+	mIoU = float(np.mean(iou_list)) if iou_list else 0.0
+	print("-" * 40)
+	print(f"Overall Accuracy (OA)      : {final_acc*100:6.2f}%")
+	print(f"Mean Class Accuracy (mAcc) : {mAcc*100:6.2f}%")
+	print(f"Mean IoU (mIoU)            : {mIoU*100:6.2f}%")
 	
 	# Save test summary to JSON
 	log_dir = os.path.dirname(model_path)
@@ -1283,6 +1310,8 @@ def test_model(model_path):
 		"overall_metrics": {
 			"loss": float(final_loss),
 			"accuracy": float(final_acc),
+			"mAcc": mAcc,
+			"mIoU": mIoU,
 			"total_points": int(total_nodes),
 			"correct_predictions": int(correct_nodes)
 		},
