@@ -12,7 +12,7 @@ from data_processing import (
     extract_features_from_room_data,
     load_model_config,
     get_class_colors,
-    partition_columns,
+    partition_columns_cover,
     merge_block_votes,
     resolve_feature_config
 )
@@ -22,12 +22,20 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 # Configuration Constants
-DEFAULT_MODEL_WEIGHTS_PATH = './logs/20260705_092038/best_model.pth'  # confirmed column-trained model
+DEFAULT_MODEL_WEIGHTS_PATH = './logs/20260705_225359/best_model.pth'  # confirmed model (OA 81.8 / mIoU 53.3, Area_5)
 DEFAULT_TEST_POINT_CLOUD_PATH = './sample/area_6_conferenceRoom_1.txt'
 DEFAULT_CONFIG_PATH = 'model_params.json'
 INFERENCE_BLOCK_PATH = './inference_blocks'
 BLOCK_SIZE = 8192
 NUM_FEATURES = 10  # geo(4) + RGB(3) + spatial(3) = 10D
+
+# Column-mode inference MUST match the training window so the model sees the same spatial
+# extent / point density it was trained on (train_model.py COLUMN_WINDOW=2.0). The previous
+# default (1.5) was a distribution mismatch. Stride < window adds overlap => multiple votes
+# per point => smoother boundaries via majority voting.
+INFERENCE_COLUMN_WINDOW = 2.0   # == training COLUMN_WINDOW
+INFERENCE_COLUMN_STRIDE = 2.0   # == window => no overlap (matches training); dense columns are
+                                # tiled to cover ALL points. Set < window for extra multi-view votes.
 
 def create_inference_blocks(point_cloud_path, block_output_dir, block_size=8192, num_features=NUM_FEATURES,
                             feature_config=None):
@@ -129,8 +137,11 @@ def create_inference_blocks_columns(point_cloud_path, block_output_dir, block_si
         if file.startswith('block_') and file.endswith('.pt'):
             os.remove(os.path.join(block_output_dir, file))
 
-    blocks = partition_columns(coords, block_size=block_size, window=window, stride=stride, seed=0)
-    print(f"Split {len(coords)} points into {len(blocks)} overlapping column blocks...")
+    # Coverage-guaranteeing blocker: every point is predicted at least once (dense columns
+    # are tiled into multiple block_size blocks). partition_columns() would drop most points
+    # of a dense column, which merge_block_votes then mislabels as class 0 (ceiling).
+    blocks = partition_columns_cover(coords, block_size=block_size, window=window, stride=stride, seed=0)
+    print(f"Split {len(coords)} points into {len(blocks)} column blocks (full coverage)...")
 
     block_files = []
     for bi, (idx, num_real) in enumerate(tqdm(blocks, desc="Creating column blocks")):
@@ -146,8 +157,12 @@ def create_inference_blocks_columns(point_cloud_path, block_output_dir, block_si
         block_files.append(fp)
     return block_files, coords, len(coords)
 
-def run_inference_with_voting(model, block_files, device, total_points, num_classes):
-    """Run inference on overlapping column blocks and majority-vote per point."""
+def run_inference_with_voting(model, block_files, device, total_points, num_classes, coords=None):
+    """Run inference on column blocks and majority-vote per point.
+
+    coords (the full-cloud XYZ) is passed to merge_block_votes so any residual uncovered
+    point is filled from its nearest voted neighbour rather than silently labelled class 0.
+    """
     dataset = InferenceBlockDataset(block_files)
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
     per_block = []
@@ -160,7 +175,7 @@ def run_inference_with_voting(model, block_files, device, total_points, num_clas
             num_valid = batch.num_valid_points[0].item()
             idx = batch.point_indices.cpu().numpy()[:num_valid]
             per_block.append((preds[:num_valid], idx))
-    final_labels, vote_counts = merge_block_votes(total_points, num_classes, per_block)
+    final_labels, vote_counts = merge_block_votes(total_points, num_classes, per_block, coords=coords)
     return final_labels
 
 class InferenceBlockDataset(Dataset):
@@ -233,6 +248,10 @@ def parse_arguments():
                        help='Use overlapping column blocks + majority voting (default; matches column training)')
     parser.add_argument('--no_voting', dest='voting', action='store_false',
                        help='Disable voting; use legacy sequential chunks (NOT recommended for column-trained models)')
+    parser.add_argument('--column_window', type=float, default=INFERENCE_COLUMN_WINDOW,
+                       help='Column-mode window (m). Should match training COLUMN_WINDOW (2.0).')
+    parser.add_argument('--column_stride', type=float, default=INFERENCE_COLUMN_STRIDE,
+                       help='Column-mode stride (m). < window => overlap => more votes per point.')
 
     return parser.parse_args()
 
@@ -301,10 +320,14 @@ def main():
 
     # Step 1 + 2: Create inference blocks and run inference
     if args.voting:
+        print(f"Column voting: window={args.column_window}m, stride={args.column_stride}m "
+              f"(overlap={'yes' if args.column_stride < args.column_window else 'no'})")
         block_files, original_coords, total_points = create_inference_blocks_columns(
-            args.input_cloud, args.block_path, BLOCK_SIZE, feature_config=spec
+            args.input_cloud, args.block_path, BLOCK_SIZE,
+            window=args.column_window, stride=args.column_stride, feature_config=spec
         )
-        pred_labels = run_inference_with_voting(model, block_files, device, total_points, NUM_CLASSES)
+        pred_labels = run_inference_with_voting(model, block_files, device, total_points, NUM_CLASSES,
+                                                coords=original_coords)
     else:
         block_files, original_coords = create_inference_blocks(
             args.input_cloud,
