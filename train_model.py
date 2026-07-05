@@ -39,6 +39,13 @@ except ImportError:
     _WANDB_AVAILABLE = False
 USE_WANDB = False  # resolved in main(): _WANDB_AVAILABLE and not args.no_wandb
 
+# Monotonic wandb step counter, shared by batch- and epoch-level logs. Previously batch
+# logs used step=epoch*len(loader)+batch_idx while epoch logs used a separate global_step;
+# the two step sequences interleaved out of order so wandb silently dropped the epoch
+# points ("Tried to log to step X that is less than current step Y"). A single strictly
+# increasing counter guarantees valid steps for every wandb.log() call.
+WANDB_STEP = 0
+
 # .env loading is optional (only needed for wandb API key)
 try:
     from dotenv import load_dotenv
@@ -68,7 +75,7 @@ PROCESSED_DATA_PATH = './processed_s3dis'
 BLOCK_DATA_PATH = './block_s3dis'  # Block data storage path
 TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']  # Fixed: proper training areas
 TEST_AREA = 'Area_5'  # Fixed: proper test area
-NUM_EPOCHS = 80  # Extended for full convergence
+NUM_EPOCHS = 60  # Extended for full convergence
 BATCH_SIZE = 14  # Increased from 16 for better gradient estimation
 VAL_BATCH_SIZE = 18
 LEARNING_RATE = 0.003  # Increased from 0.002 for faster learning
@@ -104,9 +111,9 @@ RGB_DROPOUT_PROB = 0.0
 #   'grid'   - legacy 0.5 m cubic-cell hashing (loses vertical context, drops sparse cells)
 #   'column' - overlapping full-height columns (preserves up/down/left/right context)
 # 'column' is recommended; kept non-default so existing block_s3dis/weights still work.
-BLOCK_MODE = 'grid'
-COLUMN_WINDOW = 1.5     # XY column side length (m)
-COLUMN_STRIDE = 0.75    # XY step between columns (m); 0.75 => 50% overlap
+BLOCK_MODE = 'column'   # default: context-preserving columns (was 'grid'); override with --block_mode
+COLUMN_WINDOW = 2.0     # XY column side length (m)
+COLUMN_STRIDE = 2.0     # XY step between columns (m); == window => no overlap (block count ~ grid)
 
 # Feature layout (geo, rgb, spatial), resolved from model_params.json in main().
 # Default (4,3,3)=10D reproduces the original S3DIS model; other domains override it.
@@ -717,6 +724,7 @@ def build_dataloaders(rgb_dropout_prob=0.0):
 		raise ValueError("Validation loader is empty! Check your data files.")
 
 def train(epoch):
+	global WANDB_STEP
 	model.train()
 	
 	# Learning Rate Warm-up implementation (Linear warm-up for stability)
@@ -825,13 +833,14 @@ def train(epoch):
 			if USE_WANDB and hasattr(model, 'last_gates'):
 				gates = model.last_gates
 				current_batch_acc = pred.eq(valid_y).sum().item() / valid_mask.sum().item()
+				WANDB_STEP += 1
 				wandb.log({
 					"batch/gate_geo": gates[:, 0].mean().item(),
 					"batch/gate_rgb": gates[:, 1].mean().item(),
 					"batch/gate_spatial": gates[:, 2].mean().item(),
 					"batch/loss": loss.item(),
 					"batch/accuracy": current_batch_acc,
-				}, step=epoch * len(train_loader) + batch_idx)
+				}, step=WANDB_STEP)
 
 			# Periodic memory cleanup. empty_cache()+gc.collect() force a CUDA sync and
 			# are expensive; doing it every 10 batches throttled throughput badly. Every
@@ -961,7 +970,7 @@ def validate(loader):
 	return avg_loss, accuracy
 
 def run_training(args=None):
-	global model, optimizer, criterion, scaler  # Access global variables
+	global model, optimizer, criterion, scaler, WANDB_STEP  # Access global variables
 	
 	# Add freeze_support for Windows multiprocessing support
 	import multiprocessing
@@ -992,7 +1001,7 @@ def run_training(args=None):
 
 	# Learning rate scheduler
 	scheduler = optim.lr_scheduler.CosineAnnealingLR(
-	    optimizer, T_max=NUM_EPOCHS*2, eta_min=5e-4
+	    optimizer, T_max=NUM_EPOCHS, eta_min=5e-4
 	)
 
 	# Initialize wandb (online mode for cloud sync) - optional
@@ -1034,7 +1043,6 @@ def run_training(args=None):
 	model_best_fname = ''
 	debug_break_flag = False
 	epoch_pbar = tqdm(range(1, NUM_EPOCHS + 1), desc="Training Progress")
-	global_step = 0  
 	for epoch in epoch_pbar:
 		try:
 			if debug_break_flag:
@@ -1047,8 +1055,7 @@ def run_training(args=None):
 			train_dataset.augment_strength = augment_strength
 			
 			train_loss, train_acc = train(epoch)
-			global_step += len(train_loader)  
-			
+
 			val_loss, val_acc = validate(val_loader)
 			
 			# KPI monitoring (if enabled)
@@ -1108,6 +1115,7 @@ def run_training(args=None):
 				break
 			
 			if USE_WANDB:
+				WANDB_STEP += 1
 				wandb.log({
 					"epoch/train_loss": train_loss,
 					"epoch/train_acc": train_acc,
@@ -1116,7 +1124,7 @@ def run_training(args=None):
 					"epoch/loss_diff": val_loss - train_loss,
 					"epoch/acc_diff": train_acc - val_acc,
 					"epoch/lr": new_lr,
-				}, step=global_step)  # global_step
+				}, step=WANDB_STEP)
 			
 			# Update epoch progress
 			epoch_pbar.set_postfix({
@@ -1298,7 +1306,7 @@ def main():
 	global PROCESSED_DATA_PATH, BLOCK_DATA_PATH, TRAIN_AREAS, TEST_AREA
 	global NUM_EPOCHS, BATCH_SIZE, VAL_BATCH_SIZE, LEARNING_RATE, NUM_FEATURES, NUM_CLASSES, BLOCK_SIZE
 	global USE_WANDB, COOLDOWN_SEC, FOCAL_GAMMA, RGB_DROPOUT_PROB, BLOCK_MODE
-	global FEATURE_DIMS, NORMALS_PRESENT
+	global FEATURE_DIMS, NORMALS_PRESENT, COLUMN_WINDOW, COLUMN_STRIDE
 
 	parser = argparse.ArgumentParser(description='PointEdgeSegNet Training')
 	parser.add_argument('--config', type=str, default='model_params.json', help='Path to model configuration JSON file')
@@ -1320,6 +1328,8 @@ def main():
 	parser.add_argument('--focal_gamma', type=float, default=FOCAL_GAMMA, help='Focal Loss focusing parameter (shared by train/test)')
 	parser.add_argument('--rgb_dropout', type=float, default=RGB_DROPOUT_PROB, help='Prob. of zeroing RGB per block for RGB-free robustness')
 	parser.add_argument('--block_mode', type=str, default=BLOCK_MODE, choices=['grid', 'column'], help="Block partitioning: 'grid' (legacy) or 'column' (overlapping full-height, preserves context)")
+	parser.add_argument('--column_window', type=float, default=COLUMN_WINDOW, help='Column mode only: XY window side length (m). Larger => fewer blocks. VRAM is unaffected (blocks stay block_size points).')
+	parser.add_argument('--column_stride', type=float, default=COLUMN_STRIDE, help='Column mode only: XY step between columns (m). Set == column_window for no overlap (block count ~ grid); < window for overlap.')
 	args = parser.parse_args()
 
 	# Resolve runtime toggles
@@ -1332,7 +1342,9 @@ def main():
 	FOCAL_GAMMA = args.focal_gamma
 	RGB_DROPOUT_PROB = args.rgb_dropout
 	BLOCK_MODE = args.block_mode
-	
+	COLUMN_WINDOW = args.column_window
+	COLUMN_STRIDE = args.column_stride
+
 	# Load model configuration from JSON file
 	try:
 		print(f"Loading model configuration from: {args.config}")

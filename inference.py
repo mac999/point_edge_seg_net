@@ -22,7 +22,7 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 # Configuration Constants
-DEFAULT_MODEL_WEIGHTS_PATH = './logs/20260126_155613/best_model.pth' 
+DEFAULT_MODEL_WEIGHTS_PATH = './logs/20260705_092038/best_model.pth'  # confirmed column-trained model
 DEFAULT_TEST_POINT_CLOUD_PATH = './sample/area_6_conferenceRoom_1.txt'
 DEFAULT_CONFIG_PATH = 'model_params.json'
 INFERENCE_BLOCK_PATH = './inference_blocks'
@@ -226,10 +226,41 @@ def parse_arguments():
                        help='Directory for inference blocks')
     parser.add_argument('--no_visualization', '--no_vis', action='store_true',
                        help='Skip visualization')
-    parser.add_argument('--voting', action='store_true',
-                       help='Use overlapping column blocks + majority voting (matches --block_mode column training)')
+    # Voting is ON by default: the shipped model is trained with --block_mode column, so
+    # overlapping full-height column blocks + majority voting match the training-time point
+    # distribution. --no_voting falls back to legacy sequential chunks (not recommended).
+    parser.add_argument('--voting', dest='voting', action='store_true', default=True,
+                       help='Use overlapping column blocks + majority voting (default; matches column training)')
+    parser.add_argument('--no_voting', dest='voting', action='store_false',
+                       help='Disable voting; use legacy sequential chunks (NOT recommended for column-trained models)')
 
     return parser.parse_args()
+
+def save_segmented_las(output_path, coords, pred_labels, class_colors):
+    """Save the segmented cloud as a LAS file for immediate viewing (CloudCompare, etc.).
+
+    - XYZ from the original coordinates
+    - RGB painted with each point's predicted-class color, so the segmentation is visible
+      the moment the file is opened
+    - the integer class id is also stored in the standard LAS 'classification' field, so
+      downstream tools can filter/relabel by class without needing the color LUT
+    """
+    import laspy
+    coords = np.asarray(coords, dtype=np.float64)
+    pred_labels = np.asarray(pred_labels)
+
+    header = laspy.LasHeader(point_format=3, version="1.2")  # fmt 3 = XYZ + RGB
+    header.offsets = coords.min(axis=0)
+    header.scales = np.array([0.001, 0.001, 0.001])          # 1 mm precision
+    las = laspy.LasData(header)
+
+    las.x, las.y, las.z = coords[:, 0], coords[:, 1], coords[:, 2]
+    # class_colors is 0-1 float; LAS color channels are 16-bit (0-65535)
+    col16 = (class_colors[pred_labels] * 65535.0).astype(np.uint16)
+    las.red, las.green, las.blue = col16[:, 0], col16[:, 1], col16[:, 2]
+    las.classification = pred_labels.astype(np.uint8)        # 0-31 range; 13 classes fit
+    las.write(output_path)
+    return output_path
 
 def main():
     """Main inference function"""
@@ -300,6 +331,15 @@ def main():
     fmt = ' '.join('%d' if c in int_cols else '%.6f' for c in range(n_in + 1))
     np.savetxt(output_file, segmented_points, fmt=fmt)
     print(f"Segmentation results saved to: {output_file}")
+
+    # Also save a colored LAS for immediate viewing (RGB = predicted-class color, and the
+    # class id in the standard 'classification' field). This is the file you open directly.
+    las_output_file = args.input_cloud.replace('.txt', '_segmented.las')
+    try:
+        save_segmented_las(las_output_file, original_coords, pred_labels, class_colors)
+        print(f"Segmentation LAS saved to: {las_output_file}")
+    except Exception as e:
+        print(f"Warning: could not write LAS ({e}); the .txt result above is still available.")
     
     # 3D visualization (if not disabled)
     if not args.no_visualization:
