@@ -1,0 +1,111 @@
+{
+  "test_area": "Area_5",
+  "model_path": "logs\\20260707_101907\\best_model.pth",
+  "overall_metrics": {
+    "loss": 0.9056628376245499,
+    "accuracy": 0.8616492638221154,
+    "mAcc": 0.690507470736243,
+    "mIoU": 0.595683757812933,
+    "total_points": 5857280,
+    "correct_predictions": 5046921
+  },
+  "per_class_results": {
+    "ceiling": {
+      "accuracy": 0.9712597745538711,
+      "iou": 0.9215542043870678,
+      "correct": 1215248,
+      "total": 1251208,
+      "union": 1318694
+    },
+    "floor": {
+      "accuracy": 0.9769510789067999,
+      "iou": 0.9637617137146416,
+      "correct": 1131197,
+      "total": 1157885,
+      "union": 1173731
+    },
+    "wall": {
+      "accuracy": 0.9315527453077409,
+      "iou": 0.7912833241072577,
+      "correct": 1489469,
+      "total": 1598910,
+      "union": 1882346
+    },
+    "beam": {
+      "accuracy": 0.9485697681926777,
+      "iou": 0.8053119175528999,
+      "correct": 29381,
+      "total": 30974,
+      "union": 36484
+    },
+    "column": {
+      "accuracy": 0.17392039688803698,
+      "iou": 0.1543565059891325,
+      "correct": 15425,
+      "total": 88690,
+      "union": 99931
+    },
+    "window": {
+      "accuracy": 0.6135149796710456,
+      "iou": 0.5597297835104673,
+      "correct": 109702,
+      "total": 178809,
+      "union": 195991
+    },
+    "door": {
+      "accuracy": 0.5229231598579811,
+      "iou": 0.3935689968754372,
+      "correct": 84393,
+      "total": 161387,
+      "union": 214430
+    },
+    "table": {
+      "accuracy": 0.8229036770851491,
+      "iou": 0.695783291889318,
+      "correct": 184114,
+      "total": 223737,
+      "union": 264614
+    },
+    "chair": {
+      "accuracy": 0.8384407544846691,
+      "iou": 0.6772170694144216,
+      "correct": 98059,
+      "total": 116954,
+      "union": 144797
+    },
+    "sofa": {
+      "accuracy": 0.20090847707323062,
+      "iou": 0.15721971370929003,
+      "correct": 3273,
+      "total": 16291,
+      "union": 20818
+    },
+    "bookcase": {
+      "accuracy": 0.689299874906622,
+      "iou": 0.5866424397006239,
+      "correct": 311882,
+      "total": 452462,
+      "union": 531639
+    },
+    "board": {
+      "accuracy": 0.6394217157417894,
+      "iou": 0.5674376972723418,
+      "correct": 36135,
+      "total": 56512,
+      "union": 63681
+    },
+    "clutter": {
+      "accuracy": 0.6469307169015457,
+      "iou": 0.4700221934452305,
+      "correct": 338643,
+      "total": 523461,
+      "union": 720483
+    }
+  },
+  "test_config": {
+    "num_classes": 13,
+    "batch_size": 18,
+    "total_blocks": 715,
+    "valid_batches": 40
+  }
+}
