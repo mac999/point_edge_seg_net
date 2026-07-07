@@ -50,12 +50,12 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
   - New: **mIoU / mAcc metrics**, **TTA (Z-rotation) + model-ensemble inference**, **colored LAS export**, early-stopping aligned to the checkpoint metric.
 
 
-Optimization strategy under 24GB VRAM constraints (boundary artifacts, class imbalance, generalization) — **implemented in v1.0**:
-* ✅ **Overlapping context-preserving blocks:** `column` mode builds overlapping full-height columns instead of context-losing cubic grid cells, preserving the topology of objects (e.g., columns/doors) bisected by grid boundaries.
-* ✅ **Coordinate normalization:** per-block coordinate centering (translation invariance) inside the model, applied identically at train and inference — improves generalization to unseen areas.
-* ✅ **mIoU-aware loss:** Lovász-Softmax combined with Focal loss directly optimizes per-class IoU, lifting rare classes without a recall-only bias.
-* ✅ **Multi-view voting inference:** predictions from overlapping/rotated (TTA) blocks are aggregated per point to suppress boundary noise; a coverage-guaranteed blocker ensures every point of large/dense clouds is predicted.
-* ✅ **Curvature feature fix + wider receptive field (k=32) + 2-layer bottleneck Transformer** for stronger local/global context.
+Optimization strategy under 24GB VRAM constraints (boundary artifacts, class imbalance, generalization):
+* **Overlapping context-preserving blocks:** `column` mode builds overlapping full-height columns instead of context-losing cubic grid cells, preserving the topology of objects (e.g., columns/doors) bisected by grid boundaries.
+* **Coordinate normalization:** per-block coordinate centering (translation invariance) inside the model, applied identically at train and inference — improves generalization to unseen areas.
+* **mIoU-aware loss:** Lovász-Softmax combined with Focal loss directly optimizes per-class IoU, lifting rare classes without a recall-only bias.
+* **Multi-view voting inference:** predictions from overlapping/rotated (TTA) blocks are aggregated per point to suppress boundary noise; a coverage-guaranteed blocker ensures every point of large/dense clouds is predicted.
+* **Curvature feature fix + wider receptive field (k=32) + 2-layer bottleneck Transformer** for stronger local/global context.
 
 Still open (future work):
 * **Global Context Injection:** append normalized global Z to features to better separate height-dependent classes (e.g., beam vs. sofa).

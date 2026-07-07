@@ -4,7 +4,7 @@
 # Purpose: Loads a trained model to perform segmentation on a new point cloud file.
 # Dependencies: torch, torch_geometric, numpy, open3d
 
-import torch, numpy as np, open3d as o3d, os, argparse
+import torch, numpy as np, open3d as o3d, os, argparse, math
 from model import PointEdgeSegNet
 from data_processing import (
     calculate_features_with_open3d,
@@ -22,7 +22,7 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 # Configuration Constants
-DEFAULT_MODEL_WEIGHTS_PATH = './logs/20260705_225359/best_model.pth'  # confirmed model (OA 81.8 / mIoU 53.3, Area_5)
+DEFAULT_MODEL_WEIGHTS_PATH = './logs/20260707_101907/best_model.pth'  # confirmed model (OA 86.2 / mIoU 59.6, Area_5)
 DEFAULT_TEST_POINT_CLOUD_PATH = './sample/area_6_conferenceRoom_1.txt'
 DEFAULT_CONFIG_PATH = 'model_params.json'
 INFERENCE_BLOCK_PATH = './inference_blocks'
@@ -157,24 +157,53 @@ def create_inference_blocks_columns(point_cloud_path, block_output_dir, block_si
         block_files.append(fp)
     return block_files, coords, len(coords)
 
-def run_inference_with_voting(model, block_files, device, total_points, num_classes, coords=None):
+def run_inference_with_voting(models, block_files, device, total_points, num_classes,
+                              coords=None, tta_rotations=(0.0,)):
     """Run inference on column blocks and majority-vote per point.
 
-    coords (the full-cloud XYZ) is passed to merge_block_votes so any residual uncovered
-    point is filled from its nearest voted neighbour rather than silently labelled class 0.
+    Supports two multi-view boosts that cost no extra VRAM (blocks stay batch_size=1):
+      - Model ensemble: `models` may be a list; per block their softmax probabilities are
+        averaged before argmax (complementary models cancel each other's errors).
+      - Test-time augmentation (TTA): each block is additionally predicted under Z-axis
+        rotations in `tta_rotations` (degrees). Coordinates AND the normal channels (x[:,0:3])
+        are rotated together so geometry stays consistent; every rotated prediction casts a
+        vote. Labels are rotation-invariant, so votes accumulate correctly.
+
+    coords (full-cloud XYZ) is passed to merge_block_votes so any residual uncovered point is
+    filled from its nearest voted neighbour rather than silently labelled class 0.
     """
+    if not isinstance(models, (list, tuple)):
+        models = [models]
+    for m in models:
+        m.eval()
     dataset = InferenceBlockDataset(block_files)
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
     per_block = []
-    model.eval()
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Inference (voting)"):
             batch = batch.to(device)
-            out = model(batch)
-            preds = out.argmax(dim=-1).cpu().numpy()
             num_valid = batch.num_valid_points[0].item()
             idx = batch.point_indices.cpu().numpy()[:num_valid]
-            per_block.append((preds[:num_valid], idx))
+            base_pos = batch.pos.clone()
+            base_nrm = batch.x[:, 0:3].clone()  # normals rotate rigidly with the geometry
+            for deg in tta_rotations:
+                if deg % 360 != 0.0:
+                    a = math.radians(deg)
+                    c, s = math.cos(a), math.sin(a)
+                    Rz_t = torch.tensor([[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]],
+                                        device=device, dtype=base_pos.dtype)  # == Rz^T for row vectors
+                    batch.pos = base_pos @ Rz_t
+                    batch.x[:, 0:3] = base_nrm @ Rz_t
+                else:
+                    batch.pos = base_pos
+                    batch.x[:, 0:3] = base_nrm
+                # Ensemble: average softmax over models
+                probs = None
+                for m in models:
+                    p = torch.softmax(m(batch), dim=-1)
+                    probs = p if probs is None else probs + p
+                preds = probs.argmax(dim=-1).cpu().numpy()
+                per_block.append((preds[:num_valid], idx))
     final_labels, vote_counts = merge_block_votes(total_points, num_classes, per_block, coords=coords)
     return final_labels
 
@@ -252,6 +281,10 @@ def parse_arguments():
                        help='Column-mode window (m). Should match training COLUMN_WINDOW (2.0).')
     parser.add_argument('--column_stride', type=float, default=INFERENCE_COLUMN_STRIDE,
                        help='Column-mode stride (m). < window => overlap => more votes per point.')
+    parser.add_argument('--tta', action='store_true',
+                       help='Test-time augmentation: also predict under Z-rotations 90/180/270 and vote (no extra VRAM).')
+    parser.add_argument('--ensemble', nargs='*', default=None, metavar='WEIGHTS.pth',
+                       help='Extra model weight paths to ensemble (softmax-averaged) with --model_weights.')
 
     return parser.parse_args()
 
@@ -312,11 +345,20 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    model = PointEdgeSegNet(num_features=num_features, num_classes=NUM_CLASSES, feature_dims=feature_dims)
-    model.load_state_dict(torch.load(args.model_weights, map_location=device, weights_only=False))
-    model = model.to(device)
-    model.eval()
-    print("Model loaded successfully!")
+    def _load(wpath):
+        m = PointEdgeSegNet(num_features=num_features, num_classes=NUM_CLASSES, feature_dims=feature_dims)
+        m.load_state_dict(torch.load(wpath, map_location=device, weights_only=False))
+        return m.to(device).eval()
+
+    models = [_load(args.model_weights)]
+    for wpath in (args.ensemble or []):
+        models.append(_load(wpath))
+        print(f"Ensemble model added: {wpath}")
+    model = models[0]  # primary (used by the non-voting path)
+    print(f"Model(s) loaded successfully! ({len(models)} model{'s' if len(models) > 1 else ''})")
+    tta_rotations = (0.0, 90.0, 180.0, 270.0) if args.tta else (0.0,)
+    if args.tta:
+        print("TTA enabled: Z-rotations 0/90/180/270")
 
     # Step 1 + 2: Create inference blocks and run inference
     if args.voting:
@@ -326,8 +368,8 @@ def main():
             args.input_cloud, args.block_path, BLOCK_SIZE,
             window=args.column_window, stride=args.column_stride, feature_config=spec
         )
-        pred_labels = run_inference_with_voting(model, block_files, device, total_points, NUM_CLASSES,
-                                                coords=original_coords)
+        pred_labels = run_inference_with_voting(models, block_files, device, total_points, NUM_CLASSES,
+                                                coords=original_coords, tta_rotations=tta_rotations)
     else:
         block_files, original_coords = create_inference_blocks(
             args.input_cloud,
