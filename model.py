@@ -73,22 +73,23 @@ class AttentionModule(nn.Module):
 		return x * att_weights
 
 class EdgeConv(nn.Module):
-	def __init__(self, in_channels, out_channels, residual=False):
+	def __init__(self, in_channels, out_channels, residual=False, k=20):
 		super(EdgeConv, self).__init__()
 		self.residual = residual and (in_channels == out_channels)
-		
+		self.k = k  # kNN neighbourhood size for the edge graph (was hard-coded 20)
+
 		self.mlp = nn.Sequential(
-			nn.Linear(2 * in_channels, out_channels), 
-			nn.BatchNorm1d(out_channels), 
+			nn.Linear(2 * in_channels, out_channels),
+			nn.BatchNorm1d(out_channels),
 			nn.ReLU(),
-			nn.Linear(out_channels, out_channels), 
+			nn.Linear(out_channels, out_channels),
 			nn.BatchNorm1d(out_channels)
 		)
 		self.attention = AttentionModule(out_channels)
 		self.final_activation = nn.ReLU()
 
-	def forward(self, x, pos, batch, k=20):  # Reduced k for memory efficiency
-		edge_index = knn_graph(pos, k=k, batch=batch, loop=False)
+	def forward(self, x, pos, batch):
+		edge_index = knn_graph(pos, k=self.k, batch=batch, loop=False)
 		row, col = edge_index
 		
 		edge_features = torch.cat([x[row], x[col] - x[row]], dim=1)
@@ -103,20 +104,30 @@ class EdgeConv(nn.Module):
 		return self.final_activation(aggr_out)
 
 class LightweightTransformer(nn.Module):
-	"""Lightweight Transformer for Bottleneck (XYZ + Spatial Position Encoding)"""
-	def __init__(self, dim=512, num_heads=4, dropout=0.1, spatial_dim=3):
+	"""Lightweight Transformer for Bottleneck (XYZ + Spatial Position Encoding).
+
+	Now stacks num_layers pre-norm attention+FFN blocks (was a single block). The bottleneck
+	operates on the FPS-downsampled set (~200 points), so extra layers cost almost no memory
+	but add global-context depth where it is cheapest.
+	"""
+	def __init__(self, dim=512, num_heads=4, dropout=0.1, spatial_dim=3, num_layers=2):
 		super().__init__()
 		self.spatial_dim = spatial_dim
-		self.norm1 = nn.LayerNorm(dim)
-		self.attn = nn.MultiheadAttention(dim, num_heads, dropout=dropout, batch_first=True)
-		self.norm2 = nn.LayerNorm(dim)
-		self.ffn = nn.Sequential(
-			nn.Linear(dim, dim * 2),
-			nn.GELU(),
-			nn.Dropout(dropout),
-			nn.Linear(dim * 2, dim),
-			nn.Dropout(dropout)
-		)
+		self.num_layers = num_layers
+		self.layers = nn.ModuleList([
+			nn.ModuleDict({
+				'norm1': nn.LayerNorm(dim),
+				'attn': nn.MultiheadAttention(dim, num_heads, dropout=dropout, batch_first=True),
+				'norm2': nn.LayerNorm(dim),
+				'ffn': nn.Sequential(
+					nn.Linear(dim, dim * 2),
+					nn.GELU(),
+					nn.Dropout(dropout),
+					nn.Linear(dim * 2, dim),
+					nn.Dropout(dropout)
+				),
+			}) for _ in range(num_layers)
+		])
 
 		# Position encoding over XYZ(3) + Spatial(spatial_dim). Default spatial_dim=3 -> 6D,
 		# identical to the original; when spatial features are disabled it falls back to 3D (XYZ).
@@ -166,15 +177,14 @@ class LightweightTransformer(nn.Module):
 		combined_pos = torch.cat([pos_batched, spatial_batched], dim=2) if use_spatial else pos_batched
 		pos_emb = self.pos_enc(combined_pos)
 		x_batched = x_batched + pos_emb
-		
-		# Self-Attention
-		x_norm = self.norm1(x_batched)
-		attn_out, _ = self.attn(x_norm, x_norm, x_norm, key_padding_mask=~batch_mask)
-		x_batched = x_batched + attn_out
-		
-		# FFN
-		x_batched = x_batched + self.ffn(self.norm2(x_batched))
-		
+
+		# Stacked pre-norm attention + FFN blocks
+		for layer in self.layers:
+			x_norm = layer['norm1'](x_batched)
+			attn_out, _ = layer['attn'](x_norm, x_norm, x_norm, key_padding_mask=~batch_mask)
+			x_batched = x_batched + attn_out
+			x_batched = x_batched + layer['ffn'](layer['norm2'](x_batched))
+
 		# [Batch, Max_Points, C] to [Total_Points, C]
 		x_out = torch.zeros_like(x)
 		for b in range(batch_size):
@@ -189,8 +199,12 @@ class LightweightTransformer(nn.Module):
 		return x_out
 
 class PointEdgeSegNet(nn.Module):
-	def __init__(self, num_features, num_classes, feature_dims=(4, 3, 3)):
+	def __init__(self, num_features, num_classes, feature_dims=(4, 3, 3), knn=32, transformer_layers=2):
 		super(PointEdgeSegNet, self).__init__()
+		# knn: EdgeConv neighbourhood size (was 20; 32 gives a richer local graph).
+		# transformer_layers: bottleneck attention depth (was 1). Both are architecture-defining,
+		# so train and inference must use the SAME values -> they default here and every caller
+		# constructs with the defaults. Changing them requires retraining (checkpoint changes).
 
 		# Feature layout is configurable (geo, rgb, spatial). Default (4,3,3)=10D reproduces
 		# the original S3DIS model exactly, so existing weights load unchanged. Other domains
@@ -207,15 +221,16 @@ class PointEdgeSegNet(nn.Module):
 		self.feature_gate = FeatureGate(geo_dim=geo_dim, rgb_dim=rgb_dim, spatial_dim=spatial_dim)
 
 		# Optimized Encoder - reduced channels and removed deepest layer
-		self.conv1 = EdgeConv(num_features, 64)
-		self.conv1_2 = EdgeConv(64, 64, residual=True)
-		self.conv2 = EdgeConv(64, 128)
-		self.conv2_2 = EdgeConv(128, 128, residual=True)
-		self.conv3 = EdgeConv(128, 256)
-		self.conv3_2 = EdgeConv(256, 256, residual=True)
-		self.conv4 = EdgeConv(256, 512)
-		# Bottleneck Transformer with Absolute Position Encoding (spatial-dim aware)
-		self.bottleneck_transformer = LightweightTransformer(dim=512, num_heads=4, dropout=0.1, spatial_dim=spatial_dim)
+		self.conv1 = EdgeConv(num_features, 64, k=knn)
+		self.conv1_2 = EdgeConv(64, 64, residual=True, k=knn)
+		self.conv2 = EdgeConv(64, 128, k=knn)
+		self.conv2_2 = EdgeConv(128, 128, residual=True, k=knn)
+		self.conv3 = EdgeConv(128, 256, k=knn)
+		self.conv3_2 = EdgeConv(256, 256, residual=True, k=knn)
+		self.conv4 = EdgeConv(256, 512, k=knn)
+		# Bottleneck Transformer with (now centered) Position Encoding (spatial-dim aware)
+		self.bottleneck_transformer = LightweightTransformer(dim=512, num_heads=4, dropout=0.1,
+															  spatial_dim=spatial_dim, num_layers=transformer_layers)
 
 		# Simplified Decoder
 		self.deconv1_mlp = nn.Sequential(
@@ -250,7 +265,17 @@ class PointEdgeSegNet(nn.Module):
 
 	def forward(self, data):
 		x, pos, batch = data.x, data.pos, data.batch
-		
+
+		# Per-sample coordinate centering (translation invariance). knn_graph / FPS /
+		# knn_interpolate are already translation-invariant, but the bottleneck transformer's
+		# position encoding consumed ABSOLUTE world coords, so it overfit to each training
+		# area's coordinate range and generalized worse to unseen areas (part of the val->test
+		# gap). Centering every block to its own centroid feeds small local coords in BOTH
+		# training and inference. Output is per-point (order preserved), so the caller keeps its
+		# original coordinates unchanged -- no un-normalization needed downstream.
+		centroid = scatter(pos, batch, dim=0, reduce='mean')  # [num_samples, 3]
+		pos = pos - centroid[batch]
+
 		# Apply feature gating at input
 		x_gated, gates = self.feature_gate(x)
 		x0, pos0, batch0 = x_gated, pos, batch
