@@ -76,7 +76,7 @@ BLOCK_DATA_PATH = './block_s3dis'  # Block data storage path
 TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']  # Fixed: proper training areas
 TEST_AREA = 'Area_5'  # Fixed: proper test area
 NUM_EPOCHS = 60  # Extended for full convergence
-BATCH_SIZE = 14  # Increased from 16 for better gradient estimation
+BATCH_SIZE = 10  # Lowered 14->10 to offset the larger EdgeConv k (20->32) VRAM; effective batch kept at 60 via ACCUMULATION_STEPS=6
 VAL_BATCH_SIZE = 18
 LEARNING_RATE = 0.003  # Increased from 0.002 for faster learning
 NUM_FEATURES = 10  # Training: normals(3) + curvature(1) + RGB(3) + spatial(3)
@@ -92,7 +92,7 @@ GPU_MEMORY_THRESHOLD = 0.85  # 85% GPU memory usage threshold
 MAX_GRADIENT_NORM = 20.0     # Maximum gradient norm threshold (increased)
 
 # Gradient Accumulation settings (virtual batch size increase)
-ACCUMULATION_STEPS = 4  # Effective batch size: 14 × 4 = 56
+ACCUMULATION_STEPS = 6  # Effective batch size: 10 × 6 = 60
 
 # Thermal cool-down for laptops/small GPUs. 0.0 disables all the throughput-killing
 # time.sleep() pauses that were previously hard-coded (10s every 200 batches, etc.).
@@ -142,8 +142,59 @@ class FocalLoss(nn.Module):
 		
 		# Focal Loss formula: (1-pt)^gamma * log(pt)
 		focal_loss = (1 - pt) ** self.gamma * ce_loss
-		
+
 		return focal_loss.mean()
+
+def _lovasz_grad(gt_sorted):
+	"""Gradient of the Lovász extension of the Jaccard loss (Berman et al., 2018)."""
+	p = len(gt_sorted)
+	gts = gt_sorted.sum()
+	intersection = gts - gt_sorted.float().cumsum(0)
+	union = gts + (1 - gt_sorted).float().cumsum(0)
+	jaccard = 1. - intersection / union
+	if p > 1:
+		jaccard[1:p] = jaccard[1:p] - jaccard[0:-1]
+	return jaccard
+
+def lovasz_softmax_flat(probas, labels, num_classes):
+	"""Multi-class Lovász-Softmax over flat (already valid-masked) points; present classes only."""
+	if probas.numel() == 0:
+		return probas.sum() * 0.
+	losses = []
+	for c in range(num_classes):
+		fg = (labels == c).float()
+		if fg.sum() == 0:
+			continue  # class absent in this batch -> skip (present-class averaging)
+		errors = (fg - probas[:, c]).abs()
+		errors_sorted, perm = torch.sort(errors, 0, descending=True)
+		losses.append(torch.dot(errors_sorted, _lovasz_grad(fg[perm])))
+	if not losses:
+		return probas.sum() * 0.
+	return torch.stack(losses).mean()
+
+class FocalLovaszLoss(nn.Module):
+	"""Focal (per-point) + Lovász-Softmax (per-class IoU surrogate).
+
+	Focal optimizes per-point accuracy/recall; Lovász directly optimizes the mean IoU we
+	actually report and on which the rare classes (sofa/column/board/door) are graded. They
+	are complementary: loss = focal_weight*focal + lovasz_weight*lovasz. This targets mIoU,
+	not just OA, which is where the previous recall-only weighting left gains on the table.
+	"""
+	def __init__(self, class_weights=None, gamma=2.0, ignore_index=-1, focal_weight=1.0, lovasz_weight=1.0):
+		super(FocalLovaszLoss, self).__init__()
+		self.focal = FocalLoss(class_weights=class_weights, gamma=gamma, ignore_index=ignore_index)
+		self.ignore_index = ignore_index
+		self.focal_weight = focal_weight
+		self.lovasz_weight = lovasz_weight
+
+	def forward(self, inputs, targets):
+		loss = self.focal_weight * self.focal(inputs, targets)
+		valid = (targets != self.ignore_index)
+		if valid.any():
+			# Lovász needs probabilities in FP32 (sort/cumsum); cast for AMP safety.
+			probas = F.softmax(inputs[valid].float(), dim=1)
+			loss = loss + self.lovasz_weight * lovasz_softmax_flat(probas, targets[valid], inputs.size(1))
+		return loss
 
 def safe_gpu_operation():
 	"""GPU memory safety check and cleanup with detailed logging"""
@@ -292,6 +343,24 @@ def save_training_summary(log_dir, history, best_epoch, best_val_acc):
 	
 	print(f"Training plots saved to: {plot_path}")
 
+def refresh_curvature_inplace(features, points):
+	"""Recompute the curvature channel from coordinates at block-build time.
+
+	The stored processed_s3dis/*.pt carry a DEPRECATED curvature (distance of each normal
+	from the room's global mean normal, ~constant, "almost no usable signal"), while the live
+	code and inference use local surface variation. Rather than mutate the source .pt with a
+	separate script, we refresh channel once per room here (on the FULL cloud, matching how
+	inference computes features) so the generated blocks - the actual training data - carry the
+	correct edge cue. No-op if the configured feature layout has no curvature channel.
+	"""
+	normals_count = 3 if NORMALS_PRESENT else 0
+	if FEATURE_DIMS[0] <= normals_count:   # geo group is normals-only -> no curvature slot
+		return features
+	from data_processing import compute_surface_variation
+	knn = int(get_model_config().get('features', {}).get('neighbor_knn', 15))
+	features[:, normals_count] = compute_surface_variation(points, knn=knn)
+	return features
+
 def preprocess_dataset():
 	"""
 	Split existing processed_s3dis pt files into 8192 point blocks
@@ -323,8 +392,9 @@ def preprocess_dataset():
 				
 				# Convert to numpy for spatial processing
 				points = data.pos.numpy()
-				features = data.x.numpy() 
+				features = data.x.numpy()
 				labels = data.y.numpy()
+				features = refresh_curvature_inplace(features, points)  # fix stale curvature channel
 				
 				# Load preprocessing parameters from config
 				config = get_model_config()
@@ -444,6 +514,7 @@ def preprocess_dataset_columns():
 				points = data.pos.numpy()
 				features = data.x.numpy()
 				labels = data.y.numpy()
+				features = refresh_curvature_inplace(features, points)  # fix stale curvature channel
 				# sanitize room name for the filename (area token must stay last, after '__')
 				room = os.path.splitext(os.path.basename(pt_file))[0]
 				room = ''.join(c if (c.isalnum() or c in '-') else '-' for c in room)
@@ -994,7 +1065,8 @@ def run_training(args=None):
 
 	# Load class weights from configuration
 	class_weights = get_class_weights(as_tensor=True, device=device)
-	criterion = FocalLoss(class_weights=class_weights, gamma=FOCAL_GAMMA, ignore_index=-1)
+	criterion = FocalLovaszLoss(class_weights=class_weights, gamma=FOCAL_GAMMA, ignore_index=-1,
+								focal_weight=1.0, lovasz_weight=1.0)
 
 	# Initialize GradScaler for mixed precision
 	scaler = GradScaler()
@@ -1192,7 +1264,8 @@ def test_model(model_path):
 	
 	# Test metrics - load class weights from configuration
 	class_weights = get_class_weights(as_tensor=True, device=device)
-	criterion_test = FocalLoss(class_weights=class_weights, gamma=FOCAL_GAMMA, ignore_index=-1)
+	criterion_test = FocalLovaszLoss(class_weights=class_weights, gamma=FOCAL_GAMMA, ignore_index=-1,
+									 focal_weight=1.0, lovasz_weight=1.0)
 	correct_nodes, total_nodes, total_loss = 0, 0, 0.0
 	valid_batches = 0
 	
