@@ -162,12 +162,18 @@ def resolve_feature_config(config: Optional[Dict] = None) -> Dict:
             "spatial_scale": 0.1,       # grid size (m) for spatial context; SCALE IT to
                                         # your domain: ~0.1 indoor, ~0.5-2 bridge/tunnel,
                                         # ~2-10 terrain/aerial
-            "neighbor_knn":  15         # kNN for normals/curvature
+            "neighbor_knn":  15,        # kNN for normals/curvature
+            "use_block_context": false, # block-level buffered-context descriptor (see
+                                        # BlockContextExtractor); adds 4+context_bins dims
+            "context_buffer": 2.0,      # buffer (m) around each block's XY bounds
+            "context_bins":   4         # Z-histogram bins of the context descriptor
         }
 
     Returns a dict with resolved toggles, column maps, per-group dims
-    (geo_dim/rgb_dim/spatial_dim) and total num_features. Feature vector order is always
-    [normals, curvature, rgb, spatial]; disabled groups are simply omitted.
+    (geo_dim/rgb_dim/spatial_dim/context_dim) and total num_features. Feature vector order
+    is always [normals, curvature, rgb, spatial, block-context]; disabled groups are simply
+    omitted. NOTE: the block-context group is appended at BLOCK-build time (it depends on
+    the block's neighbourhood), not by extract_features_from_room_data().
     """
     if config is None:
         config = get_model_config()
@@ -185,6 +191,9 @@ def resolve_feature_config(config: Optional[Dict] = None) -> Dict:
         'xyz_cols':      list(inp.get('xyz_cols', [0, 1, 2])),
         'rgb_cols':      inp.get('rgb_cols', [3, 4, 5]),
         'rgb_max':       float(inp.get('rgb_max', 255.0)),
+        'use_block_context': bool(feats.get('use_block_context', False)),
+        'context_buffer':    float(feats.get('context_buffer', 2.0)),
+        'context_bins':      max(1, int(feats.get('context_bins', 4))),
     }
     # If color is disabled, ignore any rgb column mapping.
     if not spec['use_rgb']:
@@ -193,17 +202,20 @@ def resolve_feature_config(config: Optional[Dict] = None) -> Dict:
     geo = (3 if spec['use_normals'] else 0) + (1 if spec['use_curvature'] else 0)
     rgb = 3 if spec['use_rgb'] else 0
     spatial = 3 if spec['use_spatial'] else 0
+    context = (4 + spec['context_bins']) if spec['use_block_context'] else 0
     spec['geo_dim'] = geo
     spec['rgb_dim'] = rgb
     spec['spatial_dim'] = spatial
-    spec['num_features'] = geo + rgb + spatial
+    spec['context_dim'] = context
+    spec['num_features'] = geo + rgb + spatial + context
 
     # Consistency check against an explicit num_features, if provided.
     declared = config.get('num_features')
     if declared is not None and int(declared) != spec['num_features']:
         print(f"Warning: config num_features={declared} but enabled features imply "
               f"{spec['num_features']} (normals={spec['use_normals']}, curv={spec['use_curvature']}, "
-              f"rgb={spec['use_rgb']}, spatial={spec['use_spatial']}). Using {spec['num_features']}.")
+              f"rgb={spec['use_rgb']}, spatial={spec['use_spatial']}, "
+              f"block_context={spec['use_block_context']}). Using {spec['num_features']}.")
     return spec
 
 def rgb_to_hsv(rgb: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
@@ -728,8 +740,8 @@ def augment_training_block(data,
     Feature layout assumed (S3DIS default, 10D):
         [normals(0:3), curvature(3:4), RGB(4:7), spatial(7:10)]
     Rotation is applied to BOTH the coordinates (data.pos) and the normal vectors
-    (x[:, 0:3]) so the geometry stays self-consistent. Curvature and spatial context
-    features are rotation-invariant magnitudes and are left untouched.
+    (x[:, 0:3]) so the geometry stays self-consistent. Curvature, spatial context and
+    block-context features are rotation-invariant magnitudes and are left untouched.
 
     Args:
         data: torch_geometric Data with .pos (N,3) and .x (N,F)
@@ -799,6 +811,122 @@ def augment_training_block(data,
 
     data.x = x
     return data
+
+# -----------------------------------------------------------------------------
+# Block-level buffered-context features (wide-area descriptor per block)
+# -----------------------------------------------------------------------------
+class BlockContextExtractor:
+    """Aggregate a WIDE-AREA descriptor for each block from a buffered neighbourhood.
+
+    Motivation (VRAM-free receptive-field widening): the model only ever sees one
+    block_size-point column at a time, so long-range context between blocks is lost -
+    the README names this the remaining bottleneck. Instead of enlarging the block
+    (which costs VRAM), each block's XY bounds are expanded by `buffer` metres and the
+    points of NEIGHBOURING blocks falling in that buffer are summarized into a small,
+    fixed-size statistics vector that is appended to every point of the block as
+    constant channels. The network then learns from "what surrounds this block"
+    (verticality/horizontality shares, edge-ness, density, vertical mass histogram)
+    without a single extra point entering the GPU.
+
+    This is the input-level global-context-injection family from the literature:
+    PointNet's per-block normalized room-global coordinates, Engelmann et al. 2017
+    (multi-scale/enlarged block context), SCF-Net's global contextual features, and
+    classic multi-scale handcrafted eigenfeatures (Weinmann 2015 / Hackel 2016) -
+    combined with the standard buffered-tile ("halo") practice of large-scale GIS
+    point-cloud processing.
+
+    Descriptor layout (dim = 4 + bins), every entry in [0, 1], invariant to
+    translation and Z-rotation (safe under augment_training_block):
+        [0] horizontal share : fraction of buffer points with |nz| > 0.9 (floors/ceilings)
+        [1] vertical share   : fraction of buffer points with |nz| < 0.3 (walls/columns)
+        [2] mean curvature   : mean local surface variation of buffer points (edge-ness)
+        [3] density ratio    : n_block / n_buffer (how much larger the context is)
+        [4:] z-histogram     : normalized height distribution of buffer points (bins)
+    """
+    def __init__(self, coords: np.ndarray,
+                 normals: Optional[np.ndarray] = None,
+                 curvature: Optional[np.ndarray] = None,
+                 buffer: float = 2.0,
+                 bins: int = 4):
+        self.coords = np.asarray(coords, dtype=np.float64)
+        self.normals = normals
+        self.curvature = curvature
+        self.buffer = float(buffer)
+        self.bins = max(1, int(bins))
+        self.dim = 4 + self.bins
+        # Sort once by X; per block searchsorted narrows the X range, then a single Y
+        # filter yields the buffer set. Keeps per-block cost ~O(candidates), not O(N).
+        self.order = np.argsort(self.coords[:, 0], kind='stable')
+        self.x_sorted = self.coords[self.order, 0]
+
+    def compute(self, block_indices: np.ndarray) -> np.ndarray:
+        """Return the (dim,) context vector for a block given its REAL point indices."""
+        feat = np.zeros(self.dim, dtype=np.float32)
+        block_indices = np.asarray(block_indices)
+        if len(block_indices) == 0:
+            return feat
+        pts = self.coords[block_indices]
+        lo = pts[:, :2].min(axis=0) - self.buffer
+        hi = pts[:, :2].max(axis=0) + self.buffer
+        s = np.searchsorted(self.x_sorted, lo[0], side='left')
+        e = np.searchsorted(self.x_sorted, hi[0], side='right')
+        cand = self.order[s:e]
+        y = self.coords[cand, 1]
+        ctx_idx = cand[(y >= lo[1]) & (y <= hi[1])]
+        if len(ctx_idx) == 0:  # cannot happen (block points are inside their own buffer)
+            return feat
+        if self.normals is not None:
+            nz = np.abs(np.asarray(self.normals)[ctx_idx, 2])
+            feat[0] = float((nz > 0.9).mean())
+            feat[1] = float((nz < 0.3).mean())
+        if self.curvature is not None:
+            feat[2] = float(np.clip(np.asarray(self.curvature)[ctx_idx].mean(), 0.0, 1.0))
+        feat[3] = float(len(block_indices) / len(ctx_idx))
+        z = self.coords[ctx_idx, 2]
+        z0, z1 = z.min(), z.max()
+        if z1 - z0 > EPSILON:
+            hist, _ = np.histogram(z, bins=self.bins, range=(z0, z1))
+            feat[4:4 + self.bins] = hist.astype(np.float32) / len(z)
+        else:
+            feat[4] = 1.0  # degenerate flat cloud: all mass in the first bin
+        return feat
+
+def make_block_context_extractor(coords: np.ndarray,
+                                 features: Optional[np.ndarray] = None,
+                                 spec: Optional[Dict] = None) -> Optional[BlockContextExtractor]:
+    """Build a BlockContextExtractor from a room cloud + its BASE feature array.
+
+    Returns None when the config disables block context, so call sites can do
+    `if extractor is not None: ...` with zero overhead in the default path. Normals and
+    curvature are sliced out of `features` according to the resolved spec (they occupy
+    the leading geo columns of the base [normals|curvature|rgb|spatial] layout).
+    """
+    spec = spec or resolve_feature_config()
+    if not spec.get('use_block_context'):
+        return None
+    normals = curvature = None
+    if features is not None:
+        off = 0
+        if spec.get('use_normals'):
+            normals = features[:, 0:3]
+            off = 3
+        if spec.get('use_curvature') and features.shape[1] > off:
+            curvature = features[:, off]
+    return BlockContextExtractor(coords, normals=normals, curvature=curvature,
+                                 buffer=spec.get('context_buffer', 2.0),
+                                 bins=spec.get('context_bins', 4))
+
+def append_block_context(block_features: np.ndarray,
+                         extractor: BlockContextExtractor,
+                         real_indices: np.ndarray) -> np.ndarray:
+    """Append the block's context vector as constant per-point channels.
+
+    real_indices must be the block's REAL (non-padded) point indices into the room
+    cloud; padded duplicates would bias the density ratio.
+    """
+    ctx = extractor.compute(real_indices)
+    tiled = np.tile(ctx, (len(block_features), 1))
+    return np.concatenate([block_features.astype(np.float32, copy=False), tiled], axis=1)
 
 # -----------------------------------------------------------------------------
 # Spatial-context-preserving block partitioning (overlapping vertical columns)

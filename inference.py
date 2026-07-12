@@ -14,7 +14,9 @@ from data_processing import (
     get_class_colors,
     partition_columns_cover,
     merge_block_votes,
-    resolve_feature_config
+    resolve_feature_config,
+    make_block_context_extractor,
+    append_block_context
 )
 from torch_geometric.data import Data, Batch
 from torch_geometric.loader import DataLoader
@@ -45,15 +47,23 @@ def create_inference_blocks(point_cloud_path, block_output_dir, block_size=8192,
 
     spec = feature_config or resolve_feature_config()
     num_features = spec['num_features']
+    base_features = num_features - spec.get('context_dim', 0)  # block context is appended per block
     print(f"Calculating {num_features}D features "
-          f"(normals={spec['use_normals']}, curv={spec['use_curvature']}, rgb={spec['use_rgb']}, spatial={spec['use_spatial']})...")
+          f"(normals={spec['use_normals']}, curv={spec['use_curvature']}, rgb={spec['use_rgb']}, "
+          f"spatial={spec['use_spatial']}, block_context={spec.get('use_block_context', False)})...")
     features = extract_features_from_room_data(points, normalize_colors=True, feature_config=spec)
     coords = points[:, spec['xyz_cols']]
 
-    if features.shape[1] != num_features:
-        raise ValueError(f"Feature dimension mismatch! Expected {num_features}D, got {features.shape[1]}D")
-    
-    print(f"Feature validation passed: {features.shape[1]}D features")
+    if features.shape[1] != base_features:
+        raise ValueError(f"Feature dimension mismatch! Expected {base_features}D base features, got {features.shape[1]}D")
+
+    # Optional per-block buffered-context descriptor (must match training). Note: the
+    # sequential chunks of this legacy path are not spatially coherent, so the column
+    # voting path (--voting, default) is the recommended pairing for block context.
+    ctx_extractor = make_block_context_extractor(coords, features, spec)
+
+    print(f"Feature validation passed: {features.shape[1]}D base features"
+          + (f" + {spec['context_dim']}D block context" if ctx_extractor is not None else ""))
     
     # Create output directory
     os.makedirs(block_output_dir, exist_ok=True)
@@ -75,13 +85,16 @@ def create_inference_blocks(point_cloud_path, block_output_dir, block_size=8192,
         # Extract block
         block_coords = coords[start_idx:end_idx]
         block_features = features[start_idx:end_idx]
-        
+        if ctx_extractor is not None:
+            block_features = append_block_context(block_features, ctx_extractor,
+                                                  np.arange(start_idx, end_idx))
+
         # Apply padding if necessary
         if current_block_size < block_size:
             padding_size = block_size - current_block_size
-            
+
             # Feature padding (zeros)
-            pad_features = np.zeros((padding_size, features.shape[1]), dtype=features.dtype)
+            pad_features = np.zeros((padding_size, block_features.shape[1]), dtype=block_features.dtype)
             block_features = np.concatenate([block_features, pad_features], axis=0)
             
             # Position padding (copy last point)
@@ -127,10 +140,18 @@ def create_inference_blocks_columns(point_cloud_path, block_output_dir, block_si
     points = np.loadtxt(point_cloud_path)
     spec = feature_config or resolve_feature_config()
     num_features = spec['num_features']
+    base_features = num_features - spec.get('context_dim', 0)  # block context is appended per block
     features = extract_features_from_room_data(points, normalize_colors=True, feature_config=spec)
     coords = points[:, spec['xyz_cols']]
-    if features.shape[1] != num_features:
-        raise ValueError(f"Feature dimension mismatch! Expected {num_features}D, got {features.shape[1]}D")
+    if features.shape[1] != base_features:
+        raise ValueError(f"Feature dimension mismatch! Expected {base_features}D base features, got {features.shape[1]}D")
+
+    # Optional per-block buffered-context descriptor; MUST match how the model was
+    # trained (features.use_block_context / context_buffer / context_bins in the config).
+    ctx_extractor = make_block_context_extractor(coords, features, spec)
+    if ctx_extractor is not None:
+        print(f"Block-context enabled: +{spec['context_dim']}D per block "
+              f"(buffer={spec['context_buffer']}m, bins={spec['context_bins']})")
 
     os.makedirs(block_output_dir, exist_ok=True)
     for file in os.listdir(block_output_dir):
@@ -145,8 +166,11 @@ def create_inference_blocks_columns(point_cloud_path, block_output_dir, block_si
 
     block_files = []
     for bi, (idx, num_real) in enumerate(tqdm(blocks, desc="Creating column blocks")):
+        block_feats = features[idx]
+        if ctx_extractor is not None:
+            block_feats = append_block_context(block_feats, ctx_extractor, idx[:num_real])
         data = Data(
-            x=torch.tensor(features[idx], dtype=torch.float),
+            x=torch.tensor(block_feats, dtype=torch.float),
             pos=torch.tensor(coords[idx], dtype=torch.float),
             valid_mask=torch.tensor(np.arange(block_size) < num_real, dtype=torch.bool),
             num_valid_points=num_real,
@@ -285,6 +309,16 @@ def parse_arguments():
                        help='Test-time augmentation: also predict under Z-rotations 90/180/270 and vote (no extra VRAM).')
     parser.add_argument('--ensemble', nargs='*', default=None, metavar='WEIGHTS.pth',
                        help='Extra model weight paths to ensemble (softmax-averaged) with --model_weights.')
+    # Block-context overrides. MUST match how --model_weights was trained (same
+    # on/off, buffer, bins); normally leave unset and let the config decide.
+    parser.add_argument('--block_context', dest='block_context', action='store_true', default=None,
+                       help='Force-enable the per-block buffered-context descriptor (overrides config).')
+    parser.add_argument('--no_block_context', dest='block_context', action='store_false',
+                       help='Force-disable the per-block buffered-context descriptor (overrides config).')
+    parser.add_argument('--context_buffer', type=float, default=None,
+                       help='Block-context buffer distance (m); must match training.')
+    parser.add_argument('--context_bins', type=int, default=None,
+                       help='Block-context z-histogram bins; must match training.')
 
     return parser.parse_args()
 
@@ -325,14 +359,25 @@ def main():
     NUM_CLASSES = config['num_classes']
     class_colors = get_class_colors(as_numpy=True) / 255.0
 
+    # Apply block-context CLI overrides before resolving the spec (mirrors train_model.py).
+    feats_cfg = config.get('features') or {}
+    config['features'] = feats_cfg
+    if args.block_context is not None:
+        feats_cfg['use_block_context'] = args.block_context
+    if args.context_buffer is not None:
+        feats_cfg['context_buffer'] = args.context_buffer
+    if args.context_bins is not None:
+        feats_cfg['context_bins'] = args.context_bins
+
     # Resolve the domain-agnostic feature spec (must match how the model was trained).
     spec = resolve_feature_config(config)
     num_features = spec['num_features']
-    feature_dims = (spec['geo_dim'], spec['rgb_dim'], spec['spatial_dim'])
+    feature_dims = (spec['geo_dim'], spec['rgb_dim'], spec['spatial_dim'], spec['context_dim'])
 
     print(f"Dataset: {config.get('dataset_name', 'Custom')}")
     print(f"Number of classes: {NUM_CLASSES}")
-    print(f"Features: {num_features}D {feature_dims} (normals={spec['use_normals']}, curv={spec['use_curvature']}, rgb={spec['use_rgb']}, spatial={spec['use_spatial']})")
+    print(f"Features: {num_features}D {feature_dims} (normals={spec['use_normals']}, curv={spec['use_curvature']}, "
+          f"rgb={spec['use_rgb']}, spatial={spec['use_spatial']}, block_context={spec['use_block_context']})")
     
     # Print configuration
     print("PointEdgeSegNet Inference")

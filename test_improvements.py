@@ -139,14 +139,27 @@ fg = M.FeatureGate(geo_dim=4, rgb_dim=0, spatial_dim=3)  # colorless -> 7D, 2 ga
 xg = torch.rand(40, 7)
 out, gates = fg(xg)
 check("FeatureGate(no rgb) output keeps 7 dims", out.shape == (40, 7), f"(got {tuple(out.shape)})")
-check("FeatureGate reports [N,3] gate view", gates.shape == (40, 3))
+check("FeatureGate reports [N,4] gate view", gates.shape == (40, 4))
 check("absent RGB group gate is exactly 0", float(gates[:, 1].abs().sum()) == 0.0)
 check("present groups gate nonzero", float(gates[:, 0].abs().sum()) > 0 and float(gates[:, 2].abs().sum()) > 0)
 
 # default gate unchanged (3 gates, 10D)
 fg_def = M.FeatureGate(4, 3, 3)
 o2, g2 = fg_def(torch.rand(20, 10))
-check("default FeatureGate -> 10D out, 3 gates", o2.shape == (20, 10) and g2.shape == (20, 3))
+check("default FeatureGate -> 10D out, [N,4] gate view", o2.shape == (20, 10) and g2.shape == (20, 4))
+check("absent context group gate is exactly 0", float(g2[:, 3].abs().sum()) == 0.0)
+
+# gate with block-context group (10D base + 8D context = 18D)
+fg_ctx = M.FeatureGate(4, 3, 3, 8)
+o3, g3 = fg_ctx(torch.rand(20, 18))
+check("FeatureGate with context -> 18D out, context gate active",
+      o3.shape == (20, 18) and g3.shape == (20, 4) and float(g3[:, 3].abs().sum()) > 0)
+ok_build_ctx = True
+try:
+    M.PointEdgeSegNet(num_features=18, num_classes=5, feature_dims=(4, 3, 3, 8))
+except Exception:
+    ok_build_ctx = False
+check("PointEdgeSegNet builds for (4,3,3,8)=18D", ok_build_ctx)
 
 # model builds for matching dims and rejects mismatched dims
 ok_build = True
@@ -198,6 +211,48 @@ cfg_d = os.path.join(os.environ.get("TEMP", "."), "model_params_dales_test.json"
 cv.emit_model_params("dales", cv.PROFILES["dales"], cv.build_spec(cv.PROFILES["dales"]), cfg_d)
 cfgd = _json.load(open(cfg_d))
 check("emitted DALES config: 8 classes, 7D, no rgb", cfgd["num_classes"] == 8 and cfgd["num_features"] == 7 and cfgd["input"]["rgb_cols"] is None)
+
+print("\n[9] BlockContextExtractor: buffered wide-area descriptor per block")
+rng9 = np.random.default_rng(7)
+n9 = 4000
+# synthetic room: 8m x 8m floor at z=0 (normals up) + wall at x=8 (normals +x), z in 0..3
+floor9 = np.column_stack([rng9.uniform(0, 8, n9), rng9.uniform(0, 8, n9), np.zeros(n9)])
+wall9 = np.column_stack([np.full(n9, 8.0), rng9.uniform(0, 8, n9), rng9.uniform(0, 3, n9)])
+coords9 = np.vstack([floor9, wall9])
+normals9 = np.vstack([np.tile([0.0, 0.0, 1.0], (n9, 1)), np.tile([1.0, 0.0, 0.0], (n9, 1))])
+curv9 = np.zeros(2 * n9)
+
+spec9 = dp.resolve_feature_config({'features': {'use_block_context': True, 'context_buffer': 2.0, 'context_bins': 4}})
+check("context spec adds 8 dims (4 stats + 4 bins) -> 18D total",
+      spec9['context_dim'] == 8 and spec9['num_features'] == 18, f"(got {spec9['num_features']}D)")
+
+ex9 = dp.BlockContextExtractor(coords9, normals=normals9, curvature=curv9, buffer=2.0, bins=4)
+# block in the middle of the floor, far from the wall: its buffer sees only floor
+mid_block = np.nonzero((coords9[:, 0] > 2) & (coords9[:, 0] < 4) &
+                       (coords9[:, 1] > 2) & (coords9[:, 1] < 4) & (coords9[:, 2] < 0.5))[0]
+v_mid = ex9.compute(mid_block)
+check("floor-only buffer: horizontal share ~1, vertical ~0",
+      v_mid[0] > 0.95 and v_mid[1] < 0.05, f"(h={v_mid[0]:.2f}, v={v_mid[1]:.2f})")
+# block next to the wall: its buffer pulls in wall points -> vertical share rises
+edge_block = np.nonzero((coords9[:, 0] > 6.5) & (coords9[:, 0] <= 8) &
+                        (coords9[:, 1] > 2) & (coords9[:, 1] < 4) & (coords9[:, 2] < 0.5))[0]
+v_edge = ex9.compute(edge_block)
+check("wall-adjacent buffer: vertical share > floor-only block",
+      v_edge[1] > v_mid[1] + 0.1, f"(edge v={v_edge[1]:.2f} vs mid v={v_mid[1]:.2f})")
+check("z-histogram normalized (sums to 1)",
+      abs(v_mid[4:].sum() - 1.0) < 1e-5 and abs(v_edge[4:].sum() - 1.0) < 1e-5)
+check("descriptor bounded [0,1]", float(v_edge.min()) >= 0.0 and float(v_edge.max()) <= 1.0)
+check("density ratio in (0,1]", 0.0 < v_mid[3] <= 1.0, f"(got {v_mid[3]:.3f})")
+# a larger buffer aggregates a wider area -> descriptor must change
+ex9_big = dp.BlockContextExtractor(coords9, normals=normals9, curvature=curv9, buffer=6.0, bins=4)
+check("buffer size changes the descriptor", not np.allclose(ex9_big.compute(mid_block), v_mid))
+# append helper: widens features by context_dim with block-constant channels
+bf9 = np.random.rand(len(mid_block), 10).astype(np.float32)
+out9 = dp.append_block_context(bf9, ex9, mid_block)
+check("append_block_context widens 10 -> 18", out9.shape == (len(mid_block), 18), f"(got {out9.shape})")
+check("context channels constant within block", np.allclose(out9[:, 10:], out9[0, 10:]))
+check("factory returns None when disabled",
+      dp.make_block_context_extractor(coords9, None, dp.resolve_feature_config({})) is None)
 
 print(f"\n==== SMOKE TEST RESULT: {PASS} passed, {FAIL} failed ====")
 sys.exit(1 if FAIL else 0)

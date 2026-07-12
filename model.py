@@ -11,22 +11,24 @@ from torch_geometric.utils import scatter
 from torch.cuda.amp import autocast, GradScaler
 
 class FeatureGate(nn.Module):
-	"""Lightweight feature-wise gating for Geo, RGB and Spatial feature groups.
+	"""Lightweight feature-wise gating for Geo, RGB, Spatial and Block-Context groups.
 
 	Now adapts to the configured feature layout: any group whose dim is 0 (e.g. a
-	colorless cloud with rgb_dim=0) is skipped, and a gate is learned only for the
-	present groups. With the default (geo=4, rgb=3, spatial=3) this is byte-identical
-	to the original 10D gate, so existing weights load unchanged.
+	colorless cloud with rgb_dim=0, or the default context_dim=0) is skipped, and a
+	gate is learned only for the present groups. With the default (geo=4, rgb=3,
+	spatial=3, context=0) this is byte-identical to the original 10D gate, so existing
+	weights load unchanged.
 	"""
-	def __init__(self, geo_dim=4, rgb_dim=3, spatial_dim=3):
+	def __init__(self, geo_dim=4, rgb_dim=3, spatial_dim=3, context_dim=0):
 		super(FeatureGate, self).__init__()
 		self.geo_dim = geo_dim
 		self.rgb_dim = rgb_dim
 		self.spatial_dim = spatial_dim
-		self.dims = [geo_dim, rgb_dim, spatial_dim]
-		self.offsets = [0, geo_dim, geo_dim + rgb_dim]
-		self.present = [i for i, d in enumerate(self.dims) if d > 0]  # which of geo/rgb/spatial exist
-		total_dim = geo_dim + rgb_dim + spatial_dim
+		self.context_dim = context_dim
+		self.dims = [geo_dim, rgb_dim, spatial_dim, context_dim]
+		self.offsets = [0, geo_dim, geo_dim + rgb_dim, geo_dim + rgb_dim + spatial_dim]
+		self.present = [i for i, d in enumerate(self.dims) if d > 0]  # which groups exist
+		total_dim = geo_dim + rgb_dim + spatial_dim + context_dim
 		num_gates = len(self.present)
 
 		# Shared feature encoder (minimal overhead); one gate per present group
@@ -38,13 +40,13 @@ class FeatureGate(nn.Module):
 		self.sigmoid = nn.Sigmoid()
 
 	def forward(self, x):
-		# x: [N, total_dim] laid out as [geo | rgb | spatial] (absent groups omitted)
+		# x: [N, total_dim] laid out as [geo | rgb | spatial | context] (absent groups omitted)
 		gates = self.sigmoid(self.encoder(x))  # [N, num_gates]
 
 		out = []
-		# full_gates keeps a stable [N, 3] (geo, rgb, spatial) view for logging/analysis;
-		# absent groups report gate 0.
-		full_gates = x.new_zeros(x.size(0), 3)
+		# full_gates keeps a stable [N, 4] (geo, rgb, spatial, context) view for
+		# logging/analysis; absent groups report gate 0.
+		full_gates = x.new_zeros(x.size(0), 4)
 		gi = 0
 		for group_idx, d in enumerate(self.dims):
 			if d == 0:
@@ -206,19 +208,24 @@ class PointEdgeSegNet(nn.Module):
 		# so train and inference must use the SAME values -> they default here and every caller
 		# constructs with the defaults. Changing them requires retraining (checkpoint changes).
 
-		# Feature layout is configurable (geo, rgb, spatial). Default (4,3,3)=10D reproduces
-		# the original S3DIS model exactly, so existing weights load unchanged. Other domains
-		# (colorless clouds, no-spatial, etc.) pass different dims from model_params.json.
-		geo_dim, rgb_dim, spatial_dim = feature_dims
-		assert geo_dim + rgb_dim + spatial_dim == num_features, (
-			f"feature_dims {feature_dims} sum ({geo_dim+rgb_dim+spatial_dim}) != num_features ({num_features})")
+		# Feature layout is configurable (geo, rgb, spatial[, context]). Default
+		# (4,3,3)=10D reproduces the original S3DIS model exactly, so existing weights load
+		# unchanged. Other domains (colorless clouds, no-spatial, block-context) pass
+		# different dims from model_params.json; a 3-tuple means context_dim=0.
+		if len(feature_dims) == 3:
+			feature_dims = (*tuple(feature_dims), 0)
+		geo_dim, rgb_dim, spatial_dim, context_dim = feature_dims
+		assert geo_dim + rgb_dim + spatial_dim + context_dim == num_features, (
+			f"feature_dims {feature_dims} sum ({geo_dim+rgb_dim+spatial_dim+context_dim}) != num_features ({num_features})")
 		self.geo_dim = geo_dim
 		self.rgb_dim = rgb_dim
 		self.spatial_dim = spatial_dim
+		self.context_dim = context_dim
 		self.spatial_start = geo_dim + rgb_dim
 
 		# Add Feature Gate at input (minimal memory: ~2MB for 20 batches)
-		self.feature_gate = FeatureGate(geo_dim=geo_dim, rgb_dim=rgb_dim, spatial_dim=spatial_dim)
+		self.feature_gate = FeatureGate(geo_dim=geo_dim, rgb_dim=rgb_dim, spatial_dim=spatial_dim,
+										context_dim=context_dim)
 
 		# Optimized Encoder - reduced channels and removed deepest layer
 		self.conv1 = EdgeConv(num_features, 64, k=knn)
