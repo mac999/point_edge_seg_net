@@ -45,7 +45,10 @@
     "use_rgb": true,
     "use_spatial": true,
     "spatial_scale": 0.1,
-    "neighbor_knn": 15
+    "neighbor_knn": 15,
+    "use_block_context": false,
+    "context_buffer": 2.0,
+    "context_bins": 4
   },
   "preprocessing": {
     "grid_min_coords": [-50.0, 0.0, 0.0],
