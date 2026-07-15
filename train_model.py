@@ -20,8 +20,6 @@ from data_processing import (
     partition_columns,
     spatial_split_is_val,
     resolve_feature_config,
-    make_block_context_extractor,
-    append_block_context,
     CLASS_NAMES,
     extract_features_from_room_data,
     load_model_config,
@@ -117,11 +115,9 @@ BLOCK_MODE = 'column'   # default: context-preserving columns (was 'grid'); over
 COLUMN_WINDOW = 2.0     # XY column side length (m)
 COLUMN_STRIDE = 2.0     # XY step between columns (m); == window => no overlap (block count ~ grid)
 
-# Feature layout (geo, rgb, spatial, block-context), resolved from model_params.json in
-# main(). Default (4,3,3,0)=10D reproduces the original S3DIS model; other domains (or
-# --block_context) override it. context_dim > 0 appends a per-block buffered-context
-# descriptor (see data_processing.BlockContextExtractor) at block-build time.
-FEATURE_DIMS = (4, 3, 3, 0)
+# Feature layout (geo, rgb, spatial), resolved from model_params.json in main().
+# Default (4,3,3)=10D reproduces the original S3DIS model; other domains override it.
+FEATURE_DIMS = (4, 3, 3)
 NORMALS_PRESENT = True
 
 class FocalLoss(nn.Module):
@@ -399,10 +395,7 @@ def preprocess_dataset():
 				features = data.x.numpy()
 				labels = data.y.numpy()
 				features = refresh_curvature_inplace(features, points)  # fix stale curvature channel
-				# Optional wide-area block-context descriptor (None when disabled in config)
-				ctx_extractor = make_block_context_extractor(points, features,
-															 resolve_feature_config(get_model_config()))
-
+				
 				# Load preprocessing parameters from config
 				config = get_model_config()
 				preprocessing = config.get('preprocessing', {})
@@ -442,11 +435,7 @@ def preprocess_dataset():
 						assert len(final_indices) == BLOCK_SIZE, f"Block size mismatch: {len(final_indices)} != {BLOCK_SIZE}"
 						
 						# Extract features with EXACT BLOCK_SIZE
-						block_feats = features[final_indices]
-						if ctx_extractor is not None:
-							block_feats = append_block_context(block_feats, ctx_extractor,
-															   final_indices[:original_size])
-						block_x = torch.FloatTensor(block_feats)
+						block_x = torch.FloatTensor(features[final_indices])
 						block_pos = torch.FloatTensor(points[final_indices])
 						block_y = torch.LongTensor(labels[final_indices])
 						
@@ -526,9 +515,6 @@ def preprocess_dataset_columns():
 				features = data.x.numpy()
 				labels = data.y.numpy()
 				features = refresh_curvature_inplace(features, points)  # fix stale curvature channel
-				# Optional wide-area block-context descriptor (None when disabled in config)
-				ctx_extractor = make_block_context_extractor(points, features,
-															 resolve_feature_config(get_model_config()))
 				# sanitize room name for the filename (area token must stay last, after '__')
 				room = os.path.splitext(os.path.basename(pt_file))[0]
 				room = ''.join(c if (c.isalnum() or c in '-') else '-' for c in room)
@@ -536,10 +522,7 @@ def preprocess_dataset_columns():
 				blocks = partition_columns(points, block_size=BLOCK_SIZE,
 										   window=COLUMN_WINDOW, stride=COLUMN_STRIDE, seed=block_counter)
 				for idx, num_real in blocks:
-					block_feats = features[idx]
-					if ctx_extractor is not None:
-						block_feats = append_block_context(block_feats, ctx_extractor, idx[:num_real])
-					block_x = torch.FloatTensor(block_feats)
+					block_x = torch.FloatTensor(features[idx])
 					block_pos = torch.FloatTensor(points[idx])
 					block_y = torch.LongTensor(labels[idx])
 					valid_mask = torch.ones(BLOCK_SIZE, dtype=torch.bool)
@@ -769,18 +752,6 @@ def build_dataloaders(rgb_dropout_prob=0.0):
 
 	# Separate block files by area
 	all_block_files = glob(os.path.join(BLOCK_DATA_PATH, '*.pt'))
-
-	# Guard against stale caches: blocks are cached on disk, so toggling --block_context
-	# (or any feature group) without changing --block_data_path would silently train on
-	# mismatched features. Fail fast with an actionable message instead.
-	if all_block_files:
-		sample = torch.load(all_block_files[0], weights_only=False)
-		if sample.x.shape[1] != NUM_FEATURES:
-			raise ValueError(
-				f"Existing blocks in '{BLOCK_DATA_PATH}' carry {sample.x.shape[1]}D features but the "
-				f"current config expects {NUM_FEATURES}D (block_context on/off or feature toggle "
-				f"mismatch?). Point --block_data_path to a fresh folder or delete the stale blocks.")
-
 	train_block_files = []
 	test_block_files = []
 
@@ -900,6 +871,12 @@ def train(epoch):
 				
 				if grad_norm_before > MAX_GRADIENT_NORM:
 					print(f"Very large gradient detected: {grad_norm_before:.2f}, skipping update")
+					# unscale_() was already called for this optimizer, so the scaler must be
+					# cycled with update() before the next unscale_() or it raises
+					# "unscale_() has already been called ..." on every following boundary,
+					# silently freezing all weight updates. update() also backs off the scale
+					# if the oversized gradient contained inf/nan.
+					scaler.update()
 					optimizer.zero_grad()
 					torch.cuda.empty_cache()
 					continue
@@ -938,7 +915,6 @@ def train(epoch):
 					"batch/gate_geo": gates[:, 0].mean().item(),
 					"batch/gate_rgb": gates[:, 1].mean().item(),
 					"batch/gate_spatial": gates[:, 2].mean().item(),
-					"batch/gate_context": gates[:, 3].mean().item(),  # 0 when block_context off
 					"batch/loss": loss.item(),
 					"batch/accuracy": current_batch_acc,
 				}, step=WANDB_STEP)
@@ -1462,14 +1438,6 @@ def main():
 	parser.add_argument('--block_mode', type=str, default=BLOCK_MODE, choices=['grid', 'column'], help="Block partitioning: 'grid' (legacy) or 'column' (overlapping full-height, preserves context)")
 	parser.add_argument('--column_window', type=float, default=COLUMN_WINDOW, help='Column mode only: XY window side length (m). Larger => fewer blocks. VRAM is unaffected (blocks stay block_size points).')
 	parser.add_argument('--column_stride', type=float, default=COLUMN_STRIDE, help='Column mode only: XY step between columns (m). Set == column_window for no overlap (block count ~ grid); < window for overlap.')
-	parser.add_argument('--block_context', dest='block_context', action='store_true', default=None,
-						help='Append a per-block buffered-context descriptor (verticality/horizontality/curvature/density + z-histogram aggregated over neighbouring blocks within context_buffer m). Overrides features.use_block_context in the config. Requires fresh blocks (block cache path is auto-suffixed with _ctx).')
-	parser.add_argument('--no_block_context', dest='block_context', action='store_false',
-						help='Force-disable the block-context descriptor (overrides config), e.g. for the A/B baseline run.')
-	parser.add_argument('--context_buffer', type=float, default=None,
-						help='Block-context only: buffer distance (m) added around each block\'s XY bounds (default from config: 2.0).')
-	parser.add_argument('--context_bins', type=int, default=None,
-						help='Block-context only: number of z-histogram bins in the descriptor (default from config: 4).')
 	args = parser.parse_args()
 
 	# Resolve runtime toggles
@@ -1506,20 +1474,7 @@ def main():
 	except Exception as e:
 		print(f"Warning: Could not load config file: {e}")
 		print("Using default configuration...")
-
-	# Apply block-context CLI overrides into the active config BEFORE resolving the
-	# feature spec, so config file and command line stay interchangeable (A/B testing:
-	# run once with --no_block_context, once with --block_context, compare test_summary).
-	cfg = get_model_config()
-	feats_cfg = cfg.get('features') or {}
-	cfg['features'] = feats_cfg
-	if args.block_context is not None:
-		feats_cfg['use_block_context'] = args.block_context
-	if args.context_buffer is not None:
-		feats_cfg['context_buffer'] = args.context_buffer
-	if args.context_bins is not None:
-		feats_cfg['context_bins'] = args.context_bins
-
+	
 	# Update global variables
 	PROCESSED_DATA_PATH = args.processed_data_path
 	BLOCK_DATA_PATH = args.block_data_path
@@ -1538,20 +1493,11 @@ def main():
 	# from the enabled feature groups so it always matches what the pipeline produces.
 	try:
 		spec = resolve_feature_config(get_model_config())
-		FEATURE_DIMS = (spec['geo_dim'], spec['rgb_dim'], spec['spatial_dim'], spec['context_dim'])
+		FEATURE_DIMS = (spec['geo_dim'], spec['rgb_dim'], spec['spatial_dim'])
 		NORMALS_PRESENT = spec['use_normals']
 		NUM_FEATURES = spec['num_features']
 		print(f"  Feature layout: {FEATURE_DIMS} (normals={spec['use_normals']}, curv={spec['use_curvature']}, "
-			  f"rgb={spec['use_rgb']}, spatial={spec['use_spatial']}, scale={spec['spatial_scale']}, "
-			  f"block_context={spec['use_block_context']}"
-			  + (f", buffer={spec['context_buffer']}m, bins={spec['context_bins']}" if spec['use_block_context'] else "")
-			  + ")")
-		# Keep context and non-context block caches separate so A/B runs never mix: when
-		# block context is on and the user did not pick a custom path, suffix the default.
-		import sys
-		if spec['use_block_context'] and '--block_data_path' not in sys.argv:
-			BLOCK_DATA_PATH = BLOCK_DATA_PATH.rstrip('/\\') + '_ctx'
-			print(f"  block_context on -> block cache path: {BLOCK_DATA_PATH}")
+			  f"rgb={spec['use_rgb']}, spatial={spec['use_spatial']}, scale={spec['spatial_scale']})")
 	except Exception as e:
 		print(f"Warning: feature spec resolution failed ({e}); using default {FEATURE_DIMS}.")
 
