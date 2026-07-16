@@ -12,7 +12,7 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
 
 - **Runs on ≤24 GB VRAM — no server-class GPUs.** Trains and infers on a single consumer/pro card. SOTA sparse-conv/transformer models do not magically fit whole clouds either — they down-voxelize (losing fine detail) or tile with hundreds of sliding windows; this model chunks by design instead.
 - **Scales to arbitrarily large clouds.** Space is split into fixed-size blocks (constant memory per block, linear scaling), so a 100M-point LAS scan is handled like a single room — every point is covered at full density, not coarse-voxelized.
-- **Lightweight yet competitive.** ~5.7M parameters (about ⅓ of KPConv) reaching S3DIS Area-5 **OA 86.2% / mIoU 59.6%** — the strong 2019 point-based tier (≈PointWeb), i.e. ~89% of KPConv's mIoU at a fraction of the compute and code complexity.
+- **Lightweight yet competitive.** ~5.7M parameters (about ⅓ of KPConv) reaching S3DIS Area-5 **OA 86.6% / mIoU 60.0%** — the strong 2019 point-based tier (≈PointWeb), i.e. ~89% of KPConv's mIoU at a fraction of the compute and code complexity.
 - **Practical & self-contained.** Any `X Y Z [R G B ...]` cloud, custom classes via one JSON, standard deps (PyTorch/PyG/Open3D), and colored **LAS** output for direct viewing (CloudCompare, etc.).
 - **Honest evaluation.** Reports OA / mAcc / **mIoU** on a truly held-out area with leakage-controlled spatial train/val splits, plus multi-view voting, TTA and model-ensemble inference.
 
@@ -27,7 +27,7 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
 <img src="./imgs/img8.png" height="115"></img>
 <img src="./imgs/img7.png" height="115"></img></br>
 </p>
-<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model. Latest S3DIS Area 5 (held-out): OA=86.16%, mAcc=69.05%, mIoU=59.57%; best validation accuracy≈92.7%. VRAM=24GB. logs=20260707_101907)
+<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model. Latest S3DIS Area 5 (held-out): OA=86.60%, mAcc=69.73%, mIoU=59.99%; best validation accuracy≈93.6%. VRAM=24GB. logs=20260715_204942)
 </p>
 
 
@@ -48,6 +48,10 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
   - **Lovász-Softmax + Focal loss** (directly optimizes mIoU, not just accuracy) and **per-block coordinate centering** (translation invariance → smaller train/test gap).
   - **Curvature feature fix** (true local surface-variation edge cue instead of a near-constant legacy channel), wider EdgeConv receptive field (**k=32**), **2-layer bottleneck Transformer**.
   - New: **mIoU / mAcc metrics**, **TTA (Z-rotation) + model-ensemble inference**, **colored LAS export**, early-stopping aligned to the checkpoint metric.
+- 1.1: 2026/7/15. AMP training bug fix & retrain — S3DIS Area 5: **OA 86.60% / mAcc 69.73% / mIoU 59.99%** ([logs](./logs/20260715_204942)):
+  - **Fixed a GradScaler state-corruption bug**: the "very large gradient → skip batch" branch called `scaler.unscale_()` without a matching `scaler.update()`, so from the first skipped batch onward every optimizer step silently failed (`unscale_() has already been called…`), permanently freezing the weights. The skip branch now resets the scaler state, restoring correct AMP training.
+  - Retrained the v1.0 configuration (column mode, 60 epochs, batch 10, effective batch 60) with the fix — all metrics improved over the 20260707 baseline (OA +0.44, mAcc +0.68, mIoU +0.42); best validation accuracy 93.59%.
+  - Added `run_train_global.bat` to reproduce the training run.
 
 
 Optimization strategy under 24GB VRAM constraints (boundary artifacts, class imbalance, generalization):
@@ -66,27 +70,6 @@ Still open (future work):
 <img src="./data_analysis/area_5.png" height="200"></img>
 <img src="./imgs/area4.jpg" height="400"></img>
 </p>
-
-### Experimental: block-context (buffered wide-area) features
-
-Enable with `--block_context` on `train_model.py` / `inference.py`, or `"features": {"use_block_context": true}` in `model_params.json`.
-
-Blocks are sized for VRAM, so the model never sees what lies *around* a block — the "long-range context between blocks" bottleneck named above. Instead of enlarging blocks (which costs VRAM), each block's XY bounds are expanded by `context_buffer` metres and the points of **neighbouring blocks** inside that buffer are aggregated into a small statistics vector: horizontal/vertical surface shares (from normals), mean surface variation (edge-ness), block/buffer density ratio, and a normalized Z-histogram (`context_bins`). This vector is appended to every point of the block as constant channels (default 10D → 18D), so the network learns each point's label *conditioned on a wide-area summary* — at zero VRAM cost (input channels only, ≈+4K params) and computed once at block-build time.
-
-Related work (input-level context injection): PointNet's per-block normalized room-global coordinates, Engelmann et al. 2017 (enlarged/multi-scale block context), SCF-Net's global contextual features (CVPR 2021), classical multi-scale eigenfeatures (verticality etc., Weinmann et al. 2015 / Hackel et al. 2016), and the buffered-tile ("halo") practice of large-scale GIS point-cloud pipelines. This option combines the buffered-tile idea with handcrafted wide-area statistics as block-constant input channels.
-
-A/B comparison (block caches are kept separate automatically — the context run writes to `<block_data_path>_ctx`):
-
-```bash
-# baseline (identical to current pipeline)
-python train_model.py --no_block_context --no_wandb
-# with block context (2 m buffer, 4 z-histogram bins)
-python train_model.py --block_context --context_buffer 2.0 --context_bins 4 --no_wandb
-# inference feature layout must match how the model was trained
-python inference.py --block_context -m ./logs/<ctx_run>/best_model.pth -i ./sample/area_6_conferenceRoom_1.txt
-```
-
-Notes: the shipped weights are 10D, so enabling context requires retraining; a stale block cache with the wrong feature width is detected and reported with an actionable error.
 
 The following items already apply in 24GB VRAM:
 - **Increased depth**: 2-layer bottleneck Transformer added on top of the EdgeConv U-Net (bottleneck operates on the downsampled set, so extra depth costs almost no memory).
@@ -109,27 +92,30 @@ The following items already apply in 24GB VRAM:
 - Coverage-guaranteed inference with multi-view voting, test-time augmentation (TTA), and model ensembling — safe for large/dense clouds
 - OA / mAcc / **mIoU** evaluation (standard S3DIS metric) reported to console and JSON
 - Lovász-Softmax + Focal loss and in-model per-block coordinate normalization for accuracy under limited VRAM
-- Optional **block-context features** (`--block_context`): buffered wide-area statistics of neighbouring blocks (verticality/horizontality, curvature, density, Z-histogram) appended as constant per-block channels — VRAM-free long-range context
 - Colored **LAS** export (per-class RGB + `classification` field) for direct viewing in CloudCompare, etc.
 
 ## Performance Log
 
-Latest run (`logs/20260707_101907`), S3DIS with Area 5 held out for test:
+Latest run (`logs/20260715_204942`, v1.1 — after the GradScaler fix), S3DIS with Area 5 held out for test:
 
 | Metric | Value |
 |--------|-------|
-| Overall Accuracy (OA) | **86.16%** |
-| Mean Class Accuracy (mAcc) | **69.05%** |
-| Mean IoU (mIoU) | **59.57%** |
+| Overall Accuracy (OA) | **86.60%** |
+| Mean Class Accuracy (mAcc) | **69.73%** |
+| Mean IoU (mIoU) | **59.99%** |
+| Best validation accuracy | 93.59% (epoch 59/60) |
 | Parameters | ~5.7M |
 | Peak training VRAM | ≈13 GB (fits 24GB with margin) |
 
-- [Train Model Performance](./logs/20260707_101907/training_summary.json)
-- [Test Data Prediction Performance](./logs/20260707_101907/test_summary.json)
-- [Trained model and Log files](./logs/20260707_101907). Train/Val (spatial split) and Test on S3DIS v1.2 aligned.
+- [Train Model Performance](./logs/20260715_204942/training_summary.json)
+- [Test Data Prediction Performance](./logs/20260715_204942/test_summary.json)
+- [Trained model and Log files](./logs/20260715_204942). Train/Val (spatial split) and Test on S3DIS v1.2 aligned.
+- Previous baseline (v1.0): OA 86.16% / mAcc 69.05% / mIoU 59.57% ([logs/20260707_101907](./logs/20260707_101907))
+
+Per-class IoU highlights (Area 5): floor 96.3, ceiling 92.5, wall 80.0, chair 72.9, table 72.6, beam 71.9 — the rare classes `sofa` (9.9) and `column` (21.7) remain the mIoU bottleneck (see future work).
 
 <p align="center">
-<img src="./logs/20260707_101907/training_plots.png" width="600"></img></br>
+<img src="./logs/20260715_204942/training_plots.png" width="600"></img></br>
 </p>
 
 ### Where it stands (S3DIS Area 5, published mIoU)
@@ -140,7 +126,7 @@ Latest run (`logs/20260707_101907`), S3DIS with Area 5 held out for test:
 | SegCloud / DGCNN | ~48–49 | |
 | TangentConv (2018) | 52.6 | |
 | PointCNN (2018) | 57.3 | OA 85.9 |
-| **PointEdgeSegNet (this, 2026)** | **59.6** | **OA 86.2, ~5.7M params, ≤24GB** |
+| **PointEdgeSegNet (this, 2026)** | **60.0** | **OA 86.6, ~5.7M params, ≤24GB** |
 | PointWeb (2019) | 60.3 | |
 | HPEIN (2019) | 61.9 | |
 | MinkowskiNet (2019) | 65.4 | sparse voxel conv |
@@ -569,9 +555,6 @@ python train_model.py --batch_size 2 --block_size 4096
 - `--block_mode`: `column` (default, context-preserving) or `grid` (legacy)
 - `--num_classes`: Number of output classes (default: 13)
 - `--block_size`: Size of point cloud blocks (default: 8192)
-- `--block_context` / `--no_block_context`: enable/disable the buffered block-context descriptor (overrides `features.use_block_context`)
-- `--context_buffer`: block-context buffer distance in metres (default 2.0)
-- `--context_bins`: block-context Z-histogram bins (default 4)
 
 **inference.py arguments:**
 - `-m, --model_weights`: Path to trained model weights (.pth)
@@ -582,7 +565,6 @@ python train_model.py --batch_size 2 --block_size 4096
 - `--tta`: test-time augmentation (Z-rotations 90/180/270 voted together)
 - `--ensemble WEIGHTS.pth [...]`: extra model weights to softmax-average with the primary model
 - `--column_window`, `--column_stride`: column size / step (m); output is always a colored `_segmented.las` + `_segmented.txt`
-- `--block_context` / `--no_block_context`, `--context_buffer`, `--context_bins`: block-context descriptor — must match how the model was trained
 
 ## Training
 
@@ -698,7 +680,7 @@ point_unet/
 ## Insight
 When training point cloud data, it's crucial to assume all data characteristics. Inputs that deviate from these assumptions will not yield good results (e.g., indoor vs. outdoor, bright vs. dark lighting, and variations in label object types and features). In Example of S3DIS dataset, The Area 1 (Train) and Area 5 (Test) datasets are representative examples. Because these two datasets exhibit such high variation, standard training alone won't significantly improve Test Acc. This consideration must be taken into account when designing the model to determine which data features to train. Statistical analysis must be performed first to ensure inductive inference, a golden rule in deep learning model training. When I tried to improve the performance (accuray, loss) of test dataset (unseen), I used some solutions like the argumented dataset with features, model size increasement within 24G VRAM etc, but the performance was limited. Local features acceptance is always an issue in tranining model becuase it's difficult to increase the model size and architecture in usecase under the small VRAM.
 
-Update (v1.0): several of these limits were pushed back without any hardware upgrade — context-preserving column blocks, per-block coordinate centering (translation invariance), an mIoU-aware Lovász+Focal loss, a corrected surface-variation curvature feature, and a fixed coverage-guaranteed voting pipeline together raised held-out Area 5 from ~mIoU 49 to **59.6** (OA 86.2%). The remaining bottleneck is long-range context between blocks and the two rarest classes (`column`, `sofa`); closing the gap to sparse-conv/transformer methods (65–70+) is an *architecture* problem (a different convolution/attention operator), not a VRAM one — all such methods still chunk or down-voxelize large clouds rather than fitting them whole.
+Update (v1.0): several of these limits were pushed back without any hardware upgrade — context-preserving column blocks, per-block coordinate centering (translation invariance), an mIoU-aware Lovász+Focal loss, a corrected surface-variation curvature feature, and a fixed coverage-guaranteed voting pipeline together raised held-out Area 5 from ~mIoU 49 to **59.6** (OA 86.2%); fixing a silent AMP GradScaler bug and retraining (v1.1) pushed this to **mIoU 60.0** (OA 86.6%). The remaining bottleneck is long-range context between blocks and the two rarest classes (`column`, `sofa`); closing the gap to sparse-conv/transformer methods (65–70+) is an *architecture* problem (a different convolution/attention operator), not a VRAM one — all such methods still chunk or down-voxelize large clouds rather than fitting them whole.
 
 ## Contributing
 
