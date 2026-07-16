@@ -140,7 +140,7 @@ This comparison deliberately skips citation-only baselines (SegCloud, TangentCon
 
 \* Not reported in the original paper for Area 5; figure as commonly reproduced in follow-up benchmarks. n/r = mAcc not confirmed in the original publication.
 
-Reading the table by trade-off: below this model you give up accuracy for simplicity that still lacks a large-cloud path (DGCNN, PointNet++) or inherit an aged pipeline (SPG); above it, every mIoU point is bought with compiled C++/CUDA extensions, heavier preprocessing/reprojection stages, bigger models, or a multi-GPU training recipe. PointEdgeSegNet is the only entry combining a pip-only install, JSON-level custom classes, and a documented raw-cloud (100M+ points) to LAS pipeline at ~13 GB — at the cost of ~7 mIoU vs KPConv and ~13 vs PTv3. That remaining gap is an operator/compute problem (sparse conv, serialized attention, large-batch recipes), not a VRAM-fit problem: every method above also chunks, samples, or voxelizes large scenes.
+Reading the table by trade-off: below this model you give up accuracy for simplicity that still lacks a large-cloud path (DGCNN, PointNet++) or inherit an aged pipeline (SPG); above it, every mIoU point is bought with compiled C++/CUDA extensions, heavier preprocessing/reprojection stages, bigger models, or a multi-GPU training recipe. PointEdgeSegNet is the only entry combining easy install, JSON-level custom classes, and a documented raw-cloud (100M+ points) to LAS pipeline at ~13 GB — at the cost of ~7 mIoU vs KPConv and ~13 vs PTv3. That remaining gap is an operator/compute problem (sparse conv, serialized attention, large-batch recipes), not a VRAM-fit problem: every method above also chunks, samples, or voxelizes large scenes.
 
 ## Installation
 
