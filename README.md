@@ -118,22 +118,29 @@ Per-class IoU highlights (Area 5): floor 96.3, ceiling 92.5, wall 80.0, chair 72
 <img src="./logs/20260715_204942/training_plots.png" width="600"></img></br>
 </p>
 
-### Where it stands (S3DIS Area 5, published mIoU)
+### Where it stands (S3DIS Area 5 — mIoU / mAcc + practicality)
 
-| Model (year) | mIoU | Note |
-|--------------|------|------|
-| PointNet (2017) | 41.1 | foundational baseline |
-| SegCloud / DGCNN | ~48–49 | |
-| TangentConv (2018) | 52.6 | |
-| PointCNN (2018) | 57.3 | OA 85.9 |
-| **PointEdgeSegNet (this, 2026)** | **60.0** | **OA 86.6, ~5.7M params, ≤24GB** |
-| PointWeb (2019) | 60.3 | |
-| HPEIN (2019) | 61.9 | |
-| MinkowskiNet (2019) | 65.4 | sparse voxel conv |
-| KPConv (2019) | 67.1 | Mines Paris + Stanford (Guibas) |
-| Point Transformer (2021) | 70.4 | 7.8M params |
+This comparison deliberately skips citation-only baselines (SegCloud, TangentConv, PointCNN, PointWeb, HPEIN — legacy or unmaintained code you cannot realistically train today) and instead lines this model up against **similarly practical models with different trade-offs**: three below it and four above it in accuracy, including recent ones (PointNeXt 2022, Point Transformer V3 2024). Besides scores, each row records what actually matters when you deploy on your own data with one GPU:
 
-This lightweight model reaches the strong 2019 point-based tier (≈PointWeb), i.e. ~89% of KPConv's mIoU with about ⅓ of its parameters and no server-class hardware. The remaining gap to sparse-conv/transformer methods comes from their heavier operators and larger receptive fields — not from fitting whole clouds (all methods chunk or down-voxelize large scenes).
+- **VRAM** — GPU memory the published training setup needs
+- **Build** — whether you must compile C++/CUDA extensions (the most common practical blocker; "none" means pip wheels only)
+- **Custom data** — can you plug in your own classes/point format without rewriting the dataset code?
+- **100M+ pts** — does the repo ship a documented path from a huge raw cloud (100M+ points) to training/inference?
+
+| Model (year) | mIoU | mAcc | VRAM | Build | Custom data | 100M+ pts | Note — practical limits |
+|--------------|------|------|------|-------|-------------|-----------|--------------------------|
+| DGCNN (2018) | ~48\* | n/r | <8 GB | none (pure PyTorch) | no — S3DIS h5 blocks only | no | kNN graph memory grows with block size, forcing small blocks; no large-cloud pipeline |
+| PointNet++ (2017) | ~53.5\* | n/r | <8 GB | CUDA ops (FPS/ball-query) in common impls | DIY per repo | no | FPS and ball-query become slow on large clouds; accuracy dated |
+| SPG (2018) | 58.0 | 66.5 | <8 GB | C++ (cut-pursuit, boost) | partly documented | partial — superpoint partition scales, but pipeline is aged | Unmaintained since ~2019; superpoint partition errors propagate to labels |
+| **PointEdgeSegNet (this, 2026)** | **60.0** | **69.7** | **~13 GB peak** | **none — pip wheels only (PyTorch/PyG/Open3D)** | **yes — JSON config + `convert_dataset.py` (7 dataset profiles)** | **yes — blocking, voting, colored LAS output, documented** | Blocks are inferred independently (no cross-block context); rare classes weak (`sofa` 9.9 / `column` 21.7 IoU) |
+| RandLA-Net (2020) | ~62.5\* | n/r | ~11 GB | C++ wrappers (grid subsampling, kNN) | per-dataset prep scripts | yes — built for huge clouds (SemanticKITTI/Semantic3D) | Random sampling drops thin/small objects; official code is TF1.x, so you depend on community PyTorch ports |
+| KPConv (2019) | 67.1 | 72.8 | ~11 GB | C++ wrappers (neighbors, subsampling) | new-dataset guide exists, code-level work | partial — sphere sampling and reprojection scale, but preprocessing is heavy and there is no end-to-end guide | ~15M params (about 3x this model); grid-subsampled input needs an extra reprojection step for full-density output |
+| PointNeXt (2022) | 69.0 (L) / 70.5 (XL) | n/r | L fits 24 GB; XL recipe is A100-class | CUDA ops (openpoints) | config-driven but S3DIS-centric | no — block-style pipeline | Scores depend on a heavy augmentation/training recipe; XL is ~41M params |
+| Point Transformer V3 (2024) | 73.4 | n/r | official recipe multi-GPU; 24 GB needs batch/grid tuning | spconv + flash-attention + pointops (Pointcept) | requires writing a Pointcept dataset class | partial — grid sampling exists, no raw-cloud-to-training guide | Heaviest dependency stack (flash-attention is painful on Windows); SOTA numbers assume multi-GPU compute |
+
+\* Not reported in the original paper for Area 5; figure as commonly reproduced in follow-up benchmarks. n/r = mAcc not confirmed in the original publication.
+
+Reading the table by trade-off: below this model you give up accuracy for simplicity that still lacks a large-cloud path (DGCNN, PointNet++) or inherit an aged pipeline (SPG); above it, every mIoU point is bought with compiled C++/CUDA extensions, heavier preprocessing/reprojection stages, bigger models, or a multi-GPU training recipe. PointEdgeSegNet is the only entry combining a pip-only install, JSON-level custom classes, and a documented raw-cloud (100M+ points) to LAS pipeline at ~13 GB — at the cost of ~7 mIoU vs KPConv and ~13 vs PTv3. That remaining gap is an operator/compute problem (sparse conv, serialized attention, large-batch recipes), not a VRAM-fit problem: every method above also chunks, samples, or voxelizes large scenes.
 
 ## Installation
 
