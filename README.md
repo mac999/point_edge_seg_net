@@ -73,7 +73,7 @@ Still open (future work):
 
 The following items already apply in 24GB VRAM:
 - **Increased depth**: 2-layer bottleneck Transformer added on top of the EdgeConv U-Net (bottleneck operates on the downsampled set, so extra depth costs almost no memory).
-- **Tuned k-NN**: `EdgeConv` neighbourhood raised to `k=32` (batch/accumulation adjusted to keep peak VRAM ≈13GB and the effective batch at 60).
+- **Tuned k-NN**: `EdgeConv` neighbourhood raised to `k=32` (batch/accumulation adjusted so training fits a 24 GB card — measured whole-GPU peak ~18.7 GB — with the effective batch kept at 60).
 - **LR warm-up + Cosine annealing**: linear warm-up precedes `CosineAnnealingLR` (`T_max = num_epochs`, so the LR fully anneals by the last epoch).
 - **AdamW optimizer** with weight decay for better generalization.
 
@@ -105,7 +105,7 @@ Latest run (`logs/20260715_204942`, v1.1 — after the GradScaler fix), S3DIS wi
 | Mean IoU (mIoU) | **59.99%** |
 | Best validation accuracy | 93.59% (epoch 59/60) |
 | Parameters | ~5.7M |
-| Peak training VRAM | ≈13 GB (fits 24GB with margin) |
+| Training GPU memory (measured) | avg ~17.2 GB, peak ~18.7 GB whole-GPU usage on a 24 GB card (wandb system metrics sampled during this run; includes CUDA context and PyTorch allocator cache) |
 
 - [Train Model Performance](./logs/20260715_204942/training_summary.json)
 - [Test Data Prediction Performance](./logs/20260715_204942/test_summary.json)
@@ -122,25 +122,25 @@ Per-class IoU highlights (Area 5): floor 96.3, ceiling 92.5, wall 80.0, chair 72
 
 This comparison deliberately skips citation-only baselines (SegCloud, TangentConv, PointCNN, PointWeb, HPEIN — legacy or unmaintained code you cannot realistically train today) and instead lines this model up against **similarly practical models with different trade-offs**: three below it and four above it in accuracy, including recent ones (PointNeXt 2022, Point Transformer V3 2024). Besides scores, each row records what actually matters when you deploy on your own data with one GPU:
 
-- **VRAM** — GPU memory the published training setup needs
+- **VRAM** — training GPU memory. Only this model's value is a measured peak (wandb system metrics of the v1.1 run); papers typically state which GPU they trained on, not a measured peak, so other rows list the published hardware with peak marked n/p (not published)
 - **Build** — whether you must compile C++/CUDA extensions (the most common practical blocker; "none" means pip wheels only)
 - **Custom data** — can you plug in your own classes/point format without rewriting the dataset code?
 - **100M+ pts** — does the repo ship a documented path from a huge raw cloud (100M+ points) to training/inference?
 
 | Model (year) | mIoU | mAcc | VRAM | Build | Custom data | 100M+ pts | Note — practical limits |
 |--------------|------|------|------|-------|-------------|-----------|--------------------------|
-| DGCNN (2018) | ~48\* | n/r | <8 GB | none (pure PyTorch) | no — S3DIS h5 blocks only | no | kNN graph memory grows with block size, forcing small blocks; no large-cloud pipeline |
-| PointNet++ (2017) | ~53.5\* | n/r | <8 GB | CUDA ops (FPS/ball-query) in common impls | DIY per repo | no | FPS and ball-query become slow on large clouds; accuracy dated |
-| SPG (2018) | 58.0 | 66.5 | <8 GB | C++ (cut-pursuit, boost) | partly documented | partial — superpoint partition scales, but pipeline is aged | Unmaintained since ~2019; superpoint partition errors propagate to labels |
-| **PointEdgeSegNet (this, 2026)** | **60.0** | **69.7** | **~13 GB peak** | **none — pip wheels only (PyTorch/PyG/Open3D)** | **yes — JSON config + `convert_dataset.py` (7 dataset profiles)** | **yes — blocking, voting, colored LAS output, documented** | Blocks are inferred independently (no cross-block context); rare classes weak (`sofa` 9.9 / `column` 21.7 IoU) |
-| RandLA-Net (2020) | ~62.5\* | n/r | ~11 GB | C++ wrappers (grid subsampling, kNN) | per-dataset prep scripts | yes — built for huge clouds (SemanticKITTI/Semantic3D) | Random sampling drops thin/small objects; official code is TF1.x, so you depend on community PyTorch ports |
-| KPConv (2019) | 67.1 | 72.8 | ~11 GB | C++ wrappers (neighbors, subsampling) | new-dataset guide exists, code-level work | partial — sphere sampling and reprojection scale, but preprocessing is heavy and there is no end-to-end guide | ~15M params (about 3x this model); grid-subsampled input needs an extra reprojection step for full-density output |
-| PointNeXt (2022) | 69.0 (L) / 70.5 (XL) | n/r | L fits 24 GB; XL recipe is A100-class | CUDA ops (openpoints) | config-driven but S3DIS-centric | no — block-style pipeline | Scores depend on a heavy augmentation/training recipe; XL is ~41M params |
-| Point Transformer V3 (2024) | 73.4 | n/r | official recipe multi-GPU; 24 GB needs batch/grid tuning | spconv + flash-attention + pointops (Pointcept) | requires writing a Pointcept dataset class | partial — grid sampling exists, no raw-cloud-to-training guide | Heaviest dependency stack (flash-attention is painful on Windows); SOTA numbers assume multi-GPU compute |
+| DGCNN (2018) | ~48\* | n/r | peak n/p; small-block training on single-GPU era cards | none (pure PyTorch) | no — S3DIS h5 blocks only | no | kNN graph memory grows with block size, forcing small blocks; no large-cloud pipeline |
+| PointNet++ (2017) | ~53.5\* | n/r | peak n/p; small-block training on single-GPU era cards | CUDA ops (FPS/ball-query) in common impls | DIY per repo | no | FPS and ball-query become slow on large clouds; accuracy dated |
+| SPG (2018) | 58.0 | 66.5 | peak n/p; single GPU | C++ (cut-pursuit, boost) | partly documented | partial — superpoint partition scales, but pipeline is aged | Unmaintained since ~2019; superpoint partition errors propagate to labels |
+| **PointEdgeSegNet (this, 2026)** | **60.0** | **69.7** | **measured: peak ~18.7 GB / avg ~17.2 GB whole-GPU on a 24 GB card** | **none — pip wheels only (PyTorch/PyG/Open3D)** | **yes — JSON config + `convert_dataset.py` (7 dataset profiles)** | **yes — blocking, voting, colored LAS output, documented** | Blocks are inferred independently (no cross-block context); rare classes weak (`sofa` 9.9 / `column` 21.7 IoU) |
+| RandLA-Net (2020) | ~62.5\* | n/r | paper: single RTX 2080Ti (11 GB); peak n/p | C++ wrappers (grid subsampling, kNN) | per-dataset prep scripts | yes — built for huge clouds (SemanticKITTI/Semantic3D) | Random sampling drops thin/small objects; official code is TF1.x, so you depend on community PyTorch ports |
+| KPConv (2019) | 67.1 | 72.8 | single 11 GB-class GPU in the original experiments; peak n/p | C++ wrappers (neighbors, subsampling) | new-dataset guide exists, code-level work | partial — sphere sampling and reprojection scale, but preprocessing is heavy and there is no end-to-end guide | ~15M params (about 3x this model); grid-subsampled input needs an extra reprojection step for full-density output |
+| PointNeXt (2022) | 69.0 (L) / 70.5 (XL) | n/r | paper recipe uses A100-class GPUs; peak n/p | CUDA ops (openpoints) | config-driven but S3DIS-centric | no — block-style pipeline | Scores depend on a heavy augmentation/training recipe; XL is ~41M params |
+| Point Transformer V3 (2024) | 73.4 | n/r | official recipe multi-GPU; peak n/p; 24 GB needs batch/grid tuning | spconv + flash-attention + pointops (Pointcept) | requires writing a Pointcept dataset class | partial — grid sampling exists, no raw-cloud-to-training guide | Heaviest dependency stack (flash-attention is painful on Windows); SOTA numbers assume multi-GPU compute |
 
-\* Not reported in the original paper for Area 5; figure as commonly reproduced in follow-up benchmarks. n/r = mAcc not confirmed in the original publication.
+\* Not reported in the original paper for Area 5; figure as commonly reproduced in follow-up benchmarks. n/r = mAcc not confirmed in the original publication. n/p = measured training memory peak not published.
 
-Reading the table by trade-off: below this model you give up accuracy for simplicity that still lacks a large-cloud path (DGCNN, PointNet++) or inherit an aged pipeline (SPG); above it, every mIoU point is bought with compiled C++/CUDA extensions, heavier preprocessing/reprojection stages, bigger models, or a multi-GPU training recipe. PointEdgeSegNet is the only entry combining easy install, JSON-level custom classes, and a documented raw-cloud (100M+ points) to LAS pipeline at ~13 GB — at the cost of ~7 mIoU vs KPConv and ~13 vs PTv3. That remaining gap is an operator/compute problem (sparse conv, serialized attention, large-batch recipes), not a VRAM-fit problem: every method above also chunks, samples, or voxelizes large scenes.
+Reading the table by trade-off: below this model you give up accuracy for simplicity that still lacks a large-cloud path (DGCNN, PointNet++) or inherit an aged pipeline (SPG); above it, every mIoU point is bought with compiled C++/CUDA extensions, heavier preprocessing/reprojection stages, bigger models, or a multi-GPU training recipe. PointEdgeSegNet is the only entry combining easy install, JSON-level custom classes, and a documented raw-cloud (100M+ points) to LAS pipeline within a single 24 GB card (measured peak ~18.7 GB) — at the cost of ~7 mIoU vs KPConv and ~13 vs PTv3. That remaining gap is an operator/compute problem (sparse conv, serialized attention, large-batch recipes), not a VRAM-fit problem: every method above also chunks, samples, or voxelizes large scenes.
 
 ## Installation
 
@@ -661,7 +661,7 @@ point_unet/
 ### Training Performance
 
 - Training Time: ~3 hours for 60 epochs on a single 24GB GPU
-- Peak Memory: ≈13GB (BATCH_SIZE=10, EdgeConv k=32, effective batch 60 via gradient accumulation)
+- GPU Memory (measured, v1.1 run): avg ~17.2 GB / peak ~18.7 GB whole-GPU on a 24 GB card (wandb system metrics; BATCH_SIZE=10, EdgeConv k=32, effective batch 60 via gradient accumulation)
 - Scales to arbitrarily large training sets — memory is per block, not per scene
 
 ### Inference Performance
