@@ -376,7 +376,11 @@ def preprocess_dataset():
 	os.makedirs(BLOCK_DATA_PATH, exist_ok=True)
 
 	start_time = time.time()
-		
+
+	# Resolve the feature spec ONCE (it is config-global); resolving per file re-printed
+	# its consistency warning for every room.
+	feat_spec = resolve_feature_config(get_model_config())
+
 	# Process all area files
 	all_areas = TRAIN_AREAS + [TEST_AREA]
 	block_counter = 0
@@ -400,8 +404,7 @@ def preprocess_dataset():
 				labels = data.y.numpy()
 				features = refresh_curvature_inplace(features, points)  # fix stale curvature channel
 				# Optional wide-area block-context descriptor (None when disabled in config)
-				ctx_extractor = make_block_context_extractor(points, features,
-															 resolve_feature_config(get_model_config()))
+				ctx_extractor = make_block_context_extractor(points, features, feat_spec)
 
 				# Load preprocessing parameters from config
 				config = get_model_config()
@@ -512,6 +515,10 @@ def preprocess_dataset_columns():
 		return
 	os.makedirs(BLOCK_DATA_PATH, exist_ok=True)
 
+	# Resolve the feature spec ONCE (it is config-global); resolving per file re-printed
+	# its consistency warning for every room.
+	feat_spec = resolve_feature_config(get_model_config())
+
 	all_areas = TRAIN_AREAS + [TEST_AREA]
 	block_counter = 0
 	for area in tqdm(all_areas, desc="Processing areas"):
@@ -527,8 +534,7 @@ def preprocess_dataset_columns():
 				labels = data.y.numpy()
 				features = refresh_curvature_inplace(features, points)  # fix stale curvature channel
 				# Optional wide-area block-context descriptor (None when disabled in config)
-				ctx_extractor = make_block_context_extractor(points, features,
-															 resolve_feature_config(get_model_config()))
+				ctx_extractor = make_block_context_extractor(points, features, feat_spec)
 				# sanitize room name for the filename (area token must stay last, after '__')
 				room = os.path.splitext(os.path.basename(pt_file))[0]
 				room = ''.join(c if (c.isalnum() or c in '-') else '-' for c in room)

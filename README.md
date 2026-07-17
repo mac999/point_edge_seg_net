@@ -215,26 +215,39 @@ Reads raw S3DIS annotation files, computes the base per-point features (normals 
 python data_preparation.py --config model_params.json --s3dis_path ./s3dis_v1.2_aligned --save_path ./processed_s3dis
 ```
 
-**Step 2 — Train** (`train_model.py`, or simply run `run_train_global.bat` on Windows)
+**Step 2 — Train** (`train_model.py`)
 
-On first run this automatically splits the processed rooms into training blocks (`block_s3dis/`, column mode: full-height 2 m columns with a leakage-controlled spatial train/val tag; the curvature channel is refreshed at block-build time), then trains and finally evaluates on the held-out test area (Area 5), reporting OA / mAcc / mIoU and writing everything to `logs/<timestamp>/`.
+On first run this automatically splits the processed rooms into training blocks (column mode: full-height 2 m columns with a leakage-controlled spatial train/val tag; the curvature channel is refreshed at block-build time), then trains and finally evaluates on the held-out test area (Area 5), reporting OA / mAcc / mIoU and writing everything to `logs/<timestamp>/`.
+
+Two training variants:
 
 ```bash
-# reproduce the confirmed v1.1 training run (also what run_train_global.bat executes)
+# (a) plain baseline - 10D features, reproduces the confirmed v1.1 run (blocks in block_s3dis/)
 python train_model.py --config model_params.json --block_mode column --column_window 2.0 --column_stride 2.0 --num_epochs 60 --batch_size 10
+
+# (b) GLOBAL context - same as (a) plus --block_context: appends a wide-area neighbourhood
+#     descriptor (verticality/horizontality/curvature/density + z-histogram over a 4 m buffer)
+#     to every block -> 10D base + 12D context = 22D input (blocks cached in block_s3dis_ctx/)
+python train_model.py --config model_params.json --block_mode column --column_window 2.0 --column_stride 2.0 --num_epochs 60 --batch_size 10 --block_context
 ```
 
-`run_train_global.bat` wraps exactly this command — activate your conda/python environment first, then run it from the repo root. To force block regeneration (e.g. after changing block/feature settings), delete `block_s3dis/` first. Optional: `--block_context` appends a wide-area per-block context descriptor (blocks are cached separately in `block_s3dis_ctx`).
+On Windows, **`run_train_global.bat`** runs variant (b) — activate your conda/python environment first, then run it from the repo root. No re-run of `data_preparation.py` is needed to switch variants: the context descriptor is computed at block-build time from the same `.pt` files, and the two block caches (`block_s3dis/` vs `block_s3dis_ctx/`) stay separate so A/B runs never mix. To force block regeneration (e.g. after changing block/feature settings), delete the corresponding block cache first.
 
 **Step 3 — Inference on a new point cloud** (`inference.py`)
 
-Defaults to the confirmed model and sample cloud; splits the input into coverage-guaranteed column blocks, votes per point, and writes a colored `_segmented.las` (plus `.txt`) next to the input.
+Splits the input into coverage-guaranteed column blocks, votes per point, and writes a colored `_segmented.las` (plus `.txt`) next to the input.
 
 ```bash
+# plain (10D, e.g. confirmed v1.1) model:
 python inference.py                       # confirmed model + sample cloud
 python inference.py -i ./my_scan.txt      # your own X Y Z [R G B] cloud
 python inference.py --tta                 # extra accuracy via rotation voting
+
+# --block_context-trained (22D) model:
+python inference.py --block_context -m logs/<timestamp>/best_model.pth -i ./my_scan.txt
 ```
+
+On Windows, **`run_infer_global.bat <model.pth> [input.txt]`** wraps the context (22D) inference — pair it with models produced by `run_train_global.bat`.
 
 > The inference feature settings must match how the model was trained (same config / `--block_context` state); a mismatch fails fast with a dimension error.
 
@@ -616,6 +629,7 @@ python train_model.py --batch_size 2 --block_size 4096
 - `--learning_rate`: Learning rate for optimizer
 - `--num_features`: Number of input features (default: 10)
 - `--block_mode`: `column` (default, context-preserving) or `grid` (legacy)
+- `--block_context`: append the wide-area per-block context descriptor (22D input; blocks cached in `block_s3dis_ctx`), with `--context_buffer` (m) and `--context_bins` to tune it
 - `--num_classes`: Number of output classes (default: 13)
 - `--block_size`: Size of point cloud blocks (default: 8192)
 - `--block_context` / `--no_block_context`: enable/disable the buffered block-context descriptor (overrides `features.use_block_context`)
@@ -631,6 +645,7 @@ python train_model.py --batch_size 2 --block_size 4096
 - `--tta`: test-time augmentation (Z-rotations 90/180/270 voted together)
 - `--ensemble WEIGHTS.pth [...]`: extra model weights to softmax-average with the primary model
 - `--column_window`, `--column_stride`: column size / step (m); output is always a colored `_segmented.las` + `_segmented.txt`
+- `--block_context` / `--no_block_context`: must match how the model was trained (22D context models need `--block_context`; see `run_infer_global.bat`)
 - `--block_context` / `--no_block_context`, `--context_buffer`, `--context_bins`: block-context descriptor — must match how the model was trained
 
 ## Training
