@@ -203,6 +203,41 @@ pip install torch_geometric torch_scatter torch_sparse torch_cluster torch_splin
 pip install numpy scikit-learn open3d tqdm matplotlib
 ```
 
+## Quick Start: End-to-End Workflow
+
+The pipeline runs in three ordered steps. Each step's output feeds the next; all three read the same `model_params.json`, so features/classes stay consistent across the whole pipeline.
+
+**Step 1 — Convert the raw dataset to processed `.pt` rooms** (`data_preparation.py`)
+
+Reads raw S3DIS annotation files, computes the base per-point features (normals + curvature + RGB + spatial, 10D by default) once per room, and writes one `Data(pos, x, y)` file per room to `processed_s3dis/<Area>/<room>.pt`.
+
+```bash
+python data_preparation.py --config model_params.json --s3dis_path ./s3dis_v1.2_aligned --save_path ./processed_s3dis
+```
+
+**Step 2 — Train** (`train_model.py`, or simply run `run_train_global.bat` on Windows)
+
+On first run this automatically splits the processed rooms into training blocks (`block_s3dis/`, column mode: full-height 2 m columns with a leakage-controlled spatial train/val tag; the curvature channel is refreshed at block-build time), then trains and finally evaluates on the held-out test area (Area 5), reporting OA / mAcc / mIoU and writing everything to `logs/<timestamp>/`.
+
+```bash
+# reproduce the confirmed v1.1 training run (also what run_train_global.bat executes)
+python train_model.py --config model_params.json --block_mode column --column_window 2.0 --column_stride 2.0 --num_epochs 60 --batch_size 10
+```
+
+`run_train_global.bat` wraps exactly this command — activate your conda/python environment first, then run it from the repo root. To force block regeneration (e.g. after changing block/feature settings), delete `block_s3dis/` first. Optional: `--block_context` appends a wide-area per-block context descriptor (blocks are cached separately in `block_s3dis_ctx`).
+
+**Step 3 — Inference on a new point cloud** (`inference.py`)
+
+Defaults to the confirmed model and sample cloud; splits the input into coverage-guaranteed column blocks, votes per point, and writes a colored `_segmented.las` (plus `.txt`) next to the input.
+
+```bash
+python inference.py                       # confirmed model + sample cloud
+python inference.py -i ./my_scan.txt      # your own X Y Z [R G B] cloud
+python inference.py --tta                 # extra accuracy via rotation voting
+```
+
+> The inference feature settings must match how the model was trained (same config / `--block_context` state); a mismatch fails fast with a dimension error.
+
 ## Dataset Preparation
 
 ### Using Custom Point Cloud Datasets
@@ -732,7 +767,6 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
-
 
 
 

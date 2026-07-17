@@ -151,9 +151,14 @@ def main():
 
 	# Resolve the domain-agnostic feature spec once and reuse for all areas.
 	args.feature_spec = resolve_feature_config()
+	# The .pt files store BASE features only; the optional block-context descriptor
+	# (context_dim) is appended later at block-build time by train_model / inference.
+	base_dim = args.feature_spec['num_features'] - args.feature_spec.get('context_dim', 0)
 	print(f"Feature spec: normals={args.feature_spec['use_normals']}, curvature={args.feature_spec['use_curvature']}, "
 		  f"rgb={args.feature_spec['use_rgb']}, spatial={args.feature_spec['use_spatial']} "
-		  f"-> {args.feature_spec['num_features']}D (spatial_scale={args.feature_spec['spatial_scale']})")
+		  f"-> {base_dim}D base (spatial_scale={args.feature_spec['spatial_scale']}"
+		  + (f", +{args.feature_spec['context_dim']}D block-context at block build" if args.feature_spec.get('context_dim', 0) else "")
+		  + ")")
 	
 	print(f"Starting data preparation for {len(args.areas)} areas...")
 	for area in tqdm(args.areas, desc="Processing areas"):
