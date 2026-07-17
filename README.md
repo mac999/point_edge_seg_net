@@ -71,6 +71,27 @@ Still open (future work):
 <img src="./imgs/area4.jpg" height="400"></img>
 </p>
 
+### Experimental: block-context (buffered wide-area) features
+
+Enable with `--block_context` on `train_model.py` / `inference.py`, or `"features": {"use_block_context": true}` in `model_params.json`.
+
+Blocks are sized for VRAM, so the model never sees what lies *around* a block — the "long-range context between blocks" bottleneck named above. Instead of enlarging blocks (which costs VRAM), each block's XY bounds are expanded by `context_buffer` metres and the points of **neighbouring blocks** inside that buffer are aggregated into a small statistics vector: horizontal/vertical surface shares (from normals), mean surface variation (edge-ness), block/buffer density ratio, and a normalized Z-histogram (`context_bins`). This vector is appended to every point of the block as constant channels (default 10D → 18D), so the network learns each point's label *conditioned on a wide-area summary* — at zero VRAM cost (input channels only, ≈+4K params) and computed once at block-build time.
+
+Related work (input-level context injection): PointNet's per-block normalized room-global coordinates, Engelmann et al. 2017 (enlarged/multi-scale block context), SCF-Net's global contextual features (CVPR 2021), classical multi-scale eigenfeatures (verticality etc., Weinmann et al. 2015 / Hackel et al. 2016), and the buffered-tile ("halo") practice of large-scale GIS point-cloud pipelines. This option combines the buffered-tile idea with handcrafted wide-area statistics as block-constant input channels.
+
+A/B comparison (block caches are kept separate automatically — the context run writes to `<block_data_path>_ctx`):
+
+```bash
+# baseline (identical to current pipeline)
+python train_model.py --no_block_context --no_wandb
+# with block context (2 m buffer, 4 z-histogram bins)
+python train_model.py --block_context --context_buffer 2.0 --context_bins 4 --no_wandb
+# inference feature layout must match how the model was trained
+python inference.py --block_context -m ./logs/<ctx_run>/best_model.pth -i ./sample/area_6_conferenceRoom_1.txt
+```
+
+Notes: the shipped weights are 10D, so enabling context requires retraining; a stale block cache with the wrong feature width is detected and reported with an actionable error.
+
 The following items already apply in 24GB VRAM:
 - **Increased depth**: 2-layer bottleneck Transformer added on top of the EdgeConv U-Net (bottleneck operates on the downsampled set, so extra depth costs almost no memory).
 - **Tuned k-NN**: `EdgeConv` neighbourhood raised to `k=32` (batch/accumulation adjusted so training fits a 24 GB card — measured whole-GPU peak ~18.7 GB — with the effective batch kept at 60).
@@ -562,6 +583,9 @@ python train_model.py --batch_size 2 --block_size 4096
 - `--block_mode`: `column` (default, context-preserving) or `grid` (legacy)
 - `--num_classes`: Number of output classes (default: 13)
 - `--block_size`: Size of point cloud blocks (default: 8192)
+- `--block_context` / `--no_block_context`: enable/disable the buffered block-context descriptor (overrides `features.use_block_context`)
+- `--context_buffer`: block-context buffer distance in metres (default 2.0)
+- `--context_bins`: block-context Z-histogram bins (default 4)
 
 **inference.py arguments:**
 - `-m, --model_weights`: Path to trained model weights (.pth)
@@ -572,6 +596,7 @@ python train_model.py --batch_size 2 --block_size 4096
 - `--tta`: test-time augmentation (Z-rotations 90/180/270 voted together)
 - `--ensemble WEIGHTS.pth [...]`: extra model weights to softmax-average with the primary model
 - `--column_window`, `--column_stride`: column size / step (m); output is always a colored `_segmented.las` + `_segmented.txt`
+- `--block_context` / `--no_block_context`, `--context_buffer`, `--context_bins`: block-context descriptor — must match how the model was trained
 
 ## Training
 
