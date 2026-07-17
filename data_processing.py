@@ -210,12 +210,17 @@ def resolve_feature_config(config: Optional[Dict] = None) -> Dict:
     spec['context_dim'] = context
     spec['num_features'] = geo + rgb + spatial + context
 
-    # Consistency check against an explicit num_features, if provided.
+    # Consistency check against an explicit num_features, if provided. The config value
+    # documents the BASE layout (what data_preparation stores in the .pt files); the
+    # block-context descriptor is a runtime add-on appended at block build, so a declared
+    # value matching either the base or the total is consistent - only warn when neither.
     declared = config.get('num_features')
-    if declared is not None and int(declared) != spec['num_features']:
+    base = geo + rgb + spatial
+    if declared is not None and int(declared) not in (base, spec['num_features']):
         print(f"Warning: config num_features={declared} but enabled features imply "
-              f"{spec['num_features']} (normals={spec['use_normals']}, curv={spec['use_curvature']}, "
-              f"rgb={spec['use_rgb']}, spatial={spec['use_spatial']}). Using {spec['num_features']}.")
+              f"{base} base (+{context} block-context) (normals={spec['use_normals']}, "
+              f"curv={spec['use_curvature']}, rgb={spec['use_rgb']}, spatial={spec['use_spatial']}). "
+              f"Using {spec['num_features']}.")
     return spec
 
 def rgb_to_hsv(rgb: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
