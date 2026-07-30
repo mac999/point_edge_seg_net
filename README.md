@@ -52,8 +52,7 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
   - **Fixed a GradScaler state-corruption bug**: the "very large gradient → skip batch" branch called `scaler.unscale_()` without a matching `scaler.update()`, so from the first skipped batch onward every optimizer step silently failed (`unscale_() has already been called…`), permanently freezing the weights. The skip branch now resets the scaler state, restoring correct AMP training.
   - Retrained the v1.0 configuration (column mode, 60 epochs, batch 10, effective batch 60) with the fix — all metrics improved over the 20260707 baseline (OA +0.44, mAcc +0.68, mIoU +0.42); best validation accuracy 93.59%.
   - Added `run_train_global.bat` to reproduce the training run.
-
-
+ 
 Optimization strategy under 24GB VRAM constraints (boundary artifacts, class imbalance, generalization):
 * **Overlapping context-preserving blocks:** `column` mode builds overlapping full-height columns instead of context-losing cubic grid cells, preserving the topology of objects (e.g., columns/doors) bisected by grid boundaries.
 * **Coordinate normalization:** per-block coordinate centering (translation invariance) inside the model, applied identically at train and inference — improves generalization to unseen areas.
@@ -62,6 +61,7 @@ Optimization strategy under 24GB VRAM constraints (boundary artifacts, class imb
 * **Curvature feature fix + wider receptive field (k=32) + 2-layer bottleneck Transformer** for stronger local/global context.
 
 Still open (future work):
+* **KD Tree** chunking:** will be added considering large dataset with model accuray. 
 * **Global Context Injection:** append normalized global Z to features to better separate height-dependent classes (e.g., beam vs. sofa).
 * **Copy-Paste Augmentation:** copy rare-class points into wall-dominated blocks to further address imbalance (currently the two rarest classes, `column`/`sofa`, remain the mIoU bottleneck).
 
