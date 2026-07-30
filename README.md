@@ -61,7 +61,7 @@ Optimization strategy under 24GB VRAM constraints (boundary artifacts, class imb
 * **Curvature feature fix + wider receptive field (k=32) + 2-layer bottleneck Transformer** for stronger local/global context.
 
 Still open (future work):
-* **KD Tree** chunking:** will be added considering large dataset with model accuray. 
+* **[KD Tree chunking](https://en.wikipedia.org/wiki/K-d_tree):** will be added considering large dataset with model accuray. 
 * **Global Context Injection:** append normalized global Z to features to better separate height-dependent classes (e.g., beam vs. sofa).
 * **Copy-Paste Augmentation:** copy rare-class points into wall-dominated blocks to further address imbalance (currently the two rarest classes, `column`/`sofa`, remain the mIoU bottleneck).
 
