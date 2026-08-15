@@ -187,6 +187,10 @@ def main():
 					help="Architecture the checkpoint was trained with ('v2' = model_v2.py serialized meta)")
 	ap.add_argument('--v2_knn', type=int, default=32, help='v2: window size, MUST match training')
 	ap.add_argument('--v2_curves', type=int, default=1, help='v2: curves per stage, MUST match training')
+	ap.add_argument('--v2_neighbors', type=str, default='serial', choices=['serial', 'stencil'],
+					help='v2: neighbour source, MUST match training')
+	ap.add_argument('--v2_stencil', type=int, default=1, help='v2: stencil radius, MUST match training')
+	ap.add_argument('--v2_diff', action='store_true', help='v2: feature-diff term, MUST match training')
 	args = ap.parse_args()
 
 	config = load_model_config(args.config)
@@ -204,7 +208,9 @@ def main():
 		model = PointEdgeSegNetV2(num_features=spec['num_features'], num_classes=num_classes,
 								  feature_dims=feature_dims, enc_channels=enc or (64, 192, 320, 448),
 								  bottleneck_dim=args.bottleneck_dim,
-								  knn=args.v2_knn, curves=args.v2_curves).to(device)
+								  knn=args.v2_knn, curves=args.v2_curves,
+								  neighbor_mode=args.v2_neighbors, stencil_radius=args.v2_stencil,
+								  feature_diff=args.v2_diff).to(device)
 	else:
 		model = PointEdgeSegNet(num_features=spec['num_features'], num_classes=num_classes,
 							feature_dims=feature_dims, context_mode=args.context_mode,

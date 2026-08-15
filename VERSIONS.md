@@ -54,6 +54,17 @@ door(23~29 vs v1 48)·board(34~36 vs 60)·chair(62~64 vs 77)는 폭을 2배로 �
   ② 균일 랜덤 점으로 v2를 벤치마크하면 grid pooling이 병합을 못 해 병목 어텐션이
   전점에 걸림(51GB 폭발) — v2 벤치마크는 반드시 실데이터(표면형)로.
 
+| E3 | v2.1 stencil r1 | K=27+diff, 150ep | (진행 중, logs/20260815_153701) | — | 정확 이웃(좁음) 검증 |
+| E4 | v2.1 stencil r2 | K=125+diff, 150ep | (진행 중, logs/20260815_153706) | — | 정확 이웃(kNN-32급 폭) — 근사이웃 주범 가설의 최종 판정 |
+
+**v2.1 구현 노트 (2026-08-15 오후)**: grid-stencil 이웃(`stencil_neighbors`) +
+feature-diff 항(`MetaBlock(feature_diff=True)`, W₂(h_j−h_i)를 점별 행렬곱+gather로 분해).
+성능 버그 2건을 잡음 — ① 오프셋별 파이썬 루프(136ms)를 모튼 N×K 일괄 + searchsorted
+1회로 벡터화(1.3ms). ② 빈 셀 sentinel=0이 backward scatter_add를 0번 행 한 주소에
+직렬화(6.5s/step) → sentinel을 각 점의 자기 인덱스로 분산(45ms/step, 결과 불변).
+최종: r1 45ms/1.1GB, r2 170ms/4.0GB (fwd+bwd, batch4). CLI: --v2_neighbors stencil
+--v2_stencil {1,2} --v2_diff.
+
 **다음 후보 (v2.1 설계)**: ① **grid-stencil 이웃** — 모든 스테이지의 점이 이미 복셀
 격자 위에 있으므로(4cm 입력 + grid pooling), 이웃 = 고정 복셀 오프셋의 해시 조회
 (정렬 1회 + searchsorted). 탐색 0회에 **정확한 공간 이웃** — sparse conv(MinkowskiNet)
