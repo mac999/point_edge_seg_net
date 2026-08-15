@@ -89,6 +89,28 @@ BLOCK_SIZE = 8192  # Number of points per block. TBD
 GRADIENT_CLIP_VALUE = 8.0  # Gradient clipping (increased for better learning)
 WARMUP_EPOCHS = 3  # Reduced for faster ramp-up
 
+# Cosine-annealing floor. Named (was inline in the scheduler) because early stopping now
+# has to know when the schedule is effectively done -- see EARLY_STOP_PATIENCE below.
+LR_ETA_MIN = 5e-4
+
+# Early-stopping patience, in epochs without a val_acc improvement.
+#
+# CAUTION: patience interacts with --num_epochs, because the LR schedule is
+# CosineAnnealingLR(T_max=NUM_EPOCHS): raising --num_epochs stretches the cosine but does
+# NOT make val_acc any less noisy, so a fixed patience makes long schedules structurally
+# unable to finish. Measured (logs/20260721_233224): --num_epochs 100 stopped at epoch 72
+# with LR still 1.05e-3 -- 2x LR_ETA_MIN -- so the low-LR refinement phase never ran, and
+# that run scored below a 60-epoch run that annealed all the way down (mIoU 52.10 vs
+# 53.44). EARLY_STOP_REQUIRE_ANNEAL below closes that trap.
+EARLY_STOP_PATIENCE = 10
+
+# Refuse to early-stop while the cosine still has a meaningful annealing phase left, i.e.
+# until the LR has come within EARLY_STOP_LR_TOL x LR_ETA_MIN. Patience then only decides
+# how much of the *tail* to skip, never how much of the anneal to skip. Set
+# EARLY_STOP_REQUIRE_ANNEAL = False for the old (pure-patience) behaviour.
+EARLY_STOP_REQUIRE_ANNEAL = True
+EARLY_STOP_LR_TOL = 1.25
+
 # GPU safety settings
 GPU_MEMORY_THRESHOLD = 0.85  # 85% GPU memory usage threshold
 MAX_GRADIENT_NORM = 20.0     # Maximum gradient norm threshold (increased)
@@ -107,7 +129,77 @@ FOCAL_GAMMA = 2.0
 
 # Probability of dropping (zeroing) RGB per training block. >0 trains a model that
 # still works when the input point cloud has no color (the configurable-feature goal).
+# NOTE: this doubles as the standard "colour drop" augmentation -- every SOTA recipe
+# surveyed uses it (DeLA p=0.2, KPConvX p=0.2) because it forces geometric reasoning.
 RGB_DROPOUT_PROB = 0.0
+
+# --- Augmentation preset -------------------------------------------------------------
+# 'legacy' reproduces the historical (measured-weak) setup; 'strong' follows the recipes
+# that every S3DIS SOTA model uses. Measured motivation: the legacy schedule DECAYS to
+# prob 0.1 / strength 0.2 for the last half of training, giving a mean (prob x strength)
+# of 0.046 over 60 epochs -- roughly an order of magnitude below standard practice --
+# while the val->test gap sat at a constant 8.4 points across every architecture we tried
+# (baseline, +context, width 1.5), i.e. generalization, not capacity, is the binding
+# constraint. 'strong' stops the decay and adds full 360 deg yaw, isotropic scaling,
+# mirroring, small tilts, colour drop and chromatic auto-contrast.
+AUG_PRESET = 'legacy'
+AUG_FULL_ROTATE = False
+AUG_ISOTROPIC_SCALE = False
+AUG_FLIP_PROB = 0.0
+AUG_TILT_STD = 0.0
+AUG_AUTOCONTRAST_PROB = 0.0
+AUG_SCALE_RANGE = (0.9, 1.1)
+
+def apply_aug_preset(preset):
+	"""Set the module-level augmentation globals for the chosen preset."""
+	global AUG_PRESET, AUG_FULL_ROTATE, AUG_ISOTROPIC_SCALE, AUG_FLIP_PROB
+	global AUG_TILT_STD, AUG_AUTOCONTRAST_PROB, AUG_SCALE_RANGE, RGB_DROPOUT_PROB
+	AUG_PRESET = preset
+	if preset == 'strong':
+		AUG_FULL_ROTATE = True             # DeLA: uniform(0, 2pi); Pointcept: [-1,1]*pi
+		AUG_ISOTROPIC_SCALE = True         # DeLA: single factor, preserves proportions
+		AUG_SCALE_RANGE = (0.8, 1.2)       # DeLA range (legacy was 0.9-1.1)
+		AUG_FLIP_PROB = 0.5                # Pointcept RandomFlip(p=0.5)
+		AUG_TILT_STD = np.pi / 64          # Pointcept x/y rotate +-pi/64
+		AUG_AUTOCONTRAST_PROB = 0.2        # Pointcept/DeLA/KPConvX p=0.2
+		if RGB_DROPOUT_PROB == 0.0:
+			RGB_DROPOUT_PROB = 0.2         # colour drop (DeLA/KPConvX p=0.2)
+	return preset
+
+# Rare-class block oversampling exponent (0 = off, uniform sampling as before).
+# Motivation (measured, logs/20260721_132243 analysis): sofa appears in only 61/1400
+# training blocks (4.4%), column in 12.4%, board in 12.9% -- their gradient signal is
+# starved regardless of loss weighting. When > 0, each training block is drawn by a
+# WeightedRandomSampler with weight max(1, max(class_weights[c]))**power over the classes
+# holding >= 1% of the block's valid points, so e.g. sofa blocks (weight 2.87) are drawn
+# ~2.9x more often at power 1.0. Epoch length is unchanged (num_samples = len(dataset)).
+OVERSAMPLE_RARE = 0.0
+
+# Where the block-context descriptor enters the model when --block_context is on.
+# 'bottleneck' (default): zero-init residual at the bottleneck -- worst case it is ignored.
+# 'input': legacy constant-channel injection; measured to LOSE 6.4 mIoU (logs/20260722_104628).
+CONTEXT_MODE = 'bottleneck'
+
+# Architecture scaling (defaults reproduce the historical checkpoints exactly).
+WIDTH_MULT = 1.0        # channel multiplier for encoder/decoder (needs VRAM; DGX ok)
+MID_TRANSFORMER = False # extra 1-layer attention at the ~860-pt mid level
+SAMPLER = 'fps'         # stage sampler: 'fps' (historical) or 'grid' (linear; needed at scale)
+INIT_WEIGHTS = ''       # optional checkpoint to warm-restart from (see run_training)
+RESUME = ''             # optional checkpoint.pth to resume the SAME schedule from
+LAST_VAL_MIOU = 0.0     # mIoU of the most recent validate() call (see validate)
+SELECT_METRIC = 'val_miou'  # 'val_miou' (default, evidence-based) or 'val_acc' (legacy)
+ENC_CHANNELS = None     # e.g. '128,256,320,384' -- overrides the (64,128,256,512) plan
+BOTTLENECK_DIM = None   # transformer width; defaults to the last encoder channel
+
+# --- Room mode (Stage E) -------------------------------------------------------------
+# 'room' block_mode trains on whole voxel-subsampled rooms instead of 2 m columns, which
+# is what every S3DIS SOTA model does (see room_pipeline.py for the measurements). Needs
+# --sampler grid: FPS is quadratic and costs 24.1 s at 131k points vs 54 ms for grid.
+ROOM_DATA_PATH = './room_s3dis'
+ROOM_GRID = 0.04          # voxel size (DeLA/KPConvX/PTv2 all use 0.04 m for S3DIS)
+ROOM_MAX_POINTS = 30000   # training point budget per room crop (DeLA's value)
+ROOM_LOOP = 4             # repeats of the room list per epoch (only ~170 train rooms exist,
+                          # so one pass is ~40 steps; references use loop=30 x 100 epochs)
 
 # Block partitioning strategy:
 #   'grid'   - legacy 0.5 m cubic-cell hashing (loses vertical context, drops sparse cells)
@@ -256,21 +348,22 @@ def setup_logging():
 	# Write CSV header
 	with open(csv_log_path, 'w', newline='') as f:
 		writer = csv.writer(f)
-		writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 
-						'loss_diff', 'acc_diff', 'learning_rate'])
+		writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc',
+						'loss_diff', 'acc_diff', 'learning_rate', 'val_miou'])
 	
 	return log_dir, csv_log_path
 
-def log_epoch_metrics(csv_path, epoch, train_loss, train_acc, val_loss, val_acc, lr):
-	"""Save epoch metrics to CSV file"""
+def log_epoch_metrics(csv_path, epoch, train_loss, train_acc, val_loss, val_acc, lr, val_miou=None):
+	"""Save epoch metrics to CSV file. val_miou is the metric to judge by -- see validate()."""
 	loss_diff = val_loss - train_loss
 	acc_diff = train_acc - val_acc
-	
+
 	with open(csv_path, 'a', newline='') as f:
 		writer = csv.writer(f)
-		writer.writerow([epoch, f"{train_loss:.6f}", f"{train_acc:.6f}", 
-						f"{val_loss:.6f}", f"{val_acc:.6f}", 
-						f"{loss_diff:.6f}", f"{acc_diff:.6f}", f"{lr:.8f}"])
+		writer.writerow([epoch, f"{train_loss:.6f}", f"{train_acc:.6f}",
+						f"{val_loss:.6f}", f"{val_acc:.6f}",
+						f"{loss_diff:.6f}", f"{acc_diff:.6f}", f"{lr:.8f}",
+						f"{(val_miou if val_miou is not None else 0.0):.6f}"])
 
 def save_training_summary(log_dir, history, best_epoch, best_val_acc):
 	"""Save complete summary after training"""
@@ -598,8 +691,19 @@ def validate_block_files(file_list):
 
 # Further reduced augmentation for maximum learning speed
 def get_augment_prob_and_strength(epoch, max_epochs):
-	"""Minimal augmentation for fastest convergence"""
-	if epoch <= max_epochs * 0.1:  
+	"""Per-epoch (probability, strength) for block augmentation.
+
+	'strong' preset: CONSTANT full-strength augmentation, as in every SOTA recipe (the
+	per-op probabilities inside augment_training_block do the modulation). The legacy
+	schedule below decayed instead -- mean (prob x strength) 0.046 over 60 epochs, ~10x
+	below standard practice -- which showed up as a constant 8.4-point val->test gap that
+	no architecture change could move. Constant augmentation is the fix being tested.
+
+	'legacy' preset: the original decaying schedule, kept so old runs stay reproducible.
+	"""
+	if AUG_PRESET == 'strong':
+		return 1.0, 1.0
+	if epoch <= max_epochs * 0.1:
 		return 0.3, 0.4  # Very low augmentation
 	elif epoch <= max_epochs * 0.5:
 		return 0.2, 0.3  # Minimal augmentation
@@ -640,6 +744,12 @@ class BlockDataset(torch.utils.data.Dataset):
 							rgb_dim=self.feature_dims[1],
 							normals_present=self.normals_present,
 							rgb_dropout_prob=self.rgb_dropout_prob,
+							full_rotate=AUG_FULL_ROTATE,
+							isotropic_scale=AUG_ISOTROPIC_SCALE,
+							flip_prob=AUG_FLIP_PROB,
+							tilt_std=AUG_TILT_STD,
+							autocontrast_prob=AUG_AUTOCONTRAST_PROB,
+							scale_range=AUG_SCALE_RANGE,
 						)
 					return data
 				print(f"Invalid data structure in file {self.file_list[idx]}")
@@ -765,6 +875,39 @@ def build_dataloaders(rgb_dropout_prob=0.0):
 	"""
 	global train_loader, val_loader, train_dataset, val_dataset, test_block_files
 
+	# ROOM MODE (Stage E): whole voxel-subsampled rooms instead of 2 m columns. Separate
+	# cache, dataset and split; the block path below is left completely untouched.
+	if BLOCK_MODE == 'room':
+		from room_pipeline import preprocess_rooms, RoomDataset, split_rooms_by_area
+		preprocess_rooms(PROCESSED_DATA_PATH, ROOM_DATA_PATH, TRAIN_AREAS + [TEST_AREA],
+						 TEST_AREA, grid=ROOM_GRID,
+						 neighbor_knn=int(get_model_config().get('features', {}).get('neighbor_knn', 15)))
+		room_files = sorted(glob(os.path.join(ROOM_DATA_PATH, '*.pt')))
+		train_files, val_files, test_block_files = split_rooms_by_area(room_files, TRAIN_AREAS, TEST_AREA)
+		aug_kwargs = dict(full_rotate=AUG_FULL_ROTATE, isotropic_scale=AUG_ISOTROPIC_SCALE,
+						  flip_prob=AUG_FLIP_PROB, tilt_std=AUG_TILT_STD,
+						  autocontrast_prob=AUG_AUTOCONTRAST_PROB, scale_range=AUG_SCALE_RANGE)
+		train_dataset = RoomDataset(train_files, max_points=ROOM_MAX_POINTS, augment=True,
+									augment_prob=1.0, augment_strength=1.0,
+									feature_dims=FEATURE_DIMS, normals_present=NORMALS_PRESENT,
+									rgb_dropout_prob=rgb_dropout_prob, aug_kwargs=aug_kwargs,
+									loop=ROOM_LOOP, feature_dim=NUM_FEATURES)
+		val_dataset = RoomDataset(val_files, max_points=ROOM_MAX_POINTS, augment=False,
+								  feature_dims=FEATURE_DIMS, normals_present=NORMALS_PRESENT,
+								  feature_dim=NUM_FEATURES)
+		train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True,
+								  num_workers=0, collate_fn=collate_fn)
+		val_loader = DataLoader(val_dataset, batch_size=VAL_BATCH_SIZE, shuffle=False,
+								num_workers=0, collate_fn=collate_fn)
+		print(f"ROOM MODE: {len(train_files)} train / {len(val_files)} val / {len(test_block_files)} test rooms")
+		print(f"  grid={ROOM_GRID} m, max_points={ROOM_MAX_POINTS}, loop={ROOM_LOOP}, sampler={SAMPLER}")
+		if SAMPLER != 'grid':
+			print("  WARNING: room mode with --sampler fps is ~450x slower at this scale; use --sampler grid.")
+		print(f"Training batches: {len(train_loader)} | Validation batches: {len(val_loader)}")
+		if len(train_loader) == 0 or len(val_loader) == 0:
+			raise ValueError("Empty room loader! Check processed_s3dis and the room cache.")
+		return
+
 	# Run preprocessing if block data doesn't exist
 	if not os.path.exists(BLOCK_DATA_PATH) or len(glob(os.path.join(BLOCK_DATA_PATH, '*.pt'))) == 0:
 		print(f"Block data not found. Running preprocessing (mode={BLOCK_MODE})...")
@@ -815,8 +958,32 @@ def build_dataloaders(rgb_dropout_prob=0.0):
 	val_dataset = BlockDataset(val_files, augment=False, augment_prob=0.0, augment_strength=0.0,
 								 feature_dims=FEATURE_DIMS, normals_present=NORMALS_PRESENT)
 
+	# Rare-class block oversampling (see OVERSAMPLE_RARE). Weights are computed once from
+	# the block label content; epoch length stays len(train_files) so runtimes are unchanged.
+	train_sampler = None
+	if OVERSAMPLE_RARE > 0:
+		from torch.utils.data import WeightedRandomSampler
+		cw = get_class_weights()
+		weights = []
+		for f in tqdm(train_files, desc='Computing sampling weights'):
+			d = torch.load(f, weights_only=False)
+			y = d.y[d.valid_mask].numpy()
+			y = y[y >= 0]
+			counts = np.bincount(y, minlength=NUM_CLASSES)[:NUM_CLASSES]
+			present = np.nonzero(counts >= 0.01 * max(len(y), 1))[0]  # >=1% of the block
+			w = max([cw[c] for c in present], default=1.0)
+			weights.append(max(1.0, w) ** OVERSAMPLE_RARE)
+		weights = np.asarray(weights, dtype=np.float64)
+		train_sampler = WeightedRandomSampler(torch.from_numpy(weights),
+											  num_samples=len(train_files), replacement=True)
+		print(f"Rare-class oversampling ON (power={OVERSAMPLE_RARE}): "
+			  f"mean weight {weights.mean():.2f}, max {weights.max():.2f} "
+			  f"({int((weights > 1.0).sum())}/{len(weights)} blocks boosted)")
+
 	# num_workers=0 to prevent Windows multiprocessing issues
-	train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, collate_fn=collate_fn)
+	train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE,
+							  shuffle=(train_sampler is None), sampler=train_sampler,
+							  num_workers=0, collate_fn=collate_fn)
 	val_loader = DataLoader(val_dataset, batch_size=VAL_BATCH_SIZE, shuffle=False, num_workers=0, collate_fn=collate_fn)
 
 	print(f"Training dataset size: {len(train_dataset)}")
@@ -1012,6 +1179,14 @@ def validate(loader):
 	valid_batches = 0
 	total_valid_points = 0
 	total_points = 0
+	# Per-class intersection/union for mIoU. Accuracy alone is a poor guide here: it is
+	# dominated by ceiling/floor/wall (65% of the points), whereas mIoU averages all 13
+	# classes equally. Measured across this project's runs, val_acc correlates +0.92 with
+	# test OA but only +0.43 with test mIoU -- the run with the HIGHEST val_acc (0.9358)
+	# scored 53.67 mIoU while the run with a much lower val_acc (0.9076) scored 56.45.
+	# Selecting or judging on accuracy therefore picks the wrong model.
+	cls_inter = np.zeros(NUM_CLASSES, dtype=np.int64)
+	cls_union = np.zeros(NUM_CLASSES, dtype=np.int64)
 	
 	with torch.no_grad():
 		for batch_idx, data in enumerate(pbar):
@@ -1054,6 +1229,10 @@ def validate(loader):
 					pred = valid_out.argmax(dim=-1)
 					correct_nodes += pred.eq(valid_y).sum().item()
 					total_nodes += valid_mask.sum().item()
+					for cls in range(NUM_CLASSES):
+						pm = (pred == cls); gm = (valid_y == cls)
+						cls_inter[cls] += int((pm & gm).sum().item())
+						cls_union[cls] += int((pm | gm).sum().item())
 				else:
 					print(f"Numerical instability in {loader_name.lower()} at batch {batch_idx}")
 					torch.cuda.empty_cache()
@@ -1080,6 +1259,10 @@ def validate(loader):
 	
 	avg_loss = total_loss / valid_batches
 	accuracy = correct_nodes / total_nodes if total_nodes > 0 else 0
+	present = cls_union > 0                      # average over classes present in this split
+	global LAST_VAL_MIOU
+	LAST_VAL_MIOU = float((cls_inter[present] / cls_union[present]).mean()) if present.any() else 0.0
+	print(f"  {loader_name} mIoU: {LAST_VAL_MIOU*100:.2f}  (acc {accuracy*100:.2f})")
 	return avg_loss, accuracy
 
 def run_training(args=None):
@@ -1102,7 +1285,25 @@ def run_training(args=None):
 	print(f"\nInitializing model with {NUM_CLASSES} classes, {NUM_FEATURES} features...")
 
 	# Create model
-	model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES, feature_dims=FEATURE_DIMS).to(device)
+	model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES, feature_dims=FEATURE_DIMS,
+	                        context_mode=CONTEXT_MODE, width_mult=WIDTH_MULT,
+	                        mid_transformer=MID_TRANSFORMER, sampler=SAMPLER,
+	                        enc_channels=ENC_CHANNELS, bottleneck_dim=BOTTLENECK_DIM).to(device)
+
+	# Warm restart: continue from an existing checkpoint instead of random init.
+	# Needed because a run can still be improving when its cosine schedule ends -- the
+	# 60-epoch chunk run was climbing at +0.113 val-acc points/epoch at its last epoch.
+	# Restarting the schedule from the reached weights (SGDR-style) keeps that progress
+	# instead of throwing it away and retraining from scratch at a higher epoch count.
+	# Optimizer state is deliberately NOT restored: a fresh cosine cycle wants a fresh
+	# moment estimate, and the checkpoint only stores model weights anyway.
+	if INIT_WEIGHTS:
+		sd = torch.load(INIT_WEIGHTS, map_location=device, weights_only=False)
+		if isinstance(sd, dict) and 'model_state_dict' in sd:
+			sd = sd['model_state_dict']
+		model.load_state_dict(sd)
+		print(f"Warm restart: initialized from {INIT_WEIGHTS}")
+
 	optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
 
 	# Load class weights from configuration
@@ -1115,7 +1316,7 @@ def run_training(args=None):
 
 	# Learning rate scheduler
 	scheduler = optim.lr_scheduler.CosineAnnealingLR(
-	    optimizer, T_max=NUM_EPOCHS, eta_min=5e-4
+	    optimizer, T_max=NUM_EPOCHS, eta_min=LR_ETA_MIN
 	)
 
 	# Initialize wandb (online mode for cloud sync) - optional
@@ -1148,17 +1349,37 @@ def run_training(args=None):
 	
 	# Early stopping parameters. Keyed off val_acc (the SAME metric that selects the saved
 	# best_model.pth), so training is not cut short while val_acc is still climbing. Patience
-	# raised 7->10 to ride out the noisy mid-training val plateau before the LR anneals.
-	early_stop_patience = 10
+	# raised 7->10 to ride out the noisy mid-training val plateau before the LR anneals, and
+	# gated on the cosine having annealed (see EARLY_STOP_PATIENCE / EARLY_STOP_REQUIRE_ANNEAL).
+	early_stop_patience = EARLY_STOP_PATIENCE
 	early_stop_counter = 0
+	best_select = -1.0   # best value of whichever metric SELECT_METRIC names
 	best_val_loss = float('inf')
 	
+	start_epoch = 1
+	if RESUME:
+		ck = torch.load(RESUME, map_location=device, weights_only=False)
+		model.load_state_dict(ck['model_state_dict'])
+		optimizer.load_state_dict(ck['optimizer_state_dict'])
+		scheduler.load_state_dict(ck['scheduler_state_dict'])
+		scaler.load_state_dict(ck['scaler_state_dict'])
+		history = ck['history']
+		best_val_acc = ck['best_val_acc']; best_val_loss = ck['best_val_loss']
+		best_select = ck.get('best_select', best_val_acc)
+		best_epoch = ck['best_epoch']; early_stop_counter = ck['early_stop_counter']
+		start_epoch = ck['epoch'] + 1
+		if ck.get('num_epochs') != NUM_EPOCHS:
+			print(f"  WARNING: checkpoint was scheduled for {ck.get('num_epochs')} epochs but "
+				  f"--num_epochs is {NUM_EPOCHS}; the cosine will not line up.")
+		print(f"Resumed from {RESUME}: continuing at epoch {start_epoch}/{NUM_EPOCHS} "
+			  f"(best val_acc {best_val_acc:.4f} @ep{best_epoch})")
+
 	print(f"Starting training on {device} with safety measures enabled...")
 
 	# Add progress bar showing overall training progress
 	model_best_fname = ''
 	debug_break_flag = False
-	epoch_pbar = tqdm(range(1, NUM_EPOCHS + 1), desc="Training Progress")
+	epoch_pbar = tqdm(range(start_epoch, NUM_EPOCHS + 1), desc="Training Progress")
 	for epoch in epoch_pbar:
 		try:
 			if debug_break_flag:
@@ -1192,7 +1413,8 @@ def run_training(args=None):
 			if epoch > WARMUP_EPOCHS:
 				scheduler.step()  
 			new_lr = optimizer.param_groups[0]['lr']
-			log_epoch_metrics(csv_log_path, epoch, train_loss, train_acc, val_loss, val_acc, new_lr)
+			log_epoch_metrics(csv_log_path, epoch, train_loss, train_acc, val_loss, val_acc, new_lr,
+							  val_miou=LAST_VAL_MIOU)
 			
 			# Detect learning rate changes and log output
 			if new_lr != old_lr:
@@ -1203,6 +1425,27 @@ def run_training(args=None):
 			history['train_acc'].append(train_acc)
 			history['val_loss'].append(val_loss)
 			history['val_acc'].append(val_acc)
+
+			# Resumable checkpoint, rewritten every epoch. best_model.pth only holds weights
+			# at the best val_acc, so killing a run mid-schedule used to cost the optimizer
+			# moments and the cosine position -- a restart could only warm-start from the
+			# best weights and had to begin a fresh LR cycle. This snapshot lets --resume
+			# continue the SAME schedule exactly, which matters for runs measured in days.
+			# Written to a temp file then renamed so a crash mid-write cannot corrupt it.
+			ckpt_path = os.path.join(log_dir, 'checkpoint.pth')
+			torch.save({'epoch': epoch,
+						'model_state_dict': model.state_dict(),
+						'optimizer_state_dict': optimizer.state_dict(),
+						'scheduler_state_dict': scheduler.state_dict(),
+						'scaler_state_dict': scaler.state_dict(),
+						'history': history,
+						'best_val_acc': best_val_acc,
+						'best_select': best_select,
+						'best_val_loss': best_val_loss,
+						'best_epoch': best_epoch,
+						'early_stop_counter': early_stop_counter,
+						'num_epochs': NUM_EPOCHS}, ckpt_path + '.tmp')
+			os.replace(ckpt_path + '.tmp', ckpt_path)
 			
 			# Track best model + early stopping on the SAME metric (val_acc). Previously the
 			# counter keyed off val_loss while the checkpoint saved on val_acc, so a noisy
@@ -1211,7 +1454,16 @@ def run_training(args=None):
 			if val_loss < best_val_loss:
 				best_val_loss = val_loss
 
-			if val_acc > best_val_acc:
+			# Which metric selects the saved checkpoint (and drives early stopping -- the two
+			# must agree, see the note above). Default is val_miou: measured across this
+			# project's runs val_acc correlates only +0.43 with the test mIoU we actually
+			# report (+0.92 with test OA), and the run with the highest val_acc scored a
+			# mediocre 53.67 mIoU while a much lower-val_acc run scored the best 56.45.
+			# Accuracy is dominated by ceiling/floor/wall (65% of points); mIoU weights all
+			# 13 classes equally, so selecting on accuracy saves the wrong epoch.
+			select_now = LAST_VAL_MIOU if SELECT_METRIC == 'val_miou' else val_acc
+			if select_now > best_select:
+				best_select = select_now
 				best_val_acc = val_acc
 				best_epoch = epoch
 				early_stop_counter = 0  # new best model found -> reset patience
@@ -1228,10 +1480,20 @@ def run_training(args=None):
 			else:
 				early_stop_counter += 1
 
-			# Early stopping check
+			# Early stopping check. Patience alone is not enough: stopping while the cosine
+			# is still high throws away the low-LR refinement phase that produces the final
+			# gains, so the LR must have annealed to within EARLY_STOP_LR_TOL x LR_ETA_MIN
+			# first. Until then a stalled val_acc only reports, it does not stop.
 			if early_stop_counter >= early_stop_patience:
-				print(f"Early stopping triggered! No val_acc improvement for {early_stop_patience} epochs.")
-				break
+				anneal_done = (not EARLY_STOP_REQUIRE_ANNEAL) or (new_lr <= LR_ETA_MIN * EARLY_STOP_LR_TOL)
+				if anneal_done:
+					print(f"Early stopping triggered! No val_acc improvement for {early_stop_patience} epochs "
+						  f"(LR {new_lr:.2e} has annealed to the {LR_ETA_MIN:.0e} floor).")
+					break
+				if early_stop_counter == early_stop_patience:
+					print(f"val_acc stalled for {early_stop_patience} epochs, but LR is still {new_lr:.2e} "
+						  f"(> {LR_ETA_MIN * EARLY_STOP_LR_TOL:.2e}); continuing so the cosine can anneal. "
+						  f"Best so far: {best_val_acc:.4f} @ epoch {best_epoch}.")
 			
 			if USE_WANDB:
 				WANDB_STEP += 1
@@ -1284,7 +1546,10 @@ def test_model(model_path):
 	
 	# Load trained model (create model using current NUM_CLASSES)
 	try:
-		model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES, feature_dims=FEATURE_DIMS).to(device)
+		model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES, feature_dims=FEATURE_DIMS,
+	                        context_mode=CONTEXT_MODE, width_mult=WIDTH_MULT,
+	                        mid_transformer=MID_TRANSFORMER, sampler=SAMPLER,
+	                        enc_channels=ENC_CHANNELS, bottleneck_dim=BOTTLENECK_DIM).to(device)
 		model.load_state_dict(torch.load(model_path, map_location=device, weights_only=False))
 		model.eval()
 		print("Model loaded successfully")
@@ -1451,6 +1716,10 @@ def main():
 	global NUM_EPOCHS, BATCH_SIZE, VAL_BATCH_SIZE, LEARNING_RATE, NUM_FEATURES, NUM_CLASSES, BLOCK_SIZE
 	global USE_WANDB, COOLDOWN_SEC, FOCAL_GAMMA, RGB_DROPOUT_PROB, BLOCK_MODE
 	global FEATURE_DIMS, NORMALS_PRESENT, COLUMN_WINDOW, COLUMN_STRIDE
+	global EARLY_STOP_PATIENCE, EARLY_STOP_REQUIRE_ANNEAL
+	global OVERSAMPLE_RARE, CONTEXT_MODE, WIDTH_MULT, MID_TRANSFORMER, SAMPLER
+	global ROOM_DATA_PATH, ROOM_GRID, ROOM_MAX_POINTS, ROOM_LOOP, INIT_WEIGHTS, RESUME, SELECT_METRIC
+	global ENC_CHANNELS, BOTTLENECK_DIM
 
 	parser = argparse.ArgumentParser(description='PointEdgeSegNet Training')
 	parser.add_argument('--config', type=str, default='model_params.json', help='Path to model configuration JSON file')
@@ -1470,8 +1739,63 @@ def main():
 	parser.add_argument('--no_wandb', action='store_true', help='Disable Weights & Biases logging')
 	parser.add_argument('--cooldown_sec', type=float, default=COOLDOWN_SEC, help='Thermal cool-down seconds (0 disables all sleeps)')
 	parser.add_argument('--focal_gamma', type=float, default=FOCAL_GAMMA, help='Focal Loss focusing parameter (shared by train/test)')
+	parser.add_argument('--early_stop_patience', type=int, default=EARLY_STOP_PATIENCE,
+						help='Epochs without a val_acc improvement before stopping. Only takes effect once the '
+							 'cosine LR has annealed to the floor (see --allow_early_stop_before_anneal).')
+	parser.add_argument('--allow_early_stop_before_anneal', action='store_true',
+						help='Legacy behaviour: let patience stop training even while the LR is still high. Off by '
+							 'default because it silently truncates the cosine schedule when --num_epochs is raised.')
+	parser.add_argument('--aug_preset', type=str, default=AUG_PRESET, choices=['legacy', 'strong'],
+						help="Augmentation preset. 'strong' = constant full-strength + 360deg yaw, isotropic "
+							 "scale 0.8-1.2, mirroring, small tilts, colour drop 0.2, auto-contrast 0.2 (SOTA "
+							 "practice). 'legacy' = the original decaying schedule (mean prob*strength 0.046).")
+	parser.add_argument('--oversample_rare', type=float, default=OVERSAMPLE_RARE,
+						help='Rare-class block oversampling exponent (0 = off). Blocks are drawn with weight '
+							 'max(1, max class_weight present)**power, so sofa/board/column blocks appear more often. '
+							 'Epoch length is unchanged.')
+	parser.add_argument('--context_mode', type=str, default=CONTEXT_MODE, choices=['input', 'bottleneck'],
+						help="Injection point for --block_context: 'bottleneck' (zero-init residual, safe default) "
+							 "or 'input' (legacy constant channels; measured -6.4 mIoU on S3DIS).")
+	parser.add_argument('--width_mult', type=float, default=WIDTH_MULT,
+						help='Channel multiplier for the encoder/decoder (1.0 = historical architecture; '
+							 '1.5 needs ~30GB VRAM at batch 10).')
+	parser.add_argument('--room_data_path', type=str, default=ROOM_DATA_PATH,
+						help='Cache dir for voxel-subsampled rooms (block_mode=room)')
+	parser.add_argument('--room_grid', type=float, default=ROOM_GRID,
+						help='Voxel size for room mode (0.04 m is the S3DIS standard)')
+	parser.add_argument('--room_max_points', type=int, default=ROOM_MAX_POINTS,
+						help='Training point budget per room crop (DeLA uses 30000)')
+	parser.add_argument('--room_loop', type=int, default=ROOM_LOOP,
+						help='Room-list repeats per epoch (each repeat = a different random crop). '
+							 'S3DIS has ~170 train rooms, so loop=1 gives far too few optimizer steps.')
+	parser.add_argument('--enc_channels', type=str, default=None,
+						help='Comma-separated encoder channels, e.g. 128,256,320,384. Overrides the historical '
+							 '64,128,256,512. Use to move capacity to the full-resolution stages: 74.6% of the '
+							 'parameters currently sit in a bottleneck that sees 215 points while the stage that '
+							 'sees all 8192 holds 0.4%.')
+	parser.add_argument('--bottleneck_dim', type=int, default=None,
+						help='Bottleneck transformer width (default: last encoder channel). Narrowing it is how '
+							 'capacity is freed for the earlier stages.')
+	parser.add_argument('--select_metric', type=str, default=SELECT_METRIC, choices=['val_miou', 'val_acc'],
+						help="Metric that picks best_model.pth and drives early stopping. 'val_miou' is the "
+							 "default because val_acc correlates only +0.43 with the test mIoU we report.")
+	parser.add_argument('--resume', type=str, default=RESUME,
+						help='Resume the SAME run from a logs/<run>/checkpoint.pth: restores weights, '
+							 'optimizer, LR schedule, AMP scaler, history and epoch counter, then continues '
+							 'to --num_epochs. Use this (not --init_weights) to continue an interrupted run.')
+	parser.add_argument('--init_weights', type=str, default=INIT_WEIGHTS,
+						help='Warm restart: load these weights before training instead of random init. '
+							 'Use to extend a run that was still improving when its cosine schedule ended '
+							 '(the architecture flags must match the checkpoint).')
+	parser.add_argument('--sampler', type=str, default=SAMPLER, choices=['fps', 'grid'],
+						help="Encoder stage sampler. 'grid' (voxel) is linear and spatially uniform; FPS is "
+							 "quadratic and dominates cost above ~30k points (446x slower at 131k, measured). "
+							 "Must match between training and evaluation.")
+	parser.add_argument('--mid_transformer', action='store_true',
+						help='Add a 1-layer attention block at the ~860-pt mid level (long-range within-block '
+							 'context before the bottleneck). Architecture change: requires training from scratch.')
 	parser.add_argument('--rgb_dropout', type=float, default=RGB_DROPOUT_PROB, help='Prob. of zeroing RGB per block for RGB-free robustness')
-	parser.add_argument('--block_mode', type=str, default=BLOCK_MODE, choices=['grid', 'column'], help="Block partitioning: 'grid' (legacy) or 'column' (overlapping full-height, preserves context)")
+	parser.add_argument('--block_mode', type=str, default=BLOCK_MODE, choices=['grid', 'column', 'room'], help="Block partitioning: 'grid' (legacy) or 'column' (overlapping full-height, preserves context)")
 	parser.add_argument('--column_window', type=float, default=COLUMN_WINDOW, help='Column mode only: XY window side length (m). Larger => fewer blocks. VRAM is unaffected (blocks stay block_size points).')
 	parser.add_argument('--column_stride', type=float, default=COLUMN_STRIDE, help='Column mode only: XY step between columns (m). Set == column_window for no overlap (block count ~ grid); < window for overlap.')
 	parser.add_argument('--block_context', dest='block_context', action='store_true', default=None,
@@ -1493,9 +1817,26 @@ def main():
 	COOLDOWN_SEC = args.cooldown_sec
 	FOCAL_GAMMA = args.focal_gamma
 	RGB_DROPOUT_PROB = args.rgb_dropout
+	apply_aug_preset(args.aug_preset)   # may raise RGB_DROPOUT_PROB to 0.2 (colour drop)
 	BLOCK_MODE = args.block_mode
 	COLUMN_WINDOW = args.column_window
 	COLUMN_STRIDE = args.column_stride
+	EARLY_STOP_PATIENCE = args.early_stop_patience
+	EARLY_STOP_REQUIRE_ANNEAL = not args.allow_early_stop_before_anneal
+	OVERSAMPLE_RARE = args.oversample_rare
+	CONTEXT_MODE = args.context_mode
+	WIDTH_MULT = args.width_mult
+	MID_TRANSFORMER = args.mid_transformer
+	SAMPLER = args.sampler
+	INIT_WEIGHTS = args.init_weights
+	RESUME = args.resume
+	SELECT_METRIC = args.select_metric
+	ENC_CHANNELS = tuple(int(c) for c in args.enc_channels.split(',')) if args.enc_channels else None
+	BOTTLENECK_DIM = args.bottleneck_dim
+	ROOM_DATA_PATH = args.room_data_path
+	ROOM_GRID = args.room_grid
+	ROOM_MAX_POINTS = args.room_max_points
+	ROOM_LOOP = args.room_loop
 
 	# Load model configuration from JSON file
 	try:

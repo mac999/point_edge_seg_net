@@ -1,0 +1,94 @@
+{
+  "dataset_name": "dales",
+  "num_classes": 8,
+  "class_names": [
+    "ground",
+    "vegetation",
+    "cars",
+    "trucks",
+    "power_lines",
+    "fences",
+    "poles",
+    "buildings"
+  ],
+  "class_colors": [
+    [
+      242,
+      84,
+      84
+    ],
+    [
+      242,
+      202,
+      84
+    ],
+    [
+      163,
+      242,
+      84
+    ],
+    [
+      84,
+      242,
+      124
+    ],
+    [
+      84,
+      242,
+      242
+    ],
+    [
+      84,
+      124,
+      242
+    ],
+    [
+      163,
+      84,
+      242
+    ],
+    [
+      242,
+      84,
+      202
+    ]
+  ],
+  "class_weights": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "num_features": 7,
+  "block_size": 8192,
+  "input": {
+    "xyz_cols": [
+      0,
+      1,
+      2
+    ],
+    "rgb_cols": null,
+    "rgb_max": 255.0
+  },
+  "features": {
+    "use_normals": true,
+    "use_curvature": true,
+    "use_rgb": false,
+    "use_spatial": true,
+    "spatial_scale": 2.0,
+    "neighbor_knn": 15
+  },
+  "preprocessing": {
+    "grid_min_coords": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "grid_resolution": 2.0
+  },
+  "description": "Auto-generated config for the dales dataset (convert_dataset.py)."
+}

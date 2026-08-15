@@ -1,25 +1,51 @@
 # requirements.txt
+# Target platform: NVIDIA DGX Spark (GB10, Blackwell, aarch64), CUDA 12.8 build
 
 # --- Core Deep Learning Libraries ---
-# IMPORTANT: These PyTorch & PyG related libraries should be installed manually
-# using the specific commands for your CUDA version first.
-# The versions listed here are for reference.
---extra-index-url https://download.pytorch.org/whl/cu118
---find-links https://data.pyg.org/whl/torch-2.7.1+cu118.html
+# IMPORTANT: Install PyTorch & PyG-related libraries MANUALLY first, in order.
+# Blackwell (GB10) needs CUDA 12.8 wheels (cu128) -- NOT cu118.
+#
+# 1) PyTorch (cu128):
+#    pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
+#        --index-url https://download.pytorch.org/whl/cu128
+#
+# 2) PyG compiled extensions (no aarch64 wheels -> build from source).
+#    Install a matching CUDA 12.8 toolkit into the env so nvcc matches torch:
+#        conda install -c conda-forge cuda-nvcc=12.8 cuda-cudart-dev=12.8
+#        export CUDA_HOME=$CONDA_PREFIX
+#        pip install ninja
+#    Then:
+#        pip install --no-build-isolation torch_cluster torch_scatter torch_sparse
+#
+# The versions below are for reference only.
+# --extra-index-url https://download.pytorch.org/whl/cu128
+# --find-links https://data.pyg.org/whl/torch-2.7.1+cu128.html
 
 torch==2.7.1
 torchvision==0.22.1
 torchaudio==2.7.1
 torch_geometric
+# PyG >= 2.8 routes fps/knn/knn_graph through pyg-lib only. pyg-lib has no aarch64
+# wheels, so model.py falls back to the torch_cluster kernels below when it is absent
+# (same results). torch_cluster is therefore REQUIRED, not optional.
 torch_cluster
 torch_scatter
-torch_sparse  
+torch_sparse
 # pyg-lib
 
 # --- Data Processing and Machine Learning ---
 numpy
 scikit-learn
-open3d
+pandas
+
+# --- Point cloud I/O (Open3D) ---
+# NOTE: plain `pip install open3d` FAILS on Python 3.12 + aarch64 (no wheel).
+# Install Open3D MANUALLY using one of the options below, then remove this note.
+# Try in order until one succeeds:
+#   A) conda install -c conda-forge open3d
+#   B) pip install open3d-cpu            # headless build, best for a training box
+#   C) pip install open3d-unofficial-arm # community aarch64 wheel (imports as open3d)
+# open3d
 
 # --- Utilities and Visualization ---
 tqdm
