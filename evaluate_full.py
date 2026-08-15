@@ -191,6 +191,8 @@ def main():
 					help='v2: neighbour source, MUST match training')
 	ap.add_argument('--v2_stencil', type=int, default=1, help='v2: stencil radius, MUST match training')
 	ap.add_argument('--v2_diff', action='store_true', help='v2: feature-diff term, MUST match training')
+	ap.add_argument('--v2_base_grid', type=float, default=0.04, help='v2: input voxel size, MUST match training')
+	ap.add_argument('--v2_pool_grids', type=str, default='0.08,0.16,0.32', help='v2: pool grids, MUST match training')
 	args = ap.parse_args()
 
 	config = load_model_config(args.config)
@@ -210,7 +212,8 @@ def main():
 								  bottleneck_dim=args.bottleneck_dim,
 								  knn=args.v2_knn, curves=args.v2_curves,
 								  neighbor_mode=args.v2_neighbors, stencil_radius=args.v2_stencil,
-								  feature_diff=args.v2_diff).to(device)
+								  feature_diff=args.v2_diff, base_grid=args.v2_base_grid,
+								  pool_grids=tuple(float(g) for g in args.v2_pool_grids.split(','))).to(device)
 	else:
 		model = PointEdgeSegNet(num_features=spec['num_features'], num_classes=num_classes,
 							feature_dims=feature_dims, context_mode=args.context_mode,
