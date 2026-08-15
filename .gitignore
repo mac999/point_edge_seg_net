@@ -1,0 +1,25 @@
+# --- experiment artifacts (never in git) ---
+logs/
+*.log
+nohup.out
+
+# --- dataset & block/chunk caches (GBs, regenerable) ---
+processed_s3dis/
+s3dis_v1.2_aligned/
+block_s3dis/
+block_s3dis_ctx/
+chunk_s3dis/
+chunk_s3dis_inv/
+room_s3dis/
+inference_blocks/
+input/
+
+# --- python / tooling ---
+__pycache__/
+*.pyc
+.vscode/
+.claude/
+
+# --- model weights (belong to logs/, but guard against strays) ---
+*.pth
+*.ckpt

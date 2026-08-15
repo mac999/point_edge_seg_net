@@ -732,7 +732,12 @@ def augment_training_block(data,
                            jitter_std: float = 0.01,
                            scale_range: Tuple[float, float] = (0.9, 1.1),
                            rgb_jitter: float = 0.05,
-                           rgb_dropout_prob: float = 0.0):
+                           rgb_dropout_prob: float = 0.0,
+                           full_rotate: bool = False,
+                           isotropic_scale: bool = False,
+                           flip_prob: float = 0.0,
+                           tilt_std: float = 0.0,
+                           autocontrast_prob: float = 0.0):
     """
     On-the-fly geometric + color augmentation for a single point-cloud block.
 
@@ -758,6 +763,22 @@ def augment_training_block(data,
         rgb_jitter: gaussian jitter added to normalized RGB
         rgb_dropout_prob: probability of zeroing RGB for this block (trains the model
                           to survive missing color -> supports RGB-free inference)
+        full_rotate: draw the yaw angle from the FULL [0, 2*pi) instead of scaling it by
+                     `strength`. Indoor scenes are gravity-aligned but have no canonical
+                     heading, so every SOTA recipe rotates fully (DeLA: `uniform(0, 2*pi)`;
+                     Pointcept: `RandomRotate(axis=z, angle=[-1,1]*pi, p=0.5)`). Scaling
+                     the angle by a decaying strength (our old behaviour) left the model
+                     seeing only +-36 deg late in training.
+        isotropic_scale: use ONE scale factor for all axes (DeLA `uniform(0.8, 1.2)`)
+                     instead of per-axis anisotropic scaling.
+        flip_prob: probability of mirroring about the X and about the Y axis (drawn
+                     independently, as in Pointcept `RandomFlip(p=0.5)`). Normals are
+                     mirrored with the coordinates so geometry stays consistent.
+        tilt_std: std (radians) of small random rotations about X and Y. Pointcept uses
+                     +-pi/64 ~= 0.049 rad; models sensor levelling error.
+        autocontrast_prob: probability of chromatic auto-contrast (per-block contrast
+                     stretch blended with the original by a random factor). Present in
+                     every recipe surveyed (Pointcept p=0.2, DeLA, KPConvX).
 
     Returns:
         data: the same Data object, augmented in place.
@@ -780,22 +801,43 @@ def augment_training_block(data,
     center = pos.mean(dim=0, keepdim=True)
     pos_c = pos - center
 
-    # 1) Random yaw rotation about Z (indoor scenes are gravity-aligned)
-    if rotate_z:
-        ang = (torch.rand(1, device=device).item() * 2.0 - 1.0) * np.pi * strength
-        cos_a, sin_a = np.cos(ang), np.sin(ang)
-        R = torch.tensor([[cos_a, -sin_a, 0.0],
-                          [sin_a,  cos_a, 0.0],
-                          [0.0,    0.0,   1.0]], device=device, dtype=dtype)
-        pos_c = pos_c @ R.T
+    # 1) Rotation: yaw about Z (+ optional small tilts about X/Y), applied to coordinates
+    #    AND normals so the geometry stays self-consistent. One combined matrix.
+    if rotate_z or tilt_std > 0:
+        ang = (np.random.rand() * 2.0 * np.pi if full_rotate
+               else (torch.rand(1, device=device).item() * 2.0 - 1.0) * np.pi * strength)
+        ca, sa = np.cos(ang), np.sin(ang)
+        R = np.array([[ca, -sa, 0.0], [sa, ca, 0.0], [0.0, 0.0, 1.0]])
+        if tilt_std > 0:
+            for axis in (0, 1):  # small pitch/roll (sensor levelling error)
+                t = np.random.randn() * tilt_std
+                c, s = np.cos(t), np.sin(t)
+                Rt = np.eye(3)
+                a, b = (1, 2) if axis == 0 else (0, 2)
+                Rt[a, a], Rt[a, b], Rt[b, a], Rt[b, b] = c, -s, s, c
+                R = Rt @ R
+        Rt_ = torch.tensor(R.T, device=device, dtype=dtype)
+        pos_c = pos_c @ Rt_
         if normals is not None:
-            x[:, 0:3] = normals @ R.T
+            x[:, 0:3] = normals @ Rt_
+            normals = x[:, 0:3]
 
-    # 2) Anisotropic random scaling
+    # 1b) Random mirroring about X and/or Y (independent draws)
+    if flip_prob > 0:
+        for axis in (0, 1):
+            if torch.rand(1).item() < flip_prob:
+                pos_c[:, axis] = -pos_c[:, axis]
+                if normals is not None:
+                    x[:, axis] = -x[:, axis]
+
+    # 2) Random scaling (isotropic preserves object proportions; anisotropic is legacy)
     lo, hi = scale_range
-    lo = 1.0 + (lo - 1.0) * strength
-    hi = 1.0 + (hi - 1.0) * strength
-    scale = torch.empty(3, device=device, dtype=dtype).uniform_(lo, hi)
+    if not isotropic_scale:
+        lo = 1.0 + (lo - 1.0) * strength
+        hi = 1.0 + (hi - 1.0) * strength
+        scale = torch.empty(3, device=device, dtype=dtype).uniform_(lo, hi)
+    else:
+        scale = torch.empty(1, device=device, dtype=dtype).uniform_(lo, hi)
     pos_c = pos_c * scale
 
     # 3) Coordinate jitter (clamped to +/-3 sigma)
@@ -805,14 +847,23 @@ def augment_training_block(data,
 
     data.pos = pos_c + center
 
-    # 4) RGB augmentation (jitter + optional full dropout)
+    # 4) RGB augmentation: colour drop (forces geometric reasoning -- the single most
+    #    consistently present colour op across recipes) > auto-contrast > jitter.
     if has_rgb:
         if rgb_dropout_prob > 0 and torch.rand(1).item() < rgb_dropout_prob:
             # Zero-out color: teaches robustness to color-less scans
             x[:, rgb_start:rgb_end] = 0.0
-        elif rgb_jitter > 0:
-            noise = torch.randn(x.shape[0], rgb_dim, device=device, dtype=dtype) * (rgb_jitter * strength)
-            x[:, rgb_start:rgb_end] = (x[:, rgb_start:rgb_end] + noise).clamp(0.0, 1.0)
+        else:
+            if autocontrast_prob > 0 and torch.rand(1).item() < autocontrast_prob:
+                rgb = x[:, rgb_start:rgb_end]
+                lo_c = rgb.min(dim=0, keepdim=True).values
+                hi_c = rgb.max(dim=0, keepdim=True).values
+                stretched = (rgb - lo_c) / (hi_c - lo_c).clamp(min=EPSILON)
+                blend = torch.rand(1, device=device, dtype=dtype)  # random blend factor
+                x[:, rgb_start:rgb_end] = ((1.0 - blend) * rgb + blend * stretched).clamp(0.0, 1.0)
+            if rgb_jitter > 0:
+                noise = torch.randn(x.shape[0], rgb_dim, device=device, dtype=dtype) * (rgb_jitter * strength)
+                x[:, rgb_start:rgb_end] = (x[:, rgb_start:rgb_end] + noise).clamp(0.0, 1.0)
 
     data.x = x
     return data

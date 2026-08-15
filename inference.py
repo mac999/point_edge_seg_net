@@ -317,6 +317,13 @@ def parse_arguments():
                        help='Force-disable the per-block buffered-context descriptor (overrides config).')
     parser.add_argument('--context_buffer', type=float, default=None,
                        help='Block-context buffer distance (m); must match training.')
+    parser.add_argument('--context_mode', type=str, default='bottleneck', choices=['input', 'bottleneck'],
+                        help="MUST match training: where the block-context descriptor enters the model. "
+                             "'bottleneck' (new default) or 'input' (legacy, e.g. logs/20260722_104628).")
+    parser.add_argument('--width_mult', type=float, default=1.0,
+                        help='MUST match training --width_mult (1.0 = historical architecture).')
+    parser.add_argument('--mid_transformer', action='store_true',
+                        help='MUST match training --mid_transformer.')
     parser.add_argument('--context_bins', type=int, default=None,
                        help='Block-context z-histogram bins; must match training.')
 
@@ -391,8 +398,16 @@ def main():
     print(f"Using device: {device}")
     
     def _load(wpath):
-        m = PointEdgeSegNet(num_features=num_features, num_classes=NUM_CLASSES, feature_dims=feature_dims)
-        m.load_state_dict(torch.load(wpath, map_location=device, weights_only=False))
+        m = PointEdgeSegNet(num_features=num_features, num_classes=NUM_CLASSES, feature_dims=feature_dims,
+                            context_mode=args.context_mode, width_mult=args.width_mult,
+                            mid_transformer=args.mid_transformer)
+        try:
+            m.load_state_dict(torch.load(wpath, map_location=device, weights_only=False))
+        except RuntimeError as e:
+            raise RuntimeError(
+                f"Checkpoint/architecture mismatch for '{wpath}'. The constructor flags must match "
+                f"training: check --context_mode (input|bottleneck), --width_mult and --mid_transformer. "
+                f"Original error: {e}") from e
         return m.to(device).eval()
 
     models = [_load(args.model_weights)]

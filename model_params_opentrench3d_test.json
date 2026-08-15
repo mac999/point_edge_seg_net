@@ -1,0 +1,77 @@
+{
+  "dataset_name": "opentrench3d",
+  "num_classes": 5,
+  "class_names": [
+    "main_utility",
+    "other_utility",
+    "trench",
+    "inactive_utility",
+    "misc"
+  ],
+  "class_colors": [
+    [
+      242,
+      84,
+      84
+    ],
+    [
+      210,
+      242,
+      84
+    ],
+    [
+      84,
+      242,
+      147
+    ],
+    [
+      84,
+      147,
+      242
+    ],
+    [
+      210,
+      84,
+      242
+    ]
+  ],
+  "class_weights": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "num_features": 10,
+  "block_size": 8192,
+  "input": {
+    "xyz_cols": [
+      0,
+      1,
+      2
+    ],
+    "rgb_cols": [
+      3,
+      4,
+      5
+    ],
+    "rgb_max": 255.0
+  },
+  "features": {
+    "use_normals": true,
+    "use_curvature": true,
+    "use_rgb": true,
+    "use_spatial": true,
+    "spatial_scale": 0.05,
+    "neighbor_knn": 15
+  },
+  "preprocessing": {
+    "grid_min_coords": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "grid_resolution": 0.05
+  },
+  "description": "Auto-generated config for the opentrench3d dataset (convert_dataset.py)."
+}
