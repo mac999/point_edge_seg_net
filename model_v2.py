@@ -62,6 +62,50 @@ def serialize(pos, batch, grid, perm=0):
 	key = (batch.long() << 44) | (key & ((1 << 44) - 1))
 	return torch.argsort(key)
 
+def stencil_neighbors(pos, batch, grid, radius=1):
+	"""Exact metric neighbours by voxel-stencil hash lookup — no search, no approximation.
+
+	Every stage's points sit on a voxel grid (the input is grid-voxelized and every
+	pooling step is a grid_pool), so a point's spatial neighbours are exactly the
+	occupied voxels at fixed offsets: sort the voxel keys once, then one searchsorted
+	per stencil offset. This is sparse convolution's kernel map (MinkowskiNet et al.)
+	— it combines serialization's zero-search cost with kNN's true neighbourhoods,
+	which the E1/E2 ablations showed is what the serialized windows lack (door/board/
+	chair never recovered with wider windows; see VERSIONS.md v0.8.x log).
+
+	Returns (col, mask): (N, K) neighbour indices with K=(2*radius+1)^3 (self included
+	at the centre offset) and a bool mask that is True where the offset voxel is empty.
+	Duplicate keys (stage-0 padding repeats points) resolve to one representative,
+	which is harmless because duplicates carry identical features.
+	"""
+	R = int(radius)
+	dev = pos.device
+	g = ((pos - pos.min(dim=0).values) / grid).long() + R      # +R keeps g+offset >= 0
+	def key_of(q, bb):
+		return (bb.long() << 44) | ((_part1by2(q[..., 0]) << 2 |
+		                             _part1by2(q[..., 1]) << 1 |
+		                             _part1by2(q[..., 2])) & ((1 << 44) - 1))
+	keys = key_of(g, batch)
+	S, perm = torch.sort(keys)
+	n = pos.size(0)
+	r = torch.arange(-R, R + 1, device=dev)
+	offs = torch.stack(torch.meshgrid(r, r, r, indexing='ij'), dim=-1).reshape(-1, 3)
+	K = offs.size(0)
+	# All K offsets in one batched morton + ONE searchsorted: a per-offset python loop
+	# measured 136 ms here; this vectorized form is 1.3 ms for identical output.
+	q = g.unsqueeze(1) + offs.unsqueeze(0)                     # N x K x 3
+	nk = key_of(q, batch.unsqueeze(1).expand(-1, K))           # N x K
+	p = torch.searchsorted(S, nk.reshape(-1)).clamp(max=n - 1)
+	found = S[p] == nk.reshape(-1)
+	# Missing-cell sentinel is each point's OWN index, not 0: gather backward is a
+	# scatter_add, and a shared sentinel row serializes millions of atomic adds onto one
+	# address (measured 6.5 s/step); self-indices spread them evenly (65 ms/step). The
+	# mask still removes these entries from the max, so numerics are unchanged.
+	own = torch.arange(n, device=dev).unsqueeze(1).expand(n, K).reshape(-1)
+	col = torch.where(found, perm[p], own).view(n, K)
+	return col, (~found).view(n, K)
+
+
 def window_neighbors(n, k, sample_start, sample_end):
 	"""Neighbour indices for serialized points: the +-k/2 window in sorted order.
 
@@ -86,7 +130,7 @@ class MetaBlock(nn.Module):
 	The only per-neighbour work is a gather and one linear on the 3D offset: no per-edge
 	feature MLP (v1's cost center). Residual when shapes allow.
 	"""
-	def __init__(self, in_channels, out_channels, k=32):
+	def __init__(self, in_channels, out_channels, k=32, feature_diff=False):
 		super().__init__()
 		self.k = k
 		self.residual = in_channels == out_channels
@@ -96,15 +140,25 @@ class MetaBlock(nn.Module):
 			nn.ReLU(),
 		)
 		self.pose = nn.Linear(3, out_channels)
+		# feature_diff: restore EdgeConv's geometric-gradient cue W2*(h_j - h_i) WITHOUT a
+		# per-edge MLP: W2 is applied per POINT once, the difference is a gather + subtract.
+		# (v1's edge feature was cat(h_i, h_j - h_i) through a 2-layer edge MLP; this is
+		# the decomposed, k-times-cheaper equivalent of its first layer.)
+		self.diff = nn.Linear(out_channels, out_channels, bias=False) if feature_diff else None
 		self.post = nn.Sequential(
 			nn.Linear(out_channels, out_channels),
 			nn.BatchNorm1d(out_channels),
 		)
 		self.act = nn.ReLU()
 
-	def forward(self, x, pos, col):
+	def forward(self, x, pos, col, mask=None):
 		h = self.pre(x)                                        # N x C  (per point)
 		e = h[col] + self.pose(pos[col] - pos.unsqueeze(1))    # N x k x C (gather only)
+		if self.diff is not None:
+			b = self.diff(h)                                   # N x C  (per point)
+			e = e + (b[col] - b.unsqueeze(1))                  # decomposed W2*(h_j - h_i)
+		if mask is not None:                                   # empty stencil cells
+			e = e.masked_fill(mask.unsqueeze(-1), float('-inf'))
 		agg = e.max(dim=1).values
 		out = self.post(agg)
 		if self.residual:
@@ -150,7 +204,7 @@ class PointEdgeSegNetV2(nn.Module):
 	def __init__(self, num_features, num_classes, feature_dims=(4, 3, 0, 0), knn=32,
 				 transformer_layers=2, enc_channels=(64, 192, 320, 448),
 				 bottleneck_dim=256, base_grid=0.04, pool_grids=(0.08, 0.16, 0.32),
-				 curves=1):
+				 curves=1, neighbor_mode='serial', stencil_radius=1, feature_diff=False):
 		super().__init__()
 		dims = tuple(feature_dims) + (0,) * (4 - len(feature_dims))
 		geo_dim, rgb_dim, spatial_dim, context_dim = dims
@@ -165,6 +219,10 @@ class PointEdgeSegNetV2(nn.Module):
 		                            # patterns for the same reason).
 		self.base_grid = base_grid
 		self.pool_grids = pool_grids
+		assert neighbor_mode in ('serial', 'stencil')
+		self.neighbor_mode = neighbor_mode   # 'serial': +-k/2 window(s) on Morton curve(s)
+		self.stencil_radius = stencil_radius #  'stencil': exact voxel-offset neighbours,
+		                                     #  K=(2r+1)^3 (sparse-conv kernel map)
 		c1, c2, c3, c4 = [int(c) for c in enc_channels]
 		bdim = int(bottleneck_dim) if bottleneck_dim else c4
 		self.point_in_dim = num_features
@@ -173,11 +231,13 @@ class PointEdgeSegNetV2(nn.Module):
 										spatial_dim=spatial_dim, context_dim=0)
 
 		# Encoder: two meta blocks per stage (mirrors v1's conv_n/conv_n_2 depth)
+		def MB(ci, co):
+			return MetaBlock(ci, co, k=knn, feature_diff=feature_diff)
 		self.enc = nn.ModuleList([
-			nn.ModuleList([MetaBlock(self.point_in_dim, c1, k=knn), MetaBlock(c1, c1, k=knn)]),
-			nn.ModuleList([MetaBlock(c1, c2, k=knn), MetaBlock(c2, c2, k=knn)]),
-			nn.ModuleList([MetaBlock(c2, c3, k=knn), MetaBlock(c3, c3, k=knn)]),
-			nn.ModuleList([MetaBlock(c3, c4, k=knn)]),
+			nn.ModuleList([MB(self.point_in_dim, c1), MB(c1, c1)]),
+			nn.ModuleList([MB(c1, c2), MB(c2, c2)]),
+			nn.ModuleList([MB(c2, c3), MB(c3, c3)]),
+			nn.ModuleList([MB(c3, c4)]),
 		])
 
 		self.bottleneck_proj = nn.Linear(c4, bdim) if bdim != c4 else nn.Identity()
@@ -240,11 +300,17 @@ class PointEdgeSegNetV2(nn.Module):
 		feats, clusters = [], []
 		h, p, b = x_gated, pos, batch
 		for s, blocks in enumerate(self.enc):
-			order, inv, col = self._stage_prep(p, b, perm=s)
-			hs, ps = h[order], p[order]
-			for blk in blocks:
-				hs = blk(hs, ps, col)
-			h = hs[inv]                                   # back to canonical order
+			if self.neighbor_mode == 'stencil':
+				stage_grid = self.base_grid if s == 0 else self.pool_grids[s - 1]
+				col, mask = stencil_neighbors(p, b, stage_grid, self.stencil_radius)
+				for blk in blocks:
+					h = blk(h, p, col, mask)
+			else:
+				order, inv, col = self._stage_prep(p, b, perm=s)
+				hs, ps = h[order], p[order]
+				for blk in blocks:
+					hs = blk(hs, ps, col)
+				h = hs[inv]                               # back to canonical order
 			if s < len(self.enc) - 1:
 				feats.append((h, p, b))
 				h, p, b, cluster = grid_pool(h, p, b, self.pool_grids[s])
