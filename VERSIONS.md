@@ -84,6 +84,24 @@ EdgeConv의 기하 그래디언트 큐를 점별 행렬곱+gather 분해로 재�
 ③ 승자 구성 + **600ep 장기 런** (언더핏 해소, 에폭 23~40초라 저렴).
 ④ num_workers>0 (I/O 병목, util 75%).
 
+## v0.8.x 후속 실험 큐 (2026-08-15 밤 가동)
+
+`run_v08_queue.sh` — **재시작 가능**: 크래시/재부팅 시
+`cd ~/project/point_edge_seg_net && nohup ./run_v08_queue.sh >> v08_queue.log 2>&1 &`
+로 다시 실행하면 `logs/v08_queue.state`를 읽어 이어서 진행 (완료 단계 skip, 중단 학습은
+checkpoint에서 --resume, 채점은 결과 JSON 존재로 skip 판정).
+
+| 단계 | 내용 | 예상 |
+|---|---|---|
+| Q1 E5 | E4 레시피(stencil r2+diff) × **600ep** — 언더핏 해소 | ~5-6h |
+| Q2 | E5·E4 final에 **TTA 10뷰** 채점 (5스케일×플립) | ~30분 |
+| Q3 E6 | **room 모드**(방 전체 복셀) × 300ep — v1 시절 실패했던 경로를 v2.1로 재도전 | ~4-6h |
+| Q4 E7 | **2cm 복셀** 캐시 신규(core 24576/block 49152) × 150ep, base_grid 0.02 | ~10h+ |
+
+SOTA 위치 (2026-08-15): full-protocol 62.03은 RandLA-Net(~62.4)·GACNet(62.9)·
+HPEIN(61.9)과 동급 = **2019-2020 point-based 중위 티어**. 하루 만에 PointCNN(2018)
+티어에서 두 세대 상승. 다음 벽: MinkowskiNet 65.4 → KPConv 67.1.
+
 ## 로드맵 (계획)
 
 - **0.7.x — 컨텍스트 윈도우 확장**: (A) core_max 49152 청크 재생성 실험 →
