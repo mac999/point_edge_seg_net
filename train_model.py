@@ -9,6 +9,24 @@ import torch.nn as nn, torch.nn.functional as F, matplotlib.pyplot as plt, gc
 from torch_geometric.loader import DataLoader
 from glob import glob
 from model import PointEdgeSegNet
+from model_v2 import PointEdgeSegNetV2
+
+
+def build_model(num_features, num_classes, feature_dims, context_mode, width_mult,
+				mid_transformer, sampler, enc_channels, bottleneck_dim, arch='v1'):
+	"""Construct the requested architecture. 'v1' is the historical EdgeConv+kNN model
+	(every existing checkpoint); 'v2' is the serialized meta-aggregation rework
+	(model_v2.py) — measured 15-55x faster and 6-7x lighter at identical channel plan.
+	The two are NOT weight-compatible; a checkpoint must be evaluated with the arch
+	that trained it."""
+	if arch == 'v2':
+		return PointEdgeSegNetV2(num_features=num_features, num_classes=num_classes,
+								 feature_dims=feature_dims, enc_channels=enc_channels or (64, 192, 320, 448),
+								 bottleneck_dim=bottleneck_dim, knn=V2_KNN, curves=V2_CURVES)
+	return PointEdgeSegNet(num_features=num_features, num_classes=num_classes, feature_dims=feature_dims,
+						   context_mode=context_mode, width_mult=width_mult,
+						   mid_transformer=mid_transformer, sampler=sampler,
+						   enc_channels=enc_channels, bottleneck_dim=bottleneck_dim)
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from datetime import datetime
@@ -184,6 +202,9 @@ CONTEXT_MODE = 'bottleneck'
 WIDTH_MULT = 1.0        # channel multiplier for encoder/decoder (needs VRAM; DGX ok)
 MID_TRANSFORMER = False # extra 1-layer attention at the ~860-pt mid level
 SAMPLER = 'fps'         # stage sampler: 'fps' (historical) or 'grid' (linear; needed at scale)
+ARCH = 'v1'             # 'v1' EdgeConv+kNN (historical) | 'v2' serialized meta (model_v2.py)
+V2_KNN = 32             # v2 only: serialized-window neighbour count (total across curves)
+V2_CURVES = 1           # v2 only: Morton curves unioned per stage (1 or 2)
 INIT_WEIGHTS = ''       # optional checkpoint to warm-restart from (see run_training)
 RESUME = ''             # optional checkpoint.pth to resume the SAME schedule from
 LAST_VAL_MIOU = 0.0     # mIoU of the most recent validate() call (see validate)
@@ -1285,10 +1306,8 @@ def run_training(args=None):
 	print(f"\nInitializing model with {NUM_CLASSES} classes, {NUM_FEATURES} features...")
 
 	# Create model
-	model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES, feature_dims=FEATURE_DIMS,
-	                        context_mode=CONTEXT_MODE, width_mult=WIDTH_MULT,
-	                        mid_transformer=MID_TRANSFORMER, sampler=SAMPLER,
-	                        enc_channels=ENC_CHANNELS, bottleneck_dim=BOTTLENECK_DIM).to(device)
+	model = build_model(NUM_FEATURES, NUM_CLASSES, FEATURE_DIMS, CONTEXT_MODE, WIDTH_MULT,
+	                    MID_TRANSFORMER, SAMPLER, ENC_CHANNELS, BOTTLENECK_DIM, arch=ARCH).to(device)
 
 	# Warm restart: continue from an existing checkpoint instead of random init.
 	# Needed because a run can still be improving when its cosine schedule ends -- the
@@ -1546,10 +1565,8 @@ def test_model(model_path):
 	
 	# Load trained model (create model using current NUM_CLASSES)
 	try:
-		model = PointEdgeSegNet(num_features=NUM_FEATURES, num_classes=NUM_CLASSES, feature_dims=FEATURE_DIMS,
-	                        context_mode=CONTEXT_MODE, width_mult=WIDTH_MULT,
-	                        mid_transformer=MID_TRANSFORMER, sampler=SAMPLER,
-	                        enc_channels=ENC_CHANNELS, bottleneck_dim=BOTTLENECK_DIM).to(device)
+		model = build_model(NUM_FEATURES, NUM_CLASSES, FEATURE_DIMS, CONTEXT_MODE, WIDTH_MULT,
+		                    MID_TRANSFORMER, SAMPLER, ENC_CHANNELS, BOTTLENECK_DIM, arch=ARCH).to(device)
 		model.load_state_dict(torch.load(model_path, map_location=device, weights_only=False))
 		model.eval()
 		print("Model loaded successfully")
@@ -1719,7 +1736,7 @@ def main():
 	global EARLY_STOP_PATIENCE, EARLY_STOP_REQUIRE_ANNEAL
 	global OVERSAMPLE_RARE, CONTEXT_MODE, WIDTH_MULT, MID_TRANSFORMER, SAMPLER
 	global ROOM_DATA_PATH, ROOM_GRID, ROOM_MAX_POINTS, ROOM_LOOP, INIT_WEIGHTS, RESUME, SELECT_METRIC
-	global ENC_CHANNELS, BOTTLENECK_DIM
+	global ENC_CHANNELS, BOTTLENECK_DIM, ARCH, V2_KNN, V2_CURVES
 
 	parser = argparse.ArgumentParser(description='PointEdgeSegNet Training')
 	parser.add_argument('--config', type=str, default='model_params.json', help='Path to model configuration JSON file')
@@ -1794,6 +1811,14 @@ def main():
 	parser.add_argument('--mid_transformer', action='store_true',
 						help='Add a 1-layer attention block at the ~860-pt mid level (long-range within-block '
 							 'context before the bottleneck). Architecture change: requires training from scratch.')
+	parser.add_argument('--arch', type=str, default=ARCH, choices=['v1', 'v2'],
+						help="Architecture: 'v1' EdgeConv+kNN (all existing checkpoints) or 'v2' serialized "
+							 "meta-aggregation (model_v2.py; 15-55x faster, 6-7x less VRAM, NOT weight-"
+							 "compatible with v1). Must match between training and evaluation.")
+	parser.add_argument('--v2_knn', type=int, default=V2_KNN,
+						help='v2 only: neighbour window size, total across curves (architecture-defining)')
+	parser.add_argument('--v2_curves', type=int, default=V2_CURVES, choices=[1, 2],
+						help='v2 only: Morton curves unioned per stage; 2 gives two independent seams')
 	parser.add_argument('--rgb_dropout', type=float, default=RGB_DROPOUT_PROB, help='Prob. of zeroing RGB per block for RGB-free robustness')
 	parser.add_argument('--block_mode', type=str, default=BLOCK_MODE, choices=['grid', 'column', 'room'], help="Block partitioning: 'grid' (legacy) or 'column' (overlapping full-height, preserves context)")
 	parser.add_argument('--column_window', type=float, default=COLUMN_WINDOW, help='Column mode only: XY window side length (m). Larger => fewer blocks. VRAM is unaffected (blocks stay block_size points).')
@@ -1828,6 +1853,9 @@ def main():
 	WIDTH_MULT = args.width_mult
 	MID_TRANSFORMER = args.mid_transformer
 	SAMPLER = args.sampler
+	ARCH = args.arch
+	V2_KNN = args.v2_knn
+	V2_CURVES = args.v2_curves
 	INIT_WEIGHTS = args.init_weights
 	RESUME = args.resume
 	SELECT_METRIC = args.select_metric

@@ -183,6 +183,10 @@ def main():
 						 'per point, as in Pointcept (10 views) / DeLA (12 votes). Cost scales linearly.')
 	ap.add_argument('--tta_flip', action='store_true', help='Add mirrored views to the TTA set (doubles views)')
 	ap.add_argument('--out', default=None, help='Output JSON (default: <model_dir>/test_full_summary.json)')
+	ap.add_argument('--arch', type=str, default='v1', choices=['v1', 'v2'],
+					help="Architecture the checkpoint was trained with ('v2' = model_v2.py serialized meta)")
+	ap.add_argument('--v2_knn', type=int, default=32, help='v2: window size, MUST match training')
+	ap.add_argument('--v2_curves', type=int, default=1, help='v2: curves per stage, MUST match training')
 	args = ap.parse_args()
 
 	config = load_model_config(args.config)
@@ -194,11 +198,19 @@ def main():
 	feature_dims = (spec['geo_dim'], spec['rgb_dim'], spec['spatial_dim'], spec['context_dim'])
 
 	device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-	model = PointEdgeSegNet(num_features=spec['num_features'], num_classes=num_classes,
+	enc = tuple(int(c) for c in args.enc_channels.split(',')) if args.enc_channels else None
+	if args.arch == 'v2':
+		from model_v2 import PointEdgeSegNetV2
+		model = PointEdgeSegNetV2(num_features=spec['num_features'], num_classes=num_classes,
+								  feature_dims=feature_dims, enc_channels=enc or (64, 192, 320, 448),
+								  bottleneck_dim=args.bottleneck_dim,
+								  knn=args.v2_knn, curves=args.v2_curves).to(device)
+	else:
+		model = PointEdgeSegNet(num_features=spec['num_features'], num_classes=num_classes,
 							feature_dims=feature_dims, context_mode=args.context_mode,
 							width_mult=args.width_mult, mid_transformer=args.mid_transformer,
 							sampler=args.sampler,
-							enc_channels=tuple(int(c) for c in args.enc_channels.split(',')) if args.enc_channels else None,
+							enc_channels=enc,
 							bottleneck_dim=args.bottleneck_dim).to(device)
 	state = torch.load(args.model_weights, map_location=device, weights_only=False)
 	if isinstance(state, dict) and 'model_state_dict' in state:
