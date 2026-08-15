@@ -54,8 +54,18 @@ door(23~29 vs v1 48)·board(34~36 vs 60)·chair(62~64 vs 77)는 폭을 2배로 �
   ② 균일 랜덤 점으로 v2를 벤치마크하면 grid pooling이 병합을 못 해 병목 어텐션이
   전점에 걸림(51GB 폭발) — v2 벤치마크는 반드시 실데이터(표면형)로.
 
-| E3 | v2.1 stencil r1 | K=27+diff, 150ep | (진행 중, logs/20260815_153701) | — | 정확 이웃(좁음) 검증 |
-| E4 | v2.1 stencil r2 | K=125+diff, 150ep | (진행 중, logs/20260815_153706) | — | 정확 이웃(kNN-32급 폭) — 근사이웃 주범 가설의 최종 판정 |
+| E3 | v2.1 stencil r1 | K=27+diff, ep136 조기종료 | 79.0 | **59.32** | **v1 추월** (+0.5) — 실효 이웃 9개로 |
+| E4 | v2.1 stencil r2 | K=125+diff, ep132 조기종료 | 81.4 | **62.03** | **신기록 +3.21** — 프로젝트 사상 최고 |
+
+**E3/E4 판정 (2026-08-15 21:41) — v2.1 성공, 새 baseline = E4 62.03**:
+- 근사이웃 주범 가설 확증: 정확한 stencil 이웃으로 바꾸자 serial 대비 +12.7 (49.35→62.03).
+- v1 대비 클래스별: door +9.5, window +8.3, chair +8.1, sofa +6.4, bookcase +6.0 —
+  serial에서 붕괴했던 클래스들이 회복을 넘어 v1을 크게 추월. beam은 여전히 0.
+- E4가 E3보다 +2.7 → 이웃 폭도 유효 (r2 ~25개 ≈ kNN-32급이 정답).
+- best(60.78) < final(62.03) 재확인 — val 선택 지표 불신 3번째 증거.
+- 속도: E4 학습 6h(병렬 공유·300W 캡 하) — 단독이면 ~2.5h. VRAM 피크 ~50GB(병렬 합).
+- 결론: PointEdgeSegNetV2(stencil r2, feature_diff)가 다음 릴리스의 PointEdgeSegNet
+  본체 후보. 2.54M params로 v1(3.15M) 대비 −19% 파라미터, +3.2 mIoU.
 
 **v2.1 구현 노트 (2026-08-15 오후)**: grid-stencil 이웃(`stencil_neighbors`) +
 feature-diff 항(`MetaBlock(feature_diff=True)`, W₂(h_j−h_i)를 점별 행렬곱+gather로 분해).
