@@ -91,12 +91,23 @@ EdgeConv의 기하 그래디언트 큐를 점별 행렬곱+gather 분해로 재�
 로 다시 실행하면 `logs/v08_queue.state`를 읽어 이어서 진행 (완료 단계 skip, 중단 학습은
 checkpoint에서 --resume, 채점은 결과 JSON 존재로 skip 판정).
 
+**Q1 E5 결과 (2026-08-16 17:01)**: ep517 조기종료 (val best 84.60@ep499, train 97.8%).
+full-protocol **best 64.11 / final 64.23 — 신기록 +2.20** (62.03→64.23). OA 87.23,
+mAcc 72.31. 클래스별: door +9.8(67.2), column +5.5, clutter +4.6, table +3.8,
+board +3.6, floor +2.2 / window −5.8(유일한 큰 후퇴), sofa −0.8. beam 여전히 0.
+final>best 4번째 확인. MinkowskiNet(65.4)까지 1.2p.
+
 | 단계 | 내용 | 예상 |
 |---|---|---|
-| Q1 E5 | E4 레시피(stencil r2+diff) × **600ep** — 언더핏 해소 | ~5-6h |
+| Q1 E5 | E4 레시피(stencil r2+diff) × **600ep** — 언더핏 해소 | ✅ **64.23** |
 | Q2 | E5·E4 final에 **TTA 10뷰** 채점 (5스케일×플립) | ~30분 |
 | Q3 E6 | **room 모드**(방 전체 복셀) × 300ep — v1 시절 실패했던 경로를 v2.1로 재도전 | ~4-6h |
 | Q4 E7 | **2cm 복셀** 캐시 신규(core 24576/block 49152) × 150ep, base_grid 0.02 | ~10h+ |
+
+**운영 노트 (2026-08-16)**: 장기 런에서 nvidia-smi VRAM이 14→80GB 톱니파를 그림 —
+누수가 아니라 캐싱 얼로케이터의 가변 크기 재사용 실패 + 100배치마다 empty_cache 반납
+주기임 (train_model.py:1157). allocated는 4-8GB 수준. 새 런에는
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`를 붙일 것.
 
 SOTA 위치 (2026-08-15): full-protocol 62.03은 RandLA-Net(~62.4)·GACNet(62.9)·
 HPEIN(61.9)과 동급 = **2019-2020 point-based 중위 티어**. 하루 만에 PointCNN(2018)
