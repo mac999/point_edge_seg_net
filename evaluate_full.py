@@ -182,6 +182,9 @@ def main():
 						 'Combined with --tta_flip this gives N_SCALE (x2) views whose softmax is summed '
 						 'per point, as in Pointcept (10 views) / DeLA (12 votes). Cost scales linearly.')
 	ap.add_argument('--tta_flip', action='store_true', help='Add mirrored views to the TTA set (doubles views)')
+	ap.add_argument('--tta_d4', type=int, default=1, choices=[1, 4, 8],
+					help='CHUNK mode TTA: grid-preserving D4 views (1=off, 4=rot90s, 8=rot90s x flip). '
+						 'Scale-TTA is wrong for stencil models (breaks the lattice); this is the safe family.')
 	ap.add_argument('--out', default=None, help='Output JSON (default: <model_dir>/test_full_summary.json)')
 	ap.add_argument('--arch', type=str, default='v1', choices=['v1', 'v2'],
 					help="Architecture the checkpoint was trained with ('v2' = model_v2.py serialized meta)")
@@ -245,14 +248,18 @@ def main():
 	total_blocks = 0
 	t0 = time.time()
 	if args.mode == 'chunk':
-		from voxel_chunk import predict_room_chunks
+		from voxel_chunk import predict_room_chunks, d4_views
+		chunk_views = d4_views(args.tta_d4)
+		if len(chunk_views) > 1:
+			print(f"Chunk-mode TTA: {len(chunk_views)} grid-preserving D4 views (rot90 x flip)")
 		for room_pt in tqdm(rooms, desc=f'[Full eval {args.test_area} / chunk]'):
 			c, npts, nch = predict_room_chunks(model, room_pt, device, num_classes,
 											   grid=args.room_grid, core_max=args.core_max,
 											   halo=args.halo, block_size=args.block_size,
 											   feature_dim=spec['num_features'],
 											   neighbor_knn=spec['neighbor_knn'],
-											   invariant_geo=args.invariant_geo)
+											   invariant_geo=args.invariant_geo,
+											   views=chunk_views)
 			conf += c
 			total_blocks += nch
 	elif args.mode == 'room':

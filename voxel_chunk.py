@@ -241,15 +241,41 @@ def prepare_chunk_cache(processed_data_path, out_path, areas, test_area,
         print(f"Chunk cache at {out_path}: {n_chunk} chunks | core pts mean {c.mean():.0f} "
               f"std/mean {c.std()/c.mean():.2f} min {c.min()} max {c.max()} | block_size {block_size}")
 
+def d4_views(n=1):
+    """Grid-preserving TTA view list: the dihedral group of the XY square.
+
+    Stencil/serialized models quantize coordinates to the data's voxel grid, so the
+    usual scale-TTA breaks their neighbourhood structure (0.9x points no longer sit on
+    the 4 cm lattice). Rotations by multiples of 90 deg and axis flips map the lattice
+    onto itself EXACTLY, so they are the correct TTA family here.
+    n=1 identity only; n=4 the four rotations; n=8 rotations x mirror.
+    """
+    views = [(k, f) for f in (False, True) for k in range(4)]  # (rot90_k, flip_x)
+    return views[:max(1, min(int(n), 8))] if n != 4 else [(k, False) for k in range(4)]
+
+def _d4_apply(xy, k, flip):
+    """Apply rot90^k (+ optional x-flip) to an (N,2) array; exact, no interpolation."""
+    x, y = xy[:, 0].copy(), xy[:, 1].copy()
+    for _ in range(k % 4):
+        x, y = -y, x
+    if flip:
+        x = -x
+    return np.stack([x, y], axis=1)
+
 def predict_room_chunks(model, room_pt, device, num_classes, grid=0.04, core_max=12288,
                         halo=1.0, block_size=20480, feature_dim=None, batch_chunks=4,
-                        neighbor_knn=15, seed=0, invariant_geo=False):
+                        neighbor_knn=15, seed=0, invariant_geo=False, views=((0, False),)):
     """Score every ORIGINAL point of a room using the SAME chunking as training.
 
     Only CORE predictions are kept (the halo is context, never scored -- this is
     KPConv's `test_radius_ratio=0.7` idea expressed exactly). Cores tile the voxel cloud
     without gaps or overlap, so each voxel gets exactly one prediction, which is then
     propagated to full resolution by a single nearest-neighbour query.
+
+    `views` is a list of (rot90_k, flip_x) D4 transforms (see d4_views): per-voxel
+    softmax is summed over views before the argmax. Voxelization and chunk layout are
+    computed ONCE on the original coordinates, so coverage is identical across views --
+    only the geometry the network sees rotates. Normals co-rotate with the coordinates.
     """
     from scipy.spatial import cKDTree
     from torch_geometric.data import Batch
@@ -263,20 +289,28 @@ def predict_room_chunks(model, room_pt, device, num_classes, grid=0.04, core_max
                                        invariant_geo=invariant_geo, feature_dim=feature_dim)
     chunks = chunk_layout(vp, core_max, halo, block_size, seed=seed)
 
-    vpred = np.full(len(vp), -1, dtype=np.int64)
-    for s in range(0, len(chunks), batch_chunks):
-        part = chunks[s:s + batch_chunks]
-        data_list = [Data(x=torch.from_numpy(np.ascontiguousarray(vf[i])),
-                          pos=torch.from_numpy(np.ascontiguousarray(vp[i])))
-                     for i, _ in part]
-        batch = Batch.from_data_list(data_list).to(device)
-        with torch.no_grad():
-            pred = model(batch).argmax(dim=-1).cpu().numpy()
-        off = 0
-        for i, n_core in part:
-            vpred[i[:n_core]] = pred[off:off + n_core]
-            off += len(i)
-    assert (vpred >= 0).all(), f"unscored voxels in {room_pt}"
+    votes = np.zeros((len(vp), num_classes), dtype=np.float32)
+    for k, flip in views:
+        vpv = vp.copy()
+        vpv[:, :2] = _d4_apply(vp[:, :2], k, flip)
+        vfv = vf
+        if k or flip:                     # normals occupy features [0:3]; co-rotate them
+            vfv = vf.copy()
+            vfv[:, :2] = _d4_apply(vf[:, :2], k, flip)
+        for s in range(0, len(chunks), batch_chunks):
+            part = chunks[s:s + batch_chunks]
+            data_list = [Data(x=torch.from_numpy(np.ascontiguousarray(vfv[i])),
+                              pos=torch.from_numpy(np.ascontiguousarray(vpv[i])))
+                         for i, _ in part]
+            batch = Batch.from_data_list(data_list).to(device)
+            with torch.no_grad():
+                probs = torch.softmax(model(batch).float(), dim=-1).cpu().numpy()
+            off = 0
+            for i, n_core in part:
+                votes[i[:n_core]] += probs[off:off + n_core]
+                off += len(i)
+    assert (votes.sum(axis=1) > 0).all(), f"unscored voxels in {room_pt}"
+    vpred = votes.argmax(axis=1)
 
     pred = vpred[cKDTree(vp).query(points, k=1, workers=-1)[1]]
     valid = (labels >= 0) & (labels < num_classes)
