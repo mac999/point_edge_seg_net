@@ -25,7 +25,8 @@ def build_model(num_features, num_classes, feature_dims, context_mode, width_mul
 								 bottleneck_dim=bottleneck_dim, knn=V2_KNN, curves=V2_CURVES,
 								 neighbor_mode=V2_NEIGHBORS, stencil_radius=V2_STENCIL,
 								 feature_diff=V2_DIFF, base_grid=V2_BASE_GRID,
-								 pool_grids=tuple(float(g) for g in V2_POOL_GRIDS.split(',')))
+								 pool_grids=tuple(float(g) for g in V2_POOL_GRIDS.split(',')),
+								 directional=V2_DIRECTIONAL)
 	return PointEdgeSegNet(num_features=num_features, num_classes=num_classes, feature_dims=feature_dims,
 						   context_mode=context_mode, width_mult=width_mult,
 						   mid_transformer=mid_transformer, sampler=sampler,
@@ -213,6 +214,7 @@ V2_STENCIL = 1          # v2 only: stencil radius (1 -> K=27, 2 -> K=125)
 V2_DIFF = False         # v2 only: add decomposed W2*(h_j - h_i) feature-difference term
 V2_BASE_GRID = 0.04     # v2 only: voxel size of the INPUT cloud (stencil/serialize quantization)
 V2_POOL_GRIDS = '0.08,0.16,0.32'  # v2 only: per-stage pooling voxel sizes
+V2_DIRECTIONAL = False  # v2 only: cylindrical anisotropic aggregation (E8)
 INIT_WEIGHTS = ''       # optional checkpoint to warm-restart from (see run_training)
 RESUME = ''             # optional checkpoint.pth to resume the SAME schedule from
 LAST_VAL_MIOU = 0.0     # mIoU of the most recent validate() call (see validate)
@@ -1744,7 +1746,7 @@ def main():
 	global EARLY_STOP_PATIENCE, EARLY_STOP_REQUIRE_ANNEAL
 	global OVERSAMPLE_RARE, CONTEXT_MODE, WIDTH_MULT, MID_TRANSFORMER, SAMPLER
 	global ROOM_DATA_PATH, ROOM_GRID, ROOM_MAX_POINTS, ROOM_LOOP, INIT_WEIGHTS, RESUME, SELECT_METRIC
-	global ENC_CHANNELS, BOTTLENECK_DIM, ARCH, V2_KNN, V2_CURVES, V2_NEIGHBORS, V2_STENCIL, V2_DIFF, V2_BASE_GRID, V2_POOL_GRIDS
+	global ENC_CHANNELS, BOTTLENECK_DIM, ARCH, V2_KNN, V2_CURVES, V2_NEIGHBORS, V2_STENCIL, V2_DIFF, V2_BASE_GRID, V2_POOL_GRIDS, V2_DIRECTIONAL
 
 	parser = argparse.ArgumentParser(description='PointEdgeSegNet Training')
 	parser.add_argument('--config', type=str, default='model_params.json', help='Path to model configuration JSON file')
@@ -1838,6 +1840,9 @@ def main():
 						help='v2: input voxel size — MUST equal the cache voxel grid (0.04 default, 0.02 for fine)')
 	parser.add_argument('--v2_pool_grids', type=str, default=V2_POOL_GRIDS,
 						help='v2: comma list of per-stage pooling voxel sizes')
+	parser.add_argument('--v2_directional', action='store_true',
+						help='v2 stencil: cylindrical (z-level x ring) anisotropic aggregation — yaw-'
+							 'augmentation-safe approximation of sparse-conv per-offset kernels')
 	parser.add_argument('--rgb_dropout', type=float, default=RGB_DROPOUT_PROB, help='Prob. of zeroing RGB per block for RGB-free robustness')
 	parser.add_argument('--block_mode', type=str, default=BLOCK_MODE, choices=['grid', 'column', 'room'], help="Block partitioning: 'grid' (legacy) or 'column' (overlapping full-height, preserves context)")
 	parser.add_argument('--column_window', type=float, default=COLUMN_WINDOW, help='Column mode only: XY window side length (m). Larger => fewer blocks. VRAM is unaffected (blocks stay block_size points).')
@@ -1880,6 +1885,7 @@ def main():
 	V2_DIFF = args.v2_diff
 	V2_BASE_GRID = args.v2_base_grid
 	V2_POOL_GRIDS = args.v2_pool_grids
+	V2_DIRECTIONAL = args.v2_directional
 	INIT_WEIGHTS = args.init_weights
 	RESUME = args.resume
 	SELECT_METRIC = args.select_metric
