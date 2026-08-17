@@ -106,6 +106,24 @@ def stencil_neighbors(pos, batch, grid, radius=1):
 	return col, (~found).view(n, K)
 
 
+def stencil_groups(radius, device):
+	"""Direction-group id per stencil offset, for anisotropic aggregation (E8).
+
+	Full per-offset weight matrices (true sparse-conv kernels) are pointless here:
+	training uses full 2*pi yaw augmentation, so x/y directions are not canonical and
+	xy-anisotropic weights would just be averaged out. Gravity (z) IS canonical, so
+	offsets are grouped CYLINDRICALLY: (vertical level dz) x (centre vs horizontal ring).
+	G = (2r+1)*2 groups (r1: 6, r2: 10). This is what vertical structure needs --
+	columns are vertical stacks, windows/boards live on vertical walls, beams are
+	horizontal at ceiling height -- while remaining invariant to yaw augmentation.
+	Order matches the meshgrid order used by stencil_neighbors.
+	"""
+	r = torch.arange(-radius, radius + 1, device=device)
+	offs = torch.stack(torch.meshgrid(r, r, r, indexing='ij'), dim=-1).reshape(-1, 3)
+	ring = ((offs[:, 0] != 0) | (offs[:, 1] != 0)).long()      # 0 = on the z-axis
+	return (offs[:, 2] + radius) * 2 + ring                     # (K,) int64
+
+
 def window_neighbors(n, k, sample_start, sample_end):
 	"""Neighbour indices for serialized points: the +-k/2 window in sorted order.
 
@@ -130,10 +148,20 @@ class MetaBlock(nn.Module):
 	The only per-neighbour work is a gather and one linear on the 3D offset: no per-edge
 	feature MLP (v1's cost center). Residual when shapes allow.
 	"""
-	def __init__(self, in_channels, out_channels, k=32, feature_diff=False):
+	def __init__(self, in_channels, out_channels, k=32, feature_diff=False, dir_groups=0):
 		super().__init__()
 		self.k = k
 		self.residual = in_channels == out_channels
+		# dir_groups > 0: anisotropic aggregation (E8). Each direction group g gets a
+		# learned channel-wise scale and bias applied to the neighbour features BEFORE
+		# the max — a cheap diagonal approximation of sparse conv's per-offset weight
+		# matrices (full matrices would add ~2M params/block at c4=448; this adds 2*G*C).
+		# Zero-initialised, so at init the block is EXACTLY the isotropic (E5) block.
+		if dir_groups > 0:
+			self.dir_scale = nn.Parameter(torch.zeros(dir_groups, out_channels))
+			self.dir_bias = nn.Parameter(torch.zeros(dir_groups, out_channels))
+		else:
+			self.dir_scale = self.dir_bias = None
 		self.pre = nn.Sequential(
 			nn.Linear(in_channels, out_channels),
 			nn.BatchNorm1d(out_channels),
@@ -151,9 +179,19 @@ class MetaBlock(nn.Module):
 		)
 		self.act = nn.ReLU()
 
-	def forward(self, x, pos, col, mask=None):
+	def forward(self, x, pos, col, mask=None, gvec=None):
 		h = self.pre(x)                                        # N x C  (per point)
-		e = h[col] + self.pose(pos[col] - pos.unsqueeze(1))    # N x k x C (gather only)
+		if gvec is not None and self.dir_scale is not None:
+			# Anisotropic gating (E8), applied PRE-gather: scaling the gathered N x K x C
+			# tensor directly makes autograd save an extra N*K*C operand (measured 3.3x
+			# memory, +89% time). Scaling h per GROUP first costs only N x G x C (G=K/12)
+			# and the gather's backward stays index-only.
+			n = h.size(0)
+			hG = h.unsqueeze(1) * (1.0 + self.dir_scale)       # N x G x C
+			base = hG.reshape(-1, hG.size(-1))[col * self.dir_scale.size(0) + gvec]
+			e = base + self.pose(pos[col] - pos.unsqueeze(1)) + self.dir_bias[gvec]
+		else:
+			e = h[col] + self.pose(pos[col] - pos.unsqueeze(1))    # N x k x C (gather only)
 		if self.diff is not None:
 			b = self.diff(h)                                   # N x C  (per point)
 			e = e + (b[col] - b.unsqueeze(1))                  # decomposed W2*(h_j - h_i)
@@ -204,7 +242,8 @@ class PointEdgeSegNetV2(nn.Module):
 	def __init__(self, num_features, num_classes, feature_dims=(4, 3, 0, 0), knn=32,
 				 transformer_layers=2, enc_channels=(64, 192, 320, 448),
 				 bottleneck_dim=256, base_grid=0.04, pool_grids=(0.08, 0.16, 0.32),
-				 curves=1, neighbor_mode='serial', stencil_radius=1, feature_diff=False):
+				 curves=1, neighbor_mode='serial', stencil_radius=1, feature_diff=False,
+				 directional=False):
 		super().__init__()
 		dims = tuple(feature_dims) + (0,) * (4 - len(feature_dims))
 		geo_dim, rgb_dim, spatial_dim, context_dim = dims
@@ -231,8 +270,10 @@ class PointEdgeSegNetV2(nn.Module):
 										spatial_dim=spatial_dim, context_dim=0)
 
 		# Encoder: two meta blocks per stage (mirrors v1's conv_n/conv_n_2 depth)
+		self.directional = directional and neighbor_mode == 'stencil'
+		G = (2 * stencil_radius + 1) * 2 if self.directional else 0
 		def MB(ci, co):
-			return MetaBlock(ci, co, k=knn, feature_diff=feature_diff)
+			return MetaBlock(ci, co, k=knn, feature_diff=feature_diff, dir_groups=G)
 		self.enc = nn.ModuleList([
 			nn.ModuleList([MB(self.point_in_dim, c1), MB(c1, c1)]),
 			nn.ModuleList([MB(c1, c2), MB(c2, c2)]),
@@ -303,8 +344,12 @@ class PointEdgeSegNetV2(nn.Module):
 			if self.neighbor_mode == 'stencil':
 				stage_grid = self.base_grid if s == 0 else self.pool_grids[s - 1]
 				col, mask = stencil_neighbors(p, b, stage_grid, self.stencil_radius)
+				# Directional gating from stage 1 onward: stage 0 holds ~70% of the points
+				# (cost) while object-scale verticality lives at pooled resolutions (value).
+				gvec = (stencil_groups(self.stencil_radius, p.device)
+						if self.directional and s >= 1 else None)
 				for blk in blocks:
-					h = blk(h, p, col, mask)
+					h = blk(h, p, col, mask, gvec)
 			else:
 				order, inv, col = self._stage_prep(p, b, perm=s)
 				hs, ps = h[order], p[order]
