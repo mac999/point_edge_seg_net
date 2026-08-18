@@ -197,6 +197,7 @@ def main():
 	ap.add_argument('--v2_base_grid', type=float, default=0.04, help='v2: input voxel size, MUST match training')
 	ap.add_argument('--v2_pool_grids', type=str, default='0.08,0.16,0.32', help='v2: pool grids, MUST match training')
 	ap.add_argument('--v2_directional', action='store_true', help='v2: anisotropic aggregation, MUST match training')
+	ap.add_argument('--v2_stencil_z', type=int, default=0, help='v2: vertical stencil reach, MUST match training')
 	args = ap.parse_args()
 
 	config = load_model_config(args.config)
@@ -218,7 +219,8 @@ def main():
 								  neighbor_mode=args.v2_neighbors, stencil_radius=args.v2_stencil,
 								  feature_diff=args.v2_diff, base_grid=args.v2_base_grid,
 								  pool_grids=tuple(float(g) for g in args.v2_pool_grids.split(',')),
-								  directional=args.v2_directional).to(device)
+								  directional=args.v2_directional,
+								  stencil_z=args.v2_stencil_z or None).to(device)
 	else:
 		model = PointEdgeSegNet(num_features=spec['num_features'], num_classes=num_classes,
 							feature_dims=feature_dims, context_mode=args.context_mode,

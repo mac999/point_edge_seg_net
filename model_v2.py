@@ -62,7 +62,7 @@ def serialize(pos, batch, grid, perm=0):
 	key = (batch.long() << 44) | (key & ((1 << 44) - 1))
 	return torch.argsort(key)
 
-def stencil_neighbors(pos, batch, grid, radius=1):
+def stencil_neighbors(pos, batch, grid, radius=1, z_radius=None):
 	"""Exact metric neighbours by voxel-stencil hash lookup — no search, no approximation.
 
 	Every stage's points sit on a voxel grid (the input is grid-voxelized and every
@@ -79,8 +79,14 @@ def stencil_neighbors(pos, batch, grid, radius=1):
 	which is harmless because duplicates carry identical features.
 	"""
 	R = int(radius)
+	# z_radius > radius extends the stencil VERTICALLY only (E10): columns/pipes span
+	# many z-levels while their xy footprint stays tiny, and E8 showed that per-level
+	# gating alone loses column IoU — the receptive field itself must reach further
+	# along gravity. K = (2R+1)^2 * (2Rz+1).
+	Rz = int(z_radius) if z_radius else R
 	dev = pos.device
-	g = ((pos - pos.min(dim=0).values) / grid).long() + R      # +R keeps g+offset >= 0
+	shift = torch.tensor([R, R, Rz], device=dev)
+	g = ((pos - pos.min(dim=0).values) / grid).long() + shift  # keeps g+offset >= 0
 	def key_of(q, bb):
 		return (bb.long() << 44) | ((_part1by2(q[..., 0]) << 2 |
 		                             _part1by2(q[..., 1]) << 1 |
@@ -89,7 +95,8 @@ def stencil_neighbors(pos, batch, grid, radius=1):
 	S, perm = torch.sort(keys)
 	n = pos.size(0)
 	r = torch.arange(-R, R + 1, device=dev)
-	offs = torch.stack(torch.meshgrid(r, r, r, indexing='ij'), dim=-1).reshape(-1, 3)
+	rz = torch.arange(-Rz, Rz + 1, device=dev)
+	offs = torch.stack(torch.meshgrid(r, r, rz, indexing='ij'), dim=-1).reshape(-1, 3)
 	K = offs.size(0)
 	# All K offsets in one batched morton + ONE searchsorted: a per-offset python loop
 	# measured 136 ms here; this vectorized form is 1.3 ms for identical output.
@@ -243,7 +250,7 @@ class PointEdgeSegNetV2(nn.Module):
 				 transformer_layers=2, enc_channels=(64, 192, 320, 448),
 				 bottleneck_dim=256, base_grid=0.04, pool_grids=(0.08, 0.16, 0.32),
 				 curves=1, neighbor_mode='serial', stencil_radius=1, feature_diff=False,
-				 directional=False):
+				 directional=False, stencil_z=None):
 		super().__init__()
 		dims = tuple(feature_dims) + (0,) * (4 - len(feature_dims))
 		geo_dim, rgb_dim, spatial_dim, context_dim = dims
@@ -262,6 +269,7 @@ class PointEdgeSegNetV2(nn.Module):
 		self.neighbor_mode = neighbor_mode   # 'serial': +-k/2 window(s) on Morton curve(s)
 		self.stencil_radius = stencil_radius #  'stencil': exact voxel-offset neighbours,
 		                                     #  K=(2r+1)^3 (sparse-conv kernel map)
+		self.stencil_z = stencil_z           #  optional taller z-reach (E10)
 		c1, c2, c3, c4 = [int(c) for c in enc_channels]
 		bdim = int(bottleneck_dim) if bottleneck_dim else c4
 		self.point_in_dim = num_features
@@ -343,7 +351,8 @@ class PointEdgeSegNetV2(nn.Module):
 		for s, blocks in enumerate(self.enc):
 			if self.neighbor_mode == 'stencil':
 				stage_grid = self.base_grid if s == 0 else self.pool_grids[s - 1]
-				col, mask = stencil_neighbors(p, b, stage_grid, self.stencil_radius)
+				col, mask = stencil_neighbors(p, b, stage_grid, self.stencil_radius,
+				                              z_radius=self.stencil_z)
 				# Directional gating from stage 1 onward: stage 0 holds ~70% of the points
 				# (cost) while object-scale verticality lives at pooled resolutions (value).
 				gvec = (stencil_groups(self.stencil_radius, p.device)
