@@ -128,6 +128,15 @@ expandable_segments 효과 확정: VRAM 톱니 14→93GB → **11~20GB 안정** 
 주기임 (train_model.py:1157). allocated는 4-8GB 수준. 새 런에는
 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`를 붙일 것.
 
+## E9 결과 (2026-08-20, run logs/20260819_001143)
+
+c1 64→128 (단일변수, E5 레시피 600ep, ep519 조기종료, val best 84.8).
+test **final 62.10 / best 62.98 — E5 대비 −2.1, 기각**. 1주차 "전 해상도 starvation"
+가설은 v2 아키텍처에서 성립하지 않음: v1의 진단(EdgeConv 시절 conv1 0.4%)은 엣지별
+MLP 구조의 이야기였고, v2의 MetaBlock은 전 해상도 단계가 이미 충분 — 오히려 확대가
+sofa −15.5, window −4.8, door −3.0으로 광범위 악화(과적합/균형 붕괴 추정). 부수 발견:
+처음으로 best(62.98) > final(62.10) — val-test 관계는 구성마다 다름을 재확인.
+
 SOTA 위치 (2026-08-15): full-protocol 62.03은 RandLA-Net(~62.4)·GACNet(62.9)·
 HPEIN(61.9)과 동급 = **2019-2020 point-based 중위 티어**. 하루 만에 PointCNN(2018)
 티어에서 두 세대 상승. 다음 벽: MinkowskiNet 65.4 → KPConv 67.1.
