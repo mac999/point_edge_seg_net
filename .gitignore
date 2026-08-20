@@ -23,3 +23,4 @@ __pycache__/
 # --- model weights (belong to logs/, but guard against strays) ---
 *.pth
 *.ckpt
+chunk_s3dis_2cm/
