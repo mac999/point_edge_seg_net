@@ -1,29 +1,12 @@
 # model_v2.py
-# PointEdgeSegNet v2: serialization + meta-aggregation rework of the same model.
-# The public name stays PointEdgeSegNet — this is an internal architecture revision;
-# once validated it becomes THE PointEdgeSegNet of the next GitHub release, and the
-# EdgeConv+kNN implementation in model.py remains as the legacy/rollback path.
+# PointEdgeSegNetV2: the v2 backbone of PointEdgeSegNet.
 #
-# WHY (all measured on this box, N=98,304, RTX PRO 6000 Blackwell — see VERSIONS.md):
-#   1. torch_cluster knn_graph costs 451 ms/call and v1 calls it 7x per forward: 99% of
-#      forward time at room scale. PTv2 rebuilt its architecture over a 28% share; ours
-#      is 99%. Fix: sort points ONCE per stage along a Morton (z-order) curve (16 ms) and
-#      take each point's neighbours as a +-k/2 window in sorted order. No neighbour
-#      search anywhere in the network (PTv3's "serialized neighbor mapping").
-#   2. v1's EdgeConv runs a 2-layer MLP on every EDGE (N*k x 2C tensor): 22.9 ms /
-#      3.85 GB per stage-1 block. Moving the MLP to POINTS and aggregating with max
-#      (PointMetaBase "MLP-before-Group", DeLA "decoupled aggregation") measures
-#      7.5 ms / 1.28 GB — 3x cheaper — with relative-position encoding preserving the
-#      geometry cue. Quality upper bound is established by DeLA (74.1 mIoU on S3DIS).
-#   3. v1's decoder knn_interpolate needs 3 more kNN queries. Serialized grid pooling
-#      keeps the point->voxel cluster map, so unpooling is a free index_select
-#      (PTv3's serialized unpooling) — zero search, exact inverse of pooling.
-#
-# KEPT from v1 (measured to be fine): U-Net topology + channel plan, FeatureGate,
-# bottleneck LightweightTransformer (runs on the coarsest set, cheap), prediction head
-# with input skip, per-sample coordinate centering.
-#
-# NOT kept: any weight compatibility. This is a from-scratch architecture (v0.8.x).
+# The input cloud is voxelized and every pooling stage stays on a voxel lattice, so
+# spatial neighbours can be looked up at fixed lattice offsets (sorted integer keys +
+# binary search) instead of searched. Local aggregation is a point-wise MLP with a
+# relative-position encoding and a feature-difference term; down/upsampling use grid
+# pooling with an exact inverse map. U-Net layout, feature gate and the bottleneck
+# Transformer are shared with v1 (model.py), but checkpoints are not compatible.
 
 import torch
 import torch.nn as nn
@@ -48,13 +31,8 @@ def _part1by2(v):
 _AXIS_PERMS = ((0, 1, 2), (1, 2, 0), (2, 0, 1))  # rotate the curve orientation per stage
 
 def serialize(pos, batch, grid, perm=0):
-	"""Sort points along a Morton curve, samples kept contiguous.
-
-	Returns `order` (int64 indices into pos). The curve axis order rotates with `perm`
-	(PTv3 alternates curve patterns per layer so thin structures are not always cut at
-	the same seam). Quantization grid sets curve resolution; anything at or below the
-	data's voxel size is fine.
-	"""
+	"""Sort points along a Morton curve; samples stay contiguous. `perm` rotates the
+	curve axis order per stage so seams do not repeat across stages."""
 	a, b, c = _AXIS_PERMS[perm % 3]
 	g = ((pos - pos.min(dim=0).values) / grid).long()
 	key = (_part1by2(g[:, a]) << 2) | (_part1by2(g[:, b]) << 1) | _part1by2(g[:, c])
@@ -63,26 +41,13 @@ def serialize(pos, batch, grid, perm=0):
 	return torch.argsort(key)
 
 def stencil_neighbors(pos, batch, grid, radius=1, z_radius=None):
-	"""Exact metric neighbours by voxel-stencil hash lookup — no search, no approximation.
+	"""Neighbour lookup on the voxel lattice: sorted keys + one batched searchsorted.
 
-	Every stage's points sit on a voxel grid (the input is grid-voxelized and every
-	pooling step is a grid_pool), so a point's spatial neighbours are exactly the
-	occupied voxels at fixed offsets: sort the voxel keys once, then one searchsorted
-	per stencil offset. This is sparse convolution's kernel map (MinkowskiNet et al.)
-	— it combines serialization's zero-search cost with kNN's true neighbourhoods,
-	which the E1/E2 ablations showed is what the serialized windows lack (door/board/
-	chair never recovered with wider windows; see VERSIONS.md v0.8.x log).
-
-	Returns (col, mask): (N, K) neighbour indices with K=(2*radius+1)^3 (self included
-	at the centre offset) and a bool mask that is True where the offset voxel is empty.
-	Duplicate keys (stage-0 padding repeats points) resolve to one representative,
-	which is harmless because duplicates carry identical features.
-	"""
+	Returns (col, mask) of shape (N, K) with K = (2r+1)^2 * (2rz+1); mask marks empty
+	cells. Missing cells use the point's own index as sentinel so the gather backward
+	spreads its atomic adds (a shared sentinel row serializes them)."""
 	R = int(radius)
-	# z_radius > radius extends the stencil VERTICALLY only (E10): columns/pipes span
-	# many z-levels while their xy footprint stays tiny, and E8 showed that per-level
-	# gating alone loses column IoU — the receptive field itself must reach further
-	# along gravity. K = (2R+1)^2 * (2Rz+1).
+	# z_radius extends the stencil vertically (columns/pipes span many z-levels).
 	Rz = int(z_radius) if z_radius else R
 	dev = pos.device
 	shift = torch.tensor([R, R, Rz], device=dev)
@@ -98,33 +63,19 @@ def stencil_neighbors(pos, batch, grid, radius=1, z_radius=None):
 	rz = torch.arange(-Rz, Rz + 1, device=dev)
 	offs = torch.stack(torch.meshgrid(r, r, rz, indexing='ij'), dim=-1).reshape(-1, 3)
 	K = offs.size(0)
-	# All K offsets in one batched morton + ONE searchsorted: a per-offset python loop
-	# measured 136 ms here; this vectorized form is 1.3 ms for identical output.
 	q = g.unsqueeze(1) + offs.unsqueeze(0)                     # N x K x 3
 	nk = key_of(q, batch.unsqueeze(1).expand(-1, K))           # N x K
 	p = torch.searchsorted(S, nk.reshape(-1)).clamp(max=n - 1)
 	found = S[p] == nk.reshape(-1)
-	# Missing-cell sentinel is each point's OWN index, not 0: gather backward is a
-	# scatter_add, and a shared sentinel row serializes millions of atomic adds onto one
-	# address (measured 6.5 s/step); self-indices spread them evenly (65 ms/step). The
-	# mask still removes these entries from the max, so numerics are unchanged.
 	own = torch.arange(n, device=dev).unsqueeze(1).expand(n, K).reshape(-1)
 	col = torch.where(found, perm[p], own).view(n, K)
 	return col, (~found).view(n, K)
 
 
 def stencil_groups(radius, device):
-	"""Direction-group id per stencil offset, for anisotropic aggregation (E8).
-
-	Full per-offset weight matrices (true sparse-conv kernels) are pointless here:
-	training uses full 2*pi yaw augmentation, so x/y directions are not canonical and
-	xy-anisotropic weights would just be averaged out. Gravity (z) IS canonical, so
-	offsets are grouped CYLINDRICALLY: (vertical level dz) x (centre vs horizontal ring).
-	G = (2r+1)*2 groups (r1: 6, r2: 10). This is what vertical structure needs --
-	columns are vertical stacks, windows/boards live on vertical walls, beams are
-	horizontal at ceiling height -- while remaining invariant to yaw augmentation.
-	Order matches the meshgrid order used by stencil_neighbors.
-	"""
+	"""Cylindrical direction-group id per stencil offset: (z level) x (centre | ring).
+	Yaw-invariant, so it is compatible with full-rotation augmentation. Order matches
+	stencil_neighbors."""
 	r = torch.arange(-radius, radius + 1, device=device)
 	offs = torch.stack(torch.meshgrid(r, r, r, indexing='ij'), dim=-1).reshape(-1, 3)
 	ring = ((offs[:, 0] != 0) | (offs[:, 1] != 0)).long()      # 0 = on the z-axis
@@ -132,13 +83,8 @@ def stencil_groups(radius, device):
 
 
 def window_neighbors(n, k, sample_start, sample_end):
-	"""Neighbour indices for serialized points: the +-k/2 window in sorted order.
-
-	sample_start/sample_end give each point's own sample's [start, end) range so windows
-	never cross sample boundaries (clamping duplicates edge neighbours, which is
-	harmless under max aggregation). Returns col of shape (n, k); row is implicit
-	(each point i owns row i).
-	"""
+	"""Serialized-window neighbours: +-k/2 positions in sorted order, clamped to each
+	sample's range."""
 	device = sample_start.device
 	offs = torch.arange(k, device=device) - k // 2
 	offs = offs + (offs >= 0).long()          # -k/2..-1, 1..k/2 (skip self; self is added by the residual path)
@@ -149,21 +95,13 @@ def window_neighbors(n, k, sample_start, sample_end):
 # --- building blocks -----------------------------------------------------------------
 
 class MetaBlock(nn.Module):
-	"""PointMetaBase/DeLA-style aggregation over a serialized window.
-
-	point MLP -> gather window -> +relative-position encoding -> max -> point MLP.
-	The only per-neighbour work is a gather and one linear on the 3D offset: no per-edge
-	feature MLP (v1's cost center). Residual when shapes allow.
-	"""
+	"""Local aggregation block: point-wise MLP -> neighbour gather (+ relative-position
+	encoding, optional feature-difference term and directional gating) -> max -> MLP."""
 	def __init__(self, in_channels, out_channels, k=32, feature_diff=False, dir_groups=0):
 		super().__init__()
 		self.k = k
 		self.residual = in_channels == out_channels
-		# dir_groups > 0: anisotropic aggregation (E8). Each direction group g gets a
-		# learned channel-wise scale and bias applied to the neighbour features BEFORE
-		# the max — a cheap diagonal approximation of sparse conv's per-offset weight
-		# matrices (full matrices would add ~2M params/block at c4=448; this adds 2*G*C).
-		# Zero-initialised, so at init the block is EXACTLY the isotropic (E5) block.
+		# dir_groups > 0: per-direction channel scale/bias on neighbour features (zero-init).
 		if dir_groups > 0:
 			self.dir_scale = nn.Parameter(torch.zeros(dir_groups, out_channels))
 			self.dir_bias = nn.Parameter(torch.zeros(dir_groups, out_channels))
@@ -175,10 +113,7 @@ class MetaBlock(nn.Module):
 			nn.ReLU(),
 		)
 		self.pose = nn.Linear(3, out_channels)
-		# feature_diff: restore EdgeConv's geometric-gradient cue W2*(h_j - h_i) WITHOUT a
-		# per-edge MLP: W2 is applied per POINT once, the difference is a gather + subtract.
-		# (v1's edge feature was cat(h_i, h_j - h_i) through a 2-layer edge MLP; this is
-		# the decomposed, k-times-cheaper equivalent of its first layer.)
+		# feature_diff: W2*(h_j - h_i) computed per point and gathered (no per-edge MLP).
 		self.diff = nn.Linear(out_channels, out_channels, bias=False) if feature_diff else None
 		self.post = nn.Sequential(
 			nn.Linear(out_channels, out_channels),
@@ -189,10 +124,7 @@ class MetaBlock(nn.Module):
 	def forward(self, x, pos, col, mask=None, gvec=None):
 		h = self.pre(x)                                        # N x C  (per point)
 		if gvec is not None and self.dir_scale is not None:
-			# Anisotropic gating (E8), applied PRE-gather: scaling the gathered N x K x C
-			# tensor directly makes autograd save an extra N*K*C operand (measured 3.3x
-			# memory, +89% time). Scaling h per GROUP first costs only N x G x C (G=K/12)
-			# and the gather's backward stays index-only.
+			# Gating applied per group before the gather to keep backward memory low.
 			n = h.size(0)
 			hG = h.unsqueeze(1) * (1.0 + self.dir_scale)       # N x G x C
 			base = hG.reshape(-1, hG.size(-1))[col * self.dir_scale.size(0) + gvec]
@@ -212,12 +144,8 @@ class MetaBlock(nn.Module):
 
 
 def grid_pool(x, pos, batch, grid, reduce='max'):
-	"""Voxel-grid pooling that keeps the inverse map for free unpooling.
-
-	Returns (x_p, pos_p, batch_p, cluster) where cluster maps every fine point to its
-	pooled row: unpooling is x_p[cluster]. Feature reduce is max (matches v1's
-	aggregation character); positions average so pooled points sit at voxel centroids.
-	"""
+	"""Voxel-grid pooling. Returns (x_p, pos_p, batch_p, cluster); unpooling is
+	x_p[cluster]."""
 	g = ((pos - pos.min(dim=0).values) / grid).long()
 	key = (batch.long() << 44) | ((_part1by2(g[:, 0]) << 2 |
 	                               _part1by2(g[:, 1]) << 1 |
@@ -239,13 +167,8 @@ def _sample_ranges(batch):
 
 
 class PointEdgeSegNetV2(nn.Module):
-	"""Serialized, meta-aggregation PointEdgeSegNet (v0.8.x architecture).
-
-	Interface-compatible with v1: forward(data) with data.x/pos/batch, per-point logits
-	out. Constructor args mirror v1 where they still apply; stage downsampling is by
-	voxel grid (pool_grids) instead of ratios, because grid pooling is what gives the
-	free unpooling map.
-	"""
+	"""v2 backbone. Interface-compatible with v1: forward(data) with data.x/pos/batch,
+	per-point logits out. Stage downsampling is by voxel grid (pool_grids)."""
 	def __init__(self, num_features, num_classes, feature_dims=(4, 3, 0, 0), knn=32,
 				 transformer_layers=2, enc_channels=(64, 192, 320, 448),
 				 bottleneck_dim=256, base_grid=0.04, pool_grids=(0.08, 0.16, 0.32),
@@ -257,19 +180,13 @@ class PointEdgeSegNetV2(nn.Module):
 		assert sum(dims) == num_features
 		assert context_dim == 0, "v2 does not carry the (twice-failed) block-context path"
 		self.k = knn
-		self.curves = curves        # Morton curves whose windows are unioned per stage:
-		                            # 1 = a single +-k/2 window (curve axis-order rotates per
-		                            # stage); 2 = two curves x k/2 window each — same k budget
-		                            # but two independent seams, so a neighbourhood cut by one
-		                            # curve is usually intact on the other (PTv3 uses 4 curve
-		                            # patterns for the same reason).
+		self.curves = curves        # Morton curves unioned per stage (independent seams)
 		self.base_grid = base_grid
 		self.pool_grids = pool_grids
 		assert neighbor_mode in ('serial', 'stencil')
-		self.neighbor_mode = neighbor_mode   # 'serial': +-k/2 window(s) on Morton curve(s)
-		self.stencil_radius = stencil_radius #  'stencil': exact voxel-offset neighbours,
-		                                     #  K=(2r+1)^3 (sparse-conv kernel map)
-		self.stencil_z = stencil_z           #  optional taller z-reach (E10)
+		self.neighbor_mode = neighbor_mode   # 'serial' | 'stencil'
+		self.stencil_radius = stencil_radius # lattice-offset lookup radius (K=(2r+1)^3)
+		self.stencil_z = stencil_z           # optional taller vertical reach
 		c1, c2, c3, c4 = [int(c) for c in enc_channels]
 		bdim = int(bottleneck_dim) if bottleneck_dim else c4
 		self.point_in_dim = num_features
@@ -313,13 +230,8 @@ class PointEdgeSegNetV2(nn.Module):
 		)
 
 	def _stage_prep(self, pos, batch, perm):
-		"""Serialize one resolution level: returns (order, inverse, col).
-
-		With curves > 1 the neighbour set is the union of +-(k/curves)/2 windows taken on
-		`curves` differently-oriented Morton curves. col indices are expressed in the
-		FIRST curve's order (the one features are laid out in), so extra curves only add
-		an index remap, not extra sorts of the feature tensor.
-		"""
+		"""Serialize one resolution level; with curves > 1 the neighbour set is the union
+		of windows on differently oriented curves, expressed in the first curve's order."""
 		n = pos.size(0)
 		order = serialize(pos, batch, self.base_grid, perm=perm)
 		inv = torch.empty_like(order)
@@ -353,8 +265,7 @@ class PointEdgeSegNetV2(nn.Module):
 				stage_grid = self.base_grid if s == 0 else self.pool_grids[s - 1]
 				col, mask = stencil_neighbors(p, b, stage_grid, self.stencil_radius,
 				                              z_radius=self.stencil_z)
-				# Directional gating from stage 1 onward: stage 0 holds ~70% of the points
-				# (cost) while object-scale verticality lives at pooled resolutions (value).
+				# Directional gating from stage 1 onward (stage 0 dominates cost).
 				gvec = (stencil_groups(self.stencil_radius, p.device)
 						if self.directional and s >= 1 else None)
 				for blk in blocks:
