@@ -8,8 +8,9 @@ import os, torch, torch.optim as optim, json, csv, argparse, time, numpy as np, 
 import torch.nn as nn, torch.nn.functional as F, matplotlib.pyplot as plt, gc
 from torch_geometric.loader import DataLoader
 from glob import glob
-from model import PointEdgeSegNet
-from model_v2 import PointEdgeSegNetV2
+from models import get_arch, resolve_arch
+from models.edgeconv import PointEdgeSegNet
+from models.stencil import PointEdgeSegNet as StencilSegNet
 
 
 def build_model(num_features, num_classes, feature_dims, context_mode, width_mult,
@@ -19,8 +20,8 @@ def build_model(num_features, num_classes, feature_dims, context_mode, width_mul
 	(model_v2.py) — measured 15-55x faster and 6-7x lighter at identical channel plan.
 	The two are NOT weight-compatible; a checkpoint must be evaluated with the arch
 	that trained it."""
-	if arch == 'v2':
-		return PointEdgeSegNetV2(num_features=num_features, num_classes=num_classes,
+	if resolve_arch(arch) == 'stencil':
+		return StencilSegNet(num_features=num_features, num_classes=num_classes,
 								 feature_dims=feature_dims, enc_channels=enc_channels or (64, 192, 320, 448),
 								 bottleneck_dim=bottleneck_dim, knn=V2_KNN, curves=V2_CURVES,
 								 neighbor_mode=V2_NEIGHBORS, stencil_radius=V2_STENCIL,
@@ -207,7 +208,7 @@ CONTEXT_MODE = 'bottleneck'
 WIDTH_MULT = 1.0        # channel multiplier for encoder/decoder (needs VRAM; DGX ok)
 MID_TRANSFORMER = False # extra 1-layer attention at the ~860-pt mid level
 SAMPLER = 'fps'         # stage sampler: 'fps' (historical) or 'grid' (linear; needed at scale)
-ARCH = 'v1'             # 'v1' EdgeConv+kNN (historical) | 'v2' serialized meta (model_v2.py)
+ARCH = 'edgeconv'       # 'edgeconv' (legacy kNN) | 'stencil' (current); 'v1'/'v2' accepted as aliases
 V2_KNN = 32             # v2 only: serialized-window neighbour count (total across curves)
 V2_CURVES = 1           # v2 only: Morton curves unioned per stage (1 or 2)
 V2_NEIGHBORS = 'serial' # v2 only: 'serial' (Morton window) | 'stencil' (exact voxel offsets)
@@ -1823,10 +1824,11 @@ def main():
 	parser.add_argument('--mid_transformer', action='store_true',
 						help='Add a 1-layer attention block at the ~860-pt mid level (long-range within-block '
 							 'context before the bottleneck). Architecture change: requires training from scratch.')
-	parser.add_argument('--arch', type=str, default=ARCH, choices=['v1', 'v2'],
-						help="Architecture: 'v1' EdgeConv+kNN (all existing checkpoints) or 'v2' serialized "
-							 "meta-aggregation (model_v2.py; 15-55x faster, 6-7x less VRAM, NOT weight-"
-							 "compatible with v1). Must match between training and evaluation.")
+	parser.add_argument('--arch', type=str, default=ARCH,
+						choices=['edgeconv', 'stencil', 'v1', 'v2'],
+						help="Architecture: 'edgeconv' (legacy kNN graph) or 'stencil' (current voxel-"
+							 "stencil backbone). 'v1'/'v2' are accepted as aliases. Checkpoints are not "
+							 "interchangeable; must match between training and evaluation.")
 	parser.add_argument('--v2_knn', type=int, default=V2_KNN,
 						help='v2 only: neighbour window size, total across curves (architecture-defining)')
 	parser.add_argument('--v2_curves', type=int, default=V2_CURVES, choices=[1, 2],

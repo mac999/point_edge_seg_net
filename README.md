@@ -49,10 +49,10 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
   - **Curvature feature fix** (true local surface-variation edge cue instead of a near-constant legacy channel), wider EdgeConv receptive field (**k=32**), **2-layer bottleneck Transformer**.
   - New: **mIoU / mAcc metrics**, **TTA (Z-rotation) + model-ensemble inference**, **colored LAS export**, early-stopping aligned to the checkpoint metric.
 - 2.0: 2026/8/21. **Architecture rework (v2) — S3DIS Area 5: OA 87.8% / mAcc 72.6% / mIoU 64.8%** (full-coverage protocol, +4.8 mIoU over v1.1 re-scored identically). Checkpoints are **not** compatible with v1.
-  - **New backbone `model_v2.py` (`PointEdgeSegNetV2`)**: per-layer kNN graph search is removed entirely. Neighbours are looked up on the voxel lattice with a fixed stencil (sorted keys + binary search), local aggregation is a point-wise MLP with a relative-position encoding and a feature-difference term, and down/upsampling use grid pooling with an exact inverse map. U-Net layout, feature gate and bottleneck Transformer are kept.
+  - **New backbone `models/stencil.py`**: per-layer kNN graph search is removed entirely. Neighbours are looked up on the voxel lattice with a fixed stencil (sorted keys + binary search), local aggregation is a point-wise MLP with a relative-position encoding and a feature-difference term, and down/upsampling use grid pooling with an exact inverse map. U-Net layout, feature gate and bottleneck Transformer are kept.
   - **Speed / memory**: ~7x faster training epochs and ~3x lower training memory than v1 at equal settings; single-view inference runs in about 4 GB. Training fits a 24 GB card (see Training below).
   - **Grid-preserving TTA** for evaluation (8 views: 90-degree rotations x mirror), matching the lattice assumption of the stencil.
-  - `model.py` (class `PointEdgeSegNet`) remains as the v1 legacy path; select with `--arch v1|v2` in `train_model.py` and `evaluate_full.py`.
+  - Architectures are registered by name in `models/` (`edgeconv` = legacy v1, `stencil` = current); select with `--arch` in `train_model.py` and `evaluate_full.py`. Checkpoints are not interchangeable between the two.
 - 1.1: 2026/7/15. AMP training bug fix & retrain — S3DIS Area 5: **OA 86.60% / mAcc 69.73% / mIoU 59.99%** ([logs](./logs/20260715_204942)):
   - **Fixed a GradScaler state-corruption bug**: the "very large gradient → skip batch" branch called `scaler.unscale_()` without a matching `scaler.update()`, so from the first skipped batch onward every optimizer step silently failed (`unscale_() has already been called…`), permanently freezing the weights. The skip branch now resets the scaler state, restoring correct AMP training.
   - Retrained the v1.0 configuration (column mode, 60 epochs, batch 10, effective batch 60) with the fix — all metrics improved over the 20260707 baseline (OA +0.44, mAcc +0.68, mIoU +0.42); best validation accuracy 93.59%.
@@ -76,21 +76,21 @@ Still open (future work):
 <img src="./imgs/area4.jpg" height="400"></img>
 </p>
 
-## Architecture v2 (model_v2.py)
+## Architecture v2 (models/stencil.py)
 
 Version 2.0 replaces the training/inference backbone. To avoid confusion:
 
 | | v1 (legacy) | v2 (current) |
 |---|---|---|
-| Source file | `model.py` | `model_v2.py` |
-| Class name | `PointEdgeSegNet` | `PointEdgeSegNetV2` |
+| Module | `models/edgeconv.py` | `models/stencil.py` |
+| Class name | `PointEdgeSegNet` | `PointEdgeSegNet` (same name; the module path disambiguates) |
 | Neighbourhoods | kNN graph per layer (`knn_graph`) | fixed voxel-stencil lookup (no search) |
 | Local aggregation | EdgeConv (per-edge MLP) | point-wise MLP + relative-position encoding + feature-difference term, max pooling |
 | Down / upsampling | FPS or grid ratio + kNN interpolation | grid pooling with exact inverse map |
 | Checkpoints | v1 only | v2 only (not interchangeable) |
-| Select with | `--arch v1` | `--arch v2` (plus `--v2_*` options) |
+| Select with | `--arch edgeconv` | `--arch stencil` (plus `--v2_*` options); `v1`/`v2` accepted as aliases |
 
-The project name stays PointEdgeSegNet; the class suffix only marks the internal revision. Both paths share the same data pipeline, losses, and evaluation protocol. The key idea of v2: because the input is voxelized and every pooling stage stays on a voxel lattice, a point's spatial neighbours can be looked up at fixed lattice offsets (sorted integer keys + binary search) instead of searched — kNN-quality neighbourhoods at serialization-level cost.
+Architectures live under `models/` and are named after what they are, not after a version number — a future backbone is one new module plus one registry entry in `models/__init__.py`. `model.py` and `model_v2.py` remain as import shims for older scripts. Both paths share the same data pipeline, losses, and evaluation protocol. The key idea of v2: because the input is voxelized and every pooling stage stays on a voxel lattice, a point's spatial neighbours can be looked up at fixed lattice offsets (sorted integer keys + binary search) instead of searched — kNN-quality neighbourhoods at serialization-level cost.
 
 ### Training with v2
 
@@ -103,7 +103,7 @@ python train_model.py \
     --block_size 20480 \
     --train_areas Area_1 Area_2 Area_3 Area_4 Area_6 --test_area Area_5 \
     --num_epochs 600 \
-    --arch v2 --v2_neighbors stencil --v2_stencil 2 --v2_diff \
+    --arch stencil --v2_neighbors stencil --v2_stencil 2 --v2_diff \
     --enc_channels 64,192,320,448 --bottleneck_dim 256 \
     --batch_size 4 --val_batch_size 4 --learning_rate 0.003 \
     --block_mode column --sampler grid \
@@ -118,7 +118,7 @@ On a 24 GB card the same command fits with `--val_batch_size 2`; use `--batch_si
 python evaluate_full.py --model_weights logs/<run>/final_model.pth \
     --config model_params_room.json --mode chunk --sampler grid \
     --block_size 20480 --core_max 12288 --halo 1.0 \
-    --arch v2 --v2_neighbors stencil --v2_stencil 2 --v2_diff \
+    --arch stencil --v2_neighbors stencil --v2_stencil 2 --v2_diff \
     --enc_channels 64,192,320,448 --bottleneck_dim 256 \
     --tta_d4 8
 ```
@@ -185,6 +185,11 @@ Latest (v2.0 architecture, `model_v2.py`), S3DIS with Area 5 held out for test. 
 <p align="center">
 <img src="./imgs/v2_training.png" width="760"></img></br>
 Training curves and Area-5 test results, v1 vs v2 under the identical protocol.
+</p>
+
+<p align="center">
+<img src="./imgs/v2_inference_example.png" width="760"></img></br>
+Inference example: Area 5 office_1 (816K points, held out from training), chunked v2 inference with 8-view TTA; 83.6% point accuracy on this room.
 </p>
 
 For reference, the v1 architecture re-scored under this same protocol reaches mIoU 58.8 — the published v1.1 figure (mIoU 59.99, `logs/20260715_204942`) used the earlier block-sampled protocol and is not directly comparable.
