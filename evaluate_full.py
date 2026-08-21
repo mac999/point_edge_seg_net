@@ -31,7 +31,8 @@ from glob import glob
 from tqdm import tqdm
 
 from torch_geometric.data import Data, Batch
-from model import PointEdgeSegNet
+from models import resolve_arch
+from models.edgeconv import PointEdgeSegNet
 from data_processing import (
 	load_model_config,
 	resolve_feature_config,
@@ -186,8 +187,9 @@ def main():
 					help='CHUNK mode TTA: grid-preserving D4 views (1=off, 4=rot90s, 8=rot90s x flip). '
 						 'Scale-TTA is wrong for stencil models (breaks the lattice); this is the safe family.')
 	ap.add_argument('--out', default=None, help='Output JSON (default: <model_dir>/test_full_summary.json)')
-	ap.add_argument('--arch', type=str, default='v1', choices=['v1', 'v2'],
-					help="Architecture the checkpoint was trained with ('v2' = model_v2.py serialized meta)")
+	ap.add_argument('--arch', type=str, default='edgeconv',
+					choices=['edgeconv', 'stencil', 'v1', 'v2'],
+					help="Architecture the checkpoint was trained with ('v1'/'v2' aliases accepted)")
 	ap.add_argument('--v2_knn', type=int, default=32, help='v2: window size, MUST match training')
 	ap.add_argument('--v2_curves', type=int, default=1, help='v2: curves per stage, MUST match training')
 	ap.add_argument('--v2_neighbors', type=str, default='serial', choices=['serial', 'stencil'],
@@ -210,9 +212,9 @@ def main():
 
 	device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 	enc = tuple(int(c) for c in args.enc_channels.split(',')) if args.enc_channels else None
-	if args.arch == 'v2':
-		from model_v2 import PointEdgeSegNetV2
-		model = PointEdgeSegNetV2(num_features=spec['num_features'], num_classes=num_classes,
+	if resolve_arch(args.arch) == 'stencil':
+		from models.stencil import PointEdgeSegNet as StencilSegNet
+		model = StencilSegNet(num_features=spec['num_features'], num_classes=num_classes,
 								  feature_dims=feature_dims, enc_channels=enc or (64, 192, 320, 448),
 								  bottleneck_dim=args.bottleneck_dim,
 								  knn=args.v2_knn, curves=args.v2_curves,
