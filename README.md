@@ -10,7 +10,7 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
 
 ### Benefits
 
-- **Runs on ≤24 GB VRAM — no server-class GPUs.** Trains and infers on a single consumer/pro card. SOTA sparse-conv/transformer models do not magically fit whole clouds either — they down-voxelize (losing fine detail) or tile with hundreds of sliding windows; this model chunks by design instead.
+- **Single-GPU project.** Every result in this README was trained and evaluated on one GPU: measured training memory is ~12-20 GB steady for the v2 backbone, inference about 4 GB regardless of cloud size. Smaller cards should work with reduced batch sizes, though this has not been verified. Large clouds are handled by chunking rather than by down-voxelizing or hundreds of sliding windows.
 - **Scales to arbitrarily large clouds.** Space is split into fixed-size blocks (constant memory per block, linear scaling), so a 100M-point LAS scan is handled like a single room — every point is covered at full density, not coarse-voxelized.
 - **Lightweight yet competitive.** ~3.0M parameters (about 1/5 of KPConv) reaching S3DIS Area-5 **OA 87.8% / mIoU 64.8%** — past RandLA-Net and within 0.6 of MinkowskiNet, at a fraction of the compute and with no compiled extensions.
 - **Practical & self-contained.** Any `X Y Z [R G B ...]` cloud, custom classes via one JSON, standard deps (PyTorch/PyG/Open3D), and colored **LAS** output for direct viewing (CloudCompare, etc.).
@@ -27,7 +27,7 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
 <img src="./imgs/img8.png" height="115"></img>
 <img src="./imgs/img7.png" height="115"></img></br>
 </p>
-<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model. Latest S3DIS Area 5 (held-out, v2 architecture): OA=87.8%, mAcc=72.6%, mIoU=64.8% with 8-view TTA (64.2 single view). Trains within 24GB VRAM.)
+<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model. Latest S3DIS Area 5 (held-out, v2 architecture): OA=87.8%, mAcc=72.6%, mIoU=64.8% with 8-view TTA (64.2 single view). Single-GPU training and inference.)
 </p>
 
 
@@ -54,7 +54,7 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
   - Added `run_train_global.bat` to reproduce the training run.
 - 2.0: 2026/8/21. **Architecture rework (v2) — S3DIS Area 5: OA 87.8% / mAcc 72.6% / mIoU 64.8%** (full-coverage protocol, +4.8 mIoU over v1.1 re-scored identically). Checkpoints are **not** compatible with v1.
   - **New backbone `models/stencil.py`**: per-layer kNN graph search is removed entirely. Neighbours are looked up on the voxel lattice with a fixed stencil (sorted keys + binary search), local aggregation is a point-wise MLP with a relative-position encoding and a feature-difference term, and down/upsampling use grid pooling with an exact inverse map. U-Net layout, feature gate and bottleneck Transformer are kept.
-  - **Speed / memory**: ~7x faster training epochs and ~3x lower training memory than v1 at equal settings; single-view inference runs in about 4 GB. Training fits a 24 GB card (see Training below).
+  - **Speed / memory**: ~7x faster training epochs and ~3x lower training memory than v1 at equal settings; single-view inference runs in about 4 GB; measured training memory ~12-20 GB steady (see Training below).
   - **Grid-preserving TTA** for evaluation (8 views: 90-degree rotations x mirror), matching the lattice assumption of the stencil.
   - Architectures are registered by name in `models/` (`edgeconv` = legacy v1, `stencil` = current); select with `--arch` in `train_model.py` and `evaluate_full.py`. Checkpoints are not interchangeable between the two.
 
@@ -110,7 +110,7 @@ python train_model.py \
     --focal_gamma 2.0 --oversample_rare 1.0 --aug_preset strong
 ```
 
-On a 24 GB card the same command fits with `--val_batch_size 2`; use `--batch_size 2` for extra headroom (roughly 8-10 GB, ~1.7x slower). Cosine schedule with early stopping typically ends near epoch 520.
+Measured on our hardware this runs at ~12-20 GB steady. For smaller cards, reduce `--batch_size`/`--val_batch_size` to 2 (roughly 8-10 GB, ~1.7x slower) — expected to fit a 24 GB card, but not verified there. Cosine schedule with early stopping typically ends near epoch 520.
 
 ### Evaluation (full-coverage protocol)
 
@@ -179,7 +179,7 @@ Latest (v2.0 architecture, `model_v2.py`), S3DIS with Area 5 held out for test. 
 | Overall Accuracy (OA) | **87.8%** |
 | Mean Class Accuracy (mAcc) | **72.6%** |
 | Parameters | ~3.0M |
-| Training | 600-epoch schedule, ~2 min/epoch on one GPU; fits a 24 GB card (see Training with v2) |
+| Training | 600-epoch schedule, ~2 min/epoch on one GPU; measured ~12-20 GB steady (see Training with v2) |
 | Inference GPU memory | ~4 GB, constant in cloud size (chunked) |
 
 <p align="center">
@@ -207,13 +207,13 @@ Per-class IoU highlights (Area 5, v2 + TTA): floor 96.9, ceiling 91.5, chair 88.
 
 ### Where it stands (S3DIS Area 5)
 
-Accuracy alone does not decide whether a model is usable on your own data with one GPU. Four practical criteria matter as much: **Install** (pip wheels vs compiled C++/CUDA extensions), **Custom data** (own classes without rewriting dataset code), **Large clouds** (a documented path from a 100M+ point raw scan to training/inference), and **One GPU** (trains on a single 24 GB card).
+Accuracy alone does not decide whether a model is usable on your own data with one GPU. Four practical criteria matter as much: **Install** (pip wheels vs compiled C++/CUDA extensions), **Custom data** (own classes without rewriting dataset code), **Large clouds** (a documented path from a 100M+ point raw scan to training/inference), and **One GPU** (trains on a single GPU without a multi-GPU recipe).
 
 **This model** — the reference row every trade-off below is measured against:
 
 | Model | mIoU | mAcc | Install | Custom data | Large clouds | One GPU |
 |---|---|---|---|---|---|---|
-| **PointEdgeSegNet v2 (2026)** | **64.8** | **72.6** | ✓ pip only | ✓ JSON config + `convert_dataset.py` | ✓ chunking, voting, LAS output | ✓ ~12-20 GB train / ~4 GB inference |
+| **PointEdgeSegNet v2 (2026)** | **64.8** | **72.6** | ✓ pip only | ✓ JSON config + `convert_dataset.py` | ✓ chunking, voting, LAS output | ✓ measured ~12-20 GB train / ~4 GB inference |
 
 **More accurate, but you pay for it** — every mIoU point above is bought with compiled extensions, heavier preprocessing, bigger models, or multi-GPU recipes:
 
