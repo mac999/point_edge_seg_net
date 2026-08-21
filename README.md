@@ -207,21 +207,21 @@ Per-class IoU highlights (Area 5, v2 + TTA): floor 96.9, ceiling 91.5, chair 88.
 
 ### Where it stands (S3DIS Area 5)
 
-Accuracy alone does not decide whether a model is usable on your own data with one GPU. Four practical criteria matter as much: **Install** (pip wheels vs compiled C++/CUDA extensions), **Custom data** (own classes without rewriting dataset code), **Large clouds** (a documented path from a 100M+ point raw scan to training/inference), and **One GPU** (trains on a single GPU without a multi-GPU recipe).
+Accuracy alone does not decide whether a model is usable on your own data. Three practical criteria matter as much: **Install** (pip wheels vs compiled C++/CUDA extensions), **Custom data** (own classes without rewriting dataset code), and **Large clouds** (a documented path from a 100M+ point raw scan to training/inference).
 
 **This model** — the reference row every trade-off below is measured against:
 
-| Model | mIoU | mAcc | Install | Custom data | Large clouds | One GPU |
-|---|---|---|---|---|---|---|
-| **PointEdgeSegNet v2 (2026)** | **64.8** | **72.6** | ✓ pip only | ✓ JSON config + `convert_dataset.py` | ✓ chunking, voting, LAS output | ✓ measured ~12-20 GB train / ~4 GB inference |
+| Model | mIoU | mAcc | Install | Custom data | Large clouds |
+|---|---|---|---|---|---|
+| **PointEdgeSegNet v2 (2026)** | **64.8** | **72.6** | ✓ pip only | ✓ JSON config + `convert_dataset.py` | ✓ chunking, voting, LAS output |
 
 **More accurate, but you pay for it** — every mIoU point above is bought with compiled extensions, heavier preprocessing, bigger models, or multi-GPU recipes:
 
-| Model | mIoU | Install | Custom data | Large clouds | One GPU | Cost of the extra accuracy |
-|---|---|---|---|---|---|---|
-| Point Transformer V3 (2024) | 73.4 | ✗ spconv + flash-attn + pointops | ✗ Pointcept dataset class | △ no raw-cloud guide | △ needs tuning | heaviest dependency stack; official recipe is multi-GPU |
-| PointNeXt-XL (2022) | 70.5 | ✗ CUDA ops (openpoints) | △ S3DIS-centric | ✗ | ✗ A100-class recipe | ~41M params; score depends on heavy training recipe |
-| KPConv (2019) | 67.1 | ✗ C++ wrappers | △ code-level work | △ heavy preprocessing | ✓ | ~15M params (5x this model); reprojection step for full-density output |
+| Model | mIoU | Install | Custom data | Large clouds | Cost of the extra accuracy |
+|---|---|---|---|---|---|
+| Point Transformer V3 (2024) | 73.4 | ✗ spconv + flash-attn + pointops | ✗ Pointcept dataset class | △ no raw-cloud guide | heaviest dependency stack; official recipe is multi-GPU |
+| PointNeXt-XL (2022) | 70.5 | ✗ CUDA ops (openpoints) | △ S3DIS-centric | ✗ | ~41M params; score depends on heavy training recipe |
+| KPConv (2019) | 67.1 | ✗ C++ wrappers | △ code-level work | △ heavy preprocessing | ~15M params (5x this model); reprojection step for full-density output |
 
 **Simpler era, lower accuracy** — what this model replaces:
 
@@ -234,7 +234,7 @@ Accuracy alone does not decide whether a model is usable on your own data with o
 
 \* Commonly reproduced figures; not reported for Area 5 in the original papers.
 
-PointEdgeSegNet v2 is the only entry with a check in every practicality column. The remaining gap to the top rows (~2.3 mIoU vs KPConv, ~8.6 vs PTv3) is an operator/compute trade, not a VRAM-fit problem — every method above also chunks, samples, or voxelizes large scenes.
+The remaining gap to the top rows (~2.3 mIoU vs KPConv, ~8.6 vs PTv3) is an operator/compute trade — every method above also chunks, samples, or voxelizes large scenes; the difference this project aims at is keeping installation, custom data, and the large-cloud path simple while closing that gap.
 
 ## Installation
 
