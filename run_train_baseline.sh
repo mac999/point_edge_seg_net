@@ -4,8 +4,7 @@
 #  Plain 10D features (NO --block_context), 2.0 m columns,
 #  8192-point blocks, 60 epochs.
 #  Reuses the 10D block cache in block_s3dis/.
-#  Context counterpart:   run_train_global.sh  (22D, block_s3dis_ctx)
-#  Wide-context / DGX:    run_train_dgx.sh     (3.0 m columns, block_s3dis_w3)
+#  Context counterpart:   run_train_global.sh  (18D, block_s3dis_ctx)
 #
 #  NOTE: the block cache is never invalidated (train_model.py:514
 #  returns early when the folder already holds .pt files), so the

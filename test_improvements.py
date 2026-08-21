@@ -6,7 +6,7 @@
 #   3. partition_columns           (full coverage, exact block size, overlap)
 #   4. merge_block_votes           (majority-voting correctness)
 # Run:  conda run -n venv_lmm python test_improvements.py
-import os, sys
+import os, sys, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 import torch
@@ -202,15 +202,20 @@ check("build_arrays(no rgb) -> 7D features", feats2.shape == (1000, 7), f"(got {
 
 # emit config -> valid json with matching dims
 import json as _json, tempfile
-cfg_path = os.path.join(os.environ.get("TEMP", "."), "model_params_opentrench3d_test.json")
+# emit into a real temp dir: os.environ["TEMP"] is unset on Linux, so the old fallback
+# ("." ) dropped throwaway configs into the repo root on every run.
+_tmpdir = tempfile.mkdtemp(prefix="pesn_smoke_")
+cfg_path = os.path.join(_tmpdir, "model_params_opentrench3d_test.json")
 cv.emit_model_params("opentrench3d", cv.PROFILES["opentrench3d"], cv.build_spec(cv.PROFILES["opentrench3d"]), cfg_path)
 cfg = _json.load(open(cfg_path))
 check("emitted config: 5 classes, 10D (rgb)", cfg["num_classes"] == 5 and cfg["num_features"] == 10)
 check("emitted config: rgb_cols set", cfg["input"]["rgb_cols"] == [3, 4, 5])
-cfg_d = os.path.join(os.environ.get("TEMP", "."), "model_params_dales_test.json")
+cfg_d = os.path.join(_tmpdir, "model_params_dales_test.json")
 cv.emit_model_params("dales", cv.PROFILES["dales"], cv.build_spec(cv.PROFILES["dales"]), cfg_d)
 cfgd = _json.load(open(cfg_d))
 check("emitted DALES config: 8 classes, 7D, no rgb", cfgd["num_classes"] == 8 and cfgd["num_features"] == 7 and cfgd["input"]["rgb_cols"] is None)
+
+shutil.rmtree(_tmpdir, ignore_errors=True)
 
 print("\n[9] BlockContextExtractor: buffered wide-area descriptor per block")
 rng9 = np.random.default_rng(7)
@@ -226,26 +231,29 @@ spec9 = dp.resolve_feature_config({'features': {'use_block_context': True, 'cont
 check("context spec adds 8 dims (4 stats + 4 bins) -> 18D total",
       spec9['context_dim'] == 8 and spec9['num_features'] == 18, f"(got {spec9['num_features']}D)")
 
-ex9 = dp.BlockContextExtractor(coords9, normals=normals9, curvature=curv9, buffer=2.0, bins=4)
+# base feature layout the extractor reads: [normals 3, curvature 1, rgb 3, spatial 3]
+feats9 = np.column_stack([normals9, curv9, np.zeros((2 * n9, 3)), np.zeros((2 * n9, 3))])
+ex9 = dp.BlockContextExtractor(coords9, feats9, spec9)
 # block in the middle of the floor, far from the wall: its buffer sees only floor
 mid_block = np.nonzero((coords9[:, 0] > 2) & (coords9[:, 0] < 4) &
                        (coords9[:, 1] > 2) & (coords9[:, 1] < 4) & (coords9[:, 2] < 0.5))[0]
-v_mid = ex9.compute(mid_block)
+v_mid = ex9.describe(mid_block)
 check("floor-only buffer: horizontal share ~1, vertical ~0",
-      v_mid[0] > 0.95 and v_mid[1] < 0.05, f"(h={v_mid[0]:.2f}, v={v_mid[1]:.2f})")
+      v_mid[1] > 0.95 and v_mid[0] < 0.05, f"(h={v_mid[1]:.2f}, v={v_mid[0]:.2f})")
 # block next to the wall: its buffer pulls in wall points -> vertical share rises
 edge_block = np.nonzero((coords9[:, 0] > 6.5) & (coords9[:, 0] <= 8) &
                         (coords9[:, 1] > 2) & (coords9[:, 1] < 4) & (coords9[:, 2] < 0.5))[0]
-v_edge = ex9.compute(edge_block)
+v_edge = ex9.describe(edge_block)
 check("wall-adjacent buffer: vertical share > floor-only block",
-      v_edge[1] > v_mid[1] + 0.1, f"(edge v={v_edge[1]:.2f} vs mid v={v_mid[1]:.2f})")
+      v_edge[0] > v_mid[0] + 0.1, f"(edge v={v_edge[0]:.2f} vs mid v={v_mid[0]:.2f})")
 check("z-histogram normalized (sums to 1)",
       abs(v_mid[4:].sum() - 1.0) < 1e-5 and abs(v_edge[4:].sum() - 1.0) < 1e-5)
 check("descriptor bounded [0,1]", float(v_edge.min()) >= 0.0 and float(v_edge.max()) <= 1.0)
 check("density ratio in (0,1]", 0.0 < v_mid[3] <= 1.0, f"(got {v_mid[3]:.3f})")
 # a larger buffer aggregates a wider area -> descriptor must change
-ex9_big = dp.BlockContextExtractor(coords9, normals=normals9, curvature=curv9, buffer=6.0, bins=4)
-check("buffer size changes the descriptor", not np.allclose(ex9_big.compute(mid_block), v_mid))
+spec9_big = dp.resolve_feature_config({'features': {'use_block_context': True, 'context_buffer': 6.0, 'context_bins': 4}})
+ex9_big = dp.BlockContextExtractor(coords9, feats9, spec9_big)
+check("buffer size changes the descriptor", not np.allclose(ex9_big.describe(mid_block), v_mid))
 # append helper: widens features by context_dim with block-constant channels
 bf9 = np.random.rand(len(mid_block), 10).astype(np.float32)
 out9 = dp.append_block_context(bf9, ex9, mid_block)

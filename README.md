@@ -90,7 +90,7 @@ Version 2.0 replaces the training/inference backbone. To avoid confusion:
 | Checkpoints | v1 only | v2 only (not interchangeable) |
 | Select with | `--arch edgeconv` | `--arch stencil` (plus `--v2_*` options); `v1`/`v2` accepted as aliases |
 
-Architectures live under `models/` and are named after what they are, not after a version number — a future backbone is one new module plus one registry entry in `models/__init__.py`. `model.py` and `model_v2.py` remain as import shims for older scripts. Both paths share the same data pipeline, losses, and evaluation protocol. The key idea of v2: because the input is voxelized and every pooling stage stays on a voxel lattice, a point's spatial neighbours can be looked up at fixed lattice offsets (sorted integer keys + binary search) instead of searched — kNN-quality neighbourhoods at serialization-level cost.
+Architectures live under `models/` and are named after what they are, not after a version number — a future backbone is one new module plus one registry entry in `models/__init__.py`. `train_model.py`, `inference.py` and `evaluate_full.py` all build their network through that registry, so a checkpoint is loaded by the architecture named in `--arch`. Both paths share the same data pipeline, losses, and evaluation protocol. The key idea of v2: because the input is voxelized and every pooling stage stays on a voxel lattice, a point's spatial neighbours can be looked up at fixed lattice offsets (sorted integer keys + binary search) instead of searched — kNN-quality neighbourhoods at serialization-level cost.
 
 ### Training with v2
 
@@ -103,14 +103,14 @@ python train_model.py \
     --block_size 20480 \
     --train_areas Area_1 Area_2 Area_3 Area_4 Area_6 --test_area Area_5 \
     --num_epochs 600 \
-    --arch stencil --v2_neighbors stencil --v2_stencil 2 --v2_diff \
+    --arch stencil --v2_neighbors stencil --v2_stencil 2 --v2_diff --v2_directional \
     --enc_channels 64,192,320,448 --bottleneck_dim 256 \
     --batch_size 4 --val_batch_size 4 --learning_rate 0.003 \
     --block_mode column --sampler grid \
     --focal_gamma 2.0 --oversample_rare 1.0 --aug_preset strong
 ```
 
-As measured on the run this README reports, the command above sits at ~12-20 GB steady. Reducing `--batch_size`/`--val_batch_size` to 2 brings it to roughly 8-10 GB at ~1.7x the epoch time; tighter budgets than that have not been benchmarked. Cosine schedule with early stopping typically ends near epoch 520.
+This is the configuration of the released run (`logs/20260818_003229`), which additionally raised the `beam` class weight to 3.0 — worth ~nothing on Area 5 (its beam ground truth is 0.03% of the points), so `model_params_room.json` as shipped is the sensible starting point. As measured, the command above sits at ~12-20 GB steady. Reducing `--batch_size`/`--val_batch_size` to 2 brings it to roughly 8-10 GB at ~1.7x the epoch time; tighter budgets than that have not been benchmarked. Cosine schedule with early stopping typically ends near epoch 520.
 
 ### Evaluation (full-coverage protocol)
 
@@ -118,12 +118,12 @@ As measured on the run this README reports, the command above sits at ~12-20 GB 
 python evaluate_full.py --model_weights logs/<run>/final_model.pth \
     --config model_params_room.json --mode chunk --sampler grid \
     --block_size 20480 --core_max 12288 --halo 1.0 \
-    --arch stencil --v2_neighbors stencil --v2_stencil 2 --v2_diff \
+    --arch stencil --v2_neighbors stencil --v2_stencil 2 --v2_diff --v2_directional \
     --enc_channels 64,192,320,448 --bottleneck_dim 256 \
     --tta_d4 8
 ```
 
-Architecture flags must match training. `--tta_d4 8` enables grid-preserving test-time augmentation (four 90-degree rotations x mirror); scale-based TTA is intentionally not used because it would break the voxel lattice the stencil relies on. Evaluate `final_model.pth` as well as `best_model.pth` — validation-based selection does not reliably pick the better test model on this benchmark.
+Architecture flags must match training — the released `logs/20260818_003229/final_model.pth` needs exactly the `--v2_*` set above, and a mismatch is reported as a checkpoint/architecture error rather than silently loading. `--tta_d4 8` enables grid-preserving test-time augmentation (four 90-degree rotations x mirror); scale-based TTA is intentionally not used because it would break the voxel lattice the stencil relies on. Evaluate `final_model.pth` as well as `best_model.pth` — validation-based selection does not reliably pick the better test model on this benchmark.
 
 ### Experimental: block-context (buffered wide-area) features
 
@@ -313,8 +313,14 @@ On Windows, **`run_train_global.bat`** runs variant (b) — activate your conda/
 Splits the input into coverage-guaranteed column blocks, votes per point, and writes a colored `_segmented.las` (plus `.txt`) next to the input.
 
 ```bash
-# plain (10D, e.g. confirmed v1.1) model:
-python inference.py                       # confirmed model + sample cloud
+# v2 (current, released model) - architecture flags must match training:
+python inference.py -i ./my_scan.txt \
+    --config model_params_room.json -m ./logs/20260818_003229/final_model.pth \
+    --arch stencil --v2_neighbors stencil --v2_stencil 2 --v2_diff --v2_directional \
+    --enc_channels 64,192,320,448 --bottleneck_dim 256
+
+# v1 (legacy, 10D) model - --arch defaults to edgeconv:
+python inference.py                       # confirmed v1.1 model + sample cloud
 python inference.py -i ./my_scan.txt      # your own X Y Z [R G B] cloud
 python inference.py --tta                 # extra accuracy via rotation voting
 
@@ -324,7 +330,7 @@ python inference.py --block_context -m logs/<timestamp>/best_model.pth -i ./my_s
 
 On Windows, **`run_infer_global.bat <model.pth> [input.txt]`** wraps the context (18D) inference — pair it with models produced by `run_train_global.bat`.
 
-> The inference feature settings must match how the model was trained (same config / `--block_context` state); a mismatch fails fast with a dimension error.
+> The architecture and feature settings must match how the model was trained (`--arch` plus the `--v2_*` flags, same config / `--block_context` state); a mismatch fails fast with a checkpoint/architecture error rather than loading silently.
 
 ## Dataset Preparation
 
@@ -717,6 +723,7 @@ python train_model.py --batch_size 2 --block_size 4096
 - `--context_bins`: block-context Z-histogram bins (default 4)
 
 **inference.py arguments:**
+- `--arch`: architecture the checkpoint was trained with — `stencil`/`v2` (current) or `edgeconv`/`v1` (legacy, default). v2 checkpoints additionally need the `--v2_*` flags and `--enc_channels`/`--bottleneck_dim` used at training time
 - `-m, --model_weights`: Path to trained model weights (.pth)
 - `-i, --input_cloud`: Path to input point cloud file (.txt)
 - `-b, --block_path`: Directory for temporary inference blocks
@@ -787,28 +794,42 @@ python inference.py
 
 ### Configuration
 
-Edit the paths in `inference.py`:
+Everything is a CLI flag; the defaults live at the top of `inference.py` if you prefer to change them once:
 
 ```python
-MODEL_WEIGHTS_PATH = './logs_YYYYMMDD_HHMMSS/best_model.pth'
-TEST_POINT_CLOUD_PATH = './s3dis_v1.2_aligned/Area_1/conferenceRoom_1/conferenceRoom_1.txt'
+DEFAULT_MODEL_WEIGHTS_PATH = './logs/20260715_204942/best_model.pth'   # -m
+DEFAULT_TEST_POINT_CLOUD_PATH = './sample/area_6_conferenceRoom_1.txt'  # -i
+DEFAULT_CONFIG_PATH = 'model_params.json'                               # -c
 ```
 
 ## File Structure
 
 ```
-point_unet/
-├── model.py              # PointEdgeSegNet architecture
-├── train_model.py        # Training script
-├── inference.py          # Inference script
-├── data_preparation.py   # Data preprocessing
-├── requirements.txt      # Dependencies
-├── README.md            # This file
-├── s3dis_v1.2_aligned/  # Raw S3DIS dataset
-├── processed_s3dis/     # Processed data
-├── block_s3dis/         # Training blocks
-├── inference_blocks/    # Inference blocks
-└── logs_*/              # Training logs and models
+point_edge_seg_net/
+├── models/                 # architecture registry (--arch)
+│   ├── __init__.py         #   name -> class, 'v1'/'v2' aliases
+│   ├── stencil.py          #   v2, current: voxel-stencil aggregation
+│   ├── edgeconv.py         #   v1, legacy: kNN EdgeConv
+│   └── common.py           #   feature gate, attention, bottleneck Transformer
+├── train_model.py          # training (block/column pipeline, losses, schedules)
+├── inference.py            # segment a new cloud -> colored LAS + TXT
+├── evaluate_full.py        # full-coverage scoring of a held-out area (OA/mAcc/mIoU)
+├── data_preparation.py     # raw S3DIS rooms -> per-room feature tensors
+├── data_processing.py      # features, blocking, augmentation, voting, config resolution
+├── room_pipeline.py        # whole-room ("room" mode) data path
+├── voxel_chunk.py          # large-cloud chunking used by evaluate_full --mode chunk
+├── convert_dataset.py      # any X Y Z [R G B ...] dataset -> training format
+├── convert_ifc_to_las.py   # IFC model -> labelled LAS (class map in config.json)
+├── data_analysis.py        # class-distribution plots of a block cache
+├── diagnose_kpi_grad.py    # gradient/KPI monitoring used by train_model.py --diagnose
+├── test_improvements.py    # standalone smoke tests (no training, no torch_geometric)
+├── view_points_block.py    # quick Open3D viewer for cached blocks
+├── model_params*.json      # dataset/class/feature configs (-c / --config)
+├── run_train_*.sh|bat      # reproduction scripts (baseline / block-context)
+├── run_infer_global.sh|bat # inference wrapper for block-context models
+├── logs/<timestamp>/       # released runs: weights, metrics, curves
+├── sample/                 # example cloud for a first inference run
+└── imgs/, data_analysis/   # figures used by this README
 ```
 
 ## Performance

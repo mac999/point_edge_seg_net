@@ -13,6 +13,7 @@ chunk_s3dis_inv/
 room_s3dis/
 inference_blocks/
 input/
+sample/*.txt
 
 # --- python / tooling ---
 __pycache__/
@@ -26,7 +27,7 @@ __pycache__/
 chunk_s3dis_2cm/
 
 # --- internal experiment runners (kept locally, not part of the release) ---
-run_*_queue.sh
+run_*queue*.sh
 run_e[0-9]*.sh
 run_v2_*.sh
 run_rebal*.sh
@@ -37,4 +38,5 @@ run_train_ctx*.sh
 run_train_long.sh
 run_train_oversample.sh
 run_train_stage*.sh
+run_train_dgx.*
 PROGRESS.md
