@@ -37,3 +37,4 @@ run_train_ctx*.sh
 run_train_long.sh
 run_train_oversample.sh
 run_train_stage*.sh
+PROGRESS.md
