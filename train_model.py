@@ -16,8 +16,8 @@ from models.stencil import PointEdgeSegNet as StencilSegNet
 def build_model(num_features, num_classes, feature_dims, context_mode, width_mult,
 				mid_transformer, sampler, enc_channels, bottleneck_dim, arch='v1'):
 	"""Construct the requested architecture. 'v1' is the historical EdgeConv+kNN model
-	(every existing checkpoint); 'v2' is the serialized meta-aggregation rework
-	(model_v2.py) — measured 15-55x faster and 6-7x lighter at identical channel plan.
+	(models/edgeconv.py); 'v2' is the voxel-stencil rework (models/stencil.py) —
+	measured 15-55x faster and 6-7x lighter at identical channel plan.
 	The two are NOT weight-compatible; a checkpoint must be evaluated with the arch
 	that trained it."""
 	if resolve_arch(arch) == 'stencil':

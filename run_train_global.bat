@@ -4,7 +4,7 @@ rem  PointEdgeSegNet GLOBAL-context training (S3DIS Area 5 held-out)
 rem  "global": --block_context appends a wide-area neighbourhood
 rem  descriptor (verticality/horizontality/curvature/density +
 rem  z-histogram, aggregated over a 4 m buffer around each block)
-rem  to every block -> 10D base + 12D context = 22D input.
+rem  to every block -> 10D base + 8D context = 18D input.
 rem  Column blocks, Lovasz+Focal loss and curvature refresh are
 rem  applied automatically. Reuses existing processed_s3dis
 rem  (data_preparation.py does NOT need to be re-run: context is

@@ -5,7 +5,8 @@
 # Dependencies: torch, torch_geometric, numpy, open3d
 
 import torch, numpy as np, open3d as o3d, os, argparse, math
-from model import PointEdgeSegNet
+from models import resolve_arch
+from models.edgeconv import PointEdgeSegNet
 from data_processing import (
     calculate_features_with_open3d,
     CLASS_NAMES,
@@ -324,6 +325,27 @@ def parse_arguments():
                         help='MUST match training --width_mult (1.0 = historical architecture).')
     parser.add_argument('--mid_transformer', action='store_true',
                         help='MUST match training --mid_transformer.')
+    parser.add_argument('--arch', type=str, default='edgeconv',
+                        choices=['edgeconv', 'stencil', 'v1', 'v2'],
+                        help="Architecture the checkpoint was trained with ('v1'/'v2' aliases accepted). "
+                             "Checkpoints are not interchangeable between the two.")
+    parser.add_argument('--v2_knn', type=int, default=32, help='v2: window size, MUST match training')
+    parser.add_argument('--v2_curves', type=int, default=1, help='v2: curves per stage, MUST match training')
+    parser.add_argument('--v2_neighbors', type=str, default='serial', choices=['serial', 'stencil'],
+                        help='v2: neighbour source, MUST match training')
+    parser.add_argument('--v2_stencil', type=int, default=1, help='v2: stencil radius, MUST match training')
+    parser.add_argument('--v2_diff', action='store_true', help='v2: feature-diff term, MUST match training')
+    parser.add_argument('--v2_base_grid', type=float, default=0.04, help='v2: input voxel size, MUST match training')
+    parser.add_argument('--v2_pool_grids', type=str, default='0.08,0.16,0.32',
+                        help='v2: pool grids, MUST match training')
+    parser.add_argument('--v2_directional', action='store_true',
+                        help='v2: anisotropic aggregation, MUST match training')
+    parser.add_argument('--v2_stencil_z', type=int, default=0,
+                        help='v2: vertical stencil reach, MUST match training')
+    parser.add_argument('--enc_channels', type=str, default=None,
+                        help='Encoder channels as c1,c2,c3,c4 (MUST match training; v2 default 64,192,320,448)')
+    parser.add_argument('--bottleneck_dim', type=int, default=None,
+                        help='Bottleneck width (MUST match training)')
     parser.add_argument('--context_bins', type=int, default=None,
                        help='Block-context z-histogram bins; must match training.')
 
@@ -397,17 +419,42 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
+    arch = resolve_arch(args.arch)
+    enc = tuple(int(c) for c in args.enc_channels.split(',')) if args.enc_channels else None
+    print(f"Architecture: {arch}" + (" (legacy v1)" if arch == 'edgeconv' else " (current v2)"))
+
+    def _build():
+        if arch == 'stencil':
+            from models.stencil import PointEdgeSegNet as StencilSegNet
+            return StencilSegNet(num_features=num_features, num_classes=NUM_CLASSES,
+                                 feature_dims=feature_dims, enc_channels=enc or (64, 192, 320, 448),
+                                 bottleneck_dim=args.bottleneck_dim,
+                                 knn=args.v2_knn, curves=args.v2_curves,
+                                 neighbor_mode=args.v2_neighbors, stencil_radius=args.v2_stencil,
+                                 feature_diff=args.v2_diff, base_grid=args.v2_base_grid,
+                                 pool_grids=tuple(float(g) for g in args.v2_pool_grids.split(',')),
+                                 directional=args.v2_directional,
+                                 stencil_z=args.v2_stencil_z or None)
+        return PointEdgeSegNet(num_features=num_features, num_classes=NUM_CLASSES, feature_dims=feature_dims,
+                               context_mode=args.context_mode, width_mult=args.width_mult,
+                               mid_transformer=args.mid_transformer,
+                               enc_channels=enc, bottleneck_dim=args.bottleneck_dim)
+
     def _load(wpath):
-        m = PointEdgeSegNet(num_features=num_features, num_classes=NUM_CLASSES, feature_dims=feature_dims,
-                            context_mode=args.context_mode, width_mult=args.width_mult,
-                            mid_transformer=args.mid_transformer)
+        m = _build()
+        state = torch.load(wpath, map_location=device, weights_only=False)
+        if isinstance(state, dict) and 'model_state_dict' in state:
+            state = state['model_state_dict']
         try:
-            m.load_state_dict(torch.load(wpath, map_location=device, weights_only=False))
+            m.load_state_dict(state)
         except RuntimeError as e:
+            hint = ("check --arch (a v2 checkpoint cannot load into the v1 model and vice versa), "
+                    "the --v2_* flags and --enc_channels/--bottleneck_dim"
+                    if arch == 'stencil' else
+                    "check --arch, --context_mode (input|bottleneck), --width_mult and --mid_transformer")
             raise RuntimeError(
                 f"Checkpoint/architecture mismatch for '{wpath}'. The constructor flags must match "
-                f"training: check --context_mode (input|bottleneck), --width_mult and --mid_transformer. "
-                f"Original error: {e}") from e
+                f"training: {hint}. Original error: {e}") from e
         return m.to(device).eval()
 
     models = [_load(args.model_weights)]

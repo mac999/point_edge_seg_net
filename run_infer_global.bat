@@ -3,7 +3,7 @@ rem ============================================================
 rem  PointEdgeSegNet GLOBAL-context inference
 rem  Pairs with run_train_global.bat: --block_context appends the
 rem  same wide-area neighbourhood descriptor (12D) per block, so
-rem  the input matches a 22D context-trained model. Using a plain
+rem  the input matches an 18D context-trained model. Using a plain
 rem  (10D, e.g. v1.1) model here fails fast with a dimension error.
 rem
 rem  Usage:

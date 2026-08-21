@@ -5,7 +5,7 @@ rem  Plain 10D features (NO --block_context) - reproduces the
 rem  confirmed v1.1 configuration (logs/20260715_204942:
 rem  OA 86.60 / mAcc 69.73 / mIoU 59.99).
 rem  Reuses the existing 10D block cache in block_s3dis/.
-rem  Context counterpart: run_train_global.bat (22D, block_s3dis_ctx).
+rem  Context counterpart: run_train_global.bat (18D, block_s3dis_ctx).
 rem ============================================================
 
 cd /d "%~dp0"

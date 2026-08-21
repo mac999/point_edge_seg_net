@@ -3,7 +3,7 @@
 #  PointEdgeSegNet GLOBAL-context inference
 #  Pairs with run_train_global.sh: --block_context appends the
 #  same wide-area neighbourhood descriptor (12D) per block, so
-#  the input matches a 22D context-trained model. Using a plain
+#  the input matches an 18D context-trained model. Using a plain
 #  (10D, e.g. v1.1) model here fails fast with a dimension error.
 #
 #  Usage:
