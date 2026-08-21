@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "point-edge-seg-net"
+version = "2.0.0"
+description = "Lightweight 3D point cloud semantic segmentation (voxel-stencil U-Net) for large scans"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Taewook Kang", email = "laputa9999@gmail.com" }]
+keywords = ["point cloud", "semantic segmentation", "S3DIS", "LiDAR", "scan to BIM", "LAS"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+
+# torch / torch_geometric / open3d are deliberately NOT hard requirements: the right
+# build depends on your CUDA version and CPU architecture (see the `full` extra and the
+# install section of README.md), and letting pip pick one silently is how you end up with
+# a CPU-only or ABI-mismatched stack. Everything below installs cleanly everywhere.
+dependencies = [
+    "numpy",
+    "scikit-learn",
+    "pandas",
+    "tqdm",
+    "matplotlib",
+    "laspy",
+]
+
+[project.optional-dependencies]
+# Convenience only - prefer the manual, index-pinned install described in the README.
+full = [
+    "torch",
+    "torch_geometric",
+    "torch_cluster",
+    "torch_scatter",
+    "torch_sparse",
+    "open3d",
+]
+ifc = ["ifcopenshell"]      # convert_ifc_to_las.py
+wandb = ["wandb"]           # optional experiment tracking during training
+
+[project.urls]
+Homepage = "https://github.com/mac999/point_edge_seg_net"
+Repository = "https://github.com/mac999/point_edge_seg_net"
+Issues = "https://github.com/mac999/point_edge_seg_net/issues"
+
+[project.scripts]
+pesn-train = "train_model:main"
+pesn-infer = "inference:main"
+pesn-eval = "evaluate_full:main"
+pesn-prepare = "data_preparation:main"
+pesn-convert = "convert_dataset:main"
+
+[tool.setuptools]
+# Flat layout: the pipeline modules are importable at top level, matching the documented
+# `python train_model.py ...` usage from a clone.
+packages = ["models"]
+py-modules = [
+    "train_model",
+    "inference",
+    "evaluate_full",
+    "data_preparation",
+    "data_processing",
+    "room_pipeline",
+    "voxel_chunk",
+    "convert_dataset",
+    "convert_ifc_to_las",
+    "data_analysis",
+    "diagnose_kpi_grad",
+    "view_points_block",
+]

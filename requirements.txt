@@ -26,7 +26,7 @@ torchvision==0.22.1
 torchaudio==2.7.1
 torch_geometric
 # PyG >= 2.8 routes fps/knn/knn_graph through pyg-lib only. pyg-lib has no aarch64
-# wheels, so model.py falls back to the torch_cluster kernels below when it is absent
+# wheels, so models/edgeconv.py falls back to the torch_cluster kernels below when absent
 # (same results). torch_cluster is therefore REQUIRED, not optional.
 torch_cluster
 torch_scatter

@@ -245,37 +245,63 @@ The remaining gap to the top rows (~2.3 mIoU vs KPConv, ~8.6 vs PTv3) is an oper
 - NVIDIA GPU with CUDA support (recommended)
 - GPU memory: ~12-20 GB for training with the published v2 recipe, ~8-10 GB at `--batch_size 2`, ~4 GB for inference
 
-Download source code and install it like below.
-```bash
-git clone https://github.com/mac999/point_edge_seg_net
-cd point_edge_seg_net
-```
-If you have CUDA 11.8 version, install packages using requirements.txt
-```bash
-pip install -r requirements.txt
-```
+### Step 1: Install PyTorch, PyTorch Geometric and Open3D
 
-If you have the lastest CUDA version, install them like below. 
-
-### Step 1: Install PyTorch and PyTorch Geometric
-
-Install PyTorch with CUDA support first (replace with your CUDA version):
+These come first and are installed **by hand**, because the correct build depends on your
+CUDA version and CPU architecture — which is exactly what a dependency resolver cannot
+guess. Replace `cu118` with your CUDA version (`cu128` for Blackwell cards):
 
 ```bash
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+pip install torch_geometric torch_scatter torch_sparse torch_cluster
+pip install open3d          # on aarch64 / Python 3.12: open3d-cpu, or conda install -c conda-forge open3d
 ```
 
-Install PyTorch Geometric dependencies:
+`torch_cluster` is required, not optional: PyG >= 2.8 routes `knn_graph`/`fps` through
+`pyg-lib`, and `models/edgeconv.py` falls back to the `torch_cluster` kernels when that is
+absent. See `requirements.txt` for the exact versions this project was built and tested
+with, including the aarch64 / CUDA 12.8 notes.
+
+### Step 2: Install PointEdgeSegNet
 
 ```bash
-pip install torch_geometric torch_scatter torch_sparse torch_cluster torch_spline_conv
+# straight from GitHub, no clone needed
+pip install "git+https://github.com/mac999/point_edge_seg_net.git"
+
+# or from a clone (use -e for development: edits take effect without reinstalling)
+git clone https://github.com/mac999/point_edge_seg_net
+cd point_edge_seg_net
+pip install .
 ```
 
-### Step 2: Install Other Dependencies
+Optional extras: `pip install ".[ifc]"` for the IFC converter (`ifcopenshell`), `".[wandb]"`
+for experiment tracking, `".[full]"` to let pip pull the deep-learning stack itself
+(convenient, but Step 1 is the reliable way).
+
+Installing puts five commands on your PATH — they are the same entry points as the scripts,
+so every flag documented in this README applies unchanged:
+
+| Command | Same as | Purpose |
+|---|---|---|
+| `pesn-prepare` | `python data_preparation.py` | raw dataset -> processed per-room tensors |
+| `pesn-train` | `python train_model.py` | train a model |
+| `pesn-infer` | `python inference.py` | segment a cloud -> colored LAS + TXT |
+| `pesn-eval` | `python evaluate_full.py` | full-coverage scoring of a held-out area |
+| `pesn-convert` | `python convert_dataset.py` | convert a custom dataset to the training format |
 
 ```bash
-pip install numpy scikit-learn open3d tqdm matplotlib
+pesn-infer -i ./my_scan.txt --config ./model_params_room.json \
+    -m ./logs/20260818_003229/final_model.pth \
+    --arch v2 --v2_neighbors stencil --v2_stencil 2 --v2_diff --v2_directional \
+    --enc_channels 64,192,320,448 --bottleneck_dim 256
 ```
+
+Model weights and `model_params*.json` are **not** bundled in the wheel — they are inputs you
+pass by path. Clone the repo (or download the files) to get the released checkpoints under
+`logs/` and the example configs.
+
+Installation is optional: a clone works as-is with `python train_model.py ...` and needs only
+Step 1 plus `pip install numpy scikit-learn pandas tqdm matplotlib laspy`.
 
 ## Quick Start: End-to-End Workflow
 
@@ -825,6 +851,7 @@ point_edge_seg_net/
 ├── test_improvements.py    # standalone smoke tests (no training, no torch_geometric)
 ├── view_points_block.py    # quick Open3D viewer for cached blocks
 ├── model_params*.json      # dataset/class/feature configs (-c / --config)
+├── pyproject.toml          # packaging: pip install . and the pesn-* commands
 ├── run_train_*.sh|bat      # reproduction scripts (baseline / block-context)
 ├── run_infer_global.sh|bat # inference wrapper for block-context models
 ├── logs/<timestamp>/       # released runs: weights, metrics, curves
