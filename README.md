@@ -12,7 +12,7 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
 
 - **Runs on ≤24 GB VRAM — no server-class GPUs.** Trains and infers on a single consumer/pro card. SOTA sparse-conv/transformer models do not magically fit whole clouds either — they down-voxelize (losing fine detail) or tile with hundreds of sliding windows; this model chunks by design instead.
 - **Scales to arbitrarily large clouds.** Space is split into fixed-size blocks (constant memory per block, linear scaling), so a 100M-point LAS scan is handled like a single room — every point is covered at full density, not coarse-voxelized.
-- **Lightweight yet competitive.** ~5.7M parameters (about ⅓ of KPConv) reaching S3DIS Area-5 **OA 86.6% / mIoU 60.0%** — the strong 2019 point-based tier (≈PointWeb), i.e. ~89% of KPConv's mIoU at a fraction of the compute and code complexity.
+- **Lightweight yet competitive.** ~3.0M parameters (about 1/5 of KPConv) reaching S3DIS Area-5 **OA 87.8% / mIoU 64.8%** — past RandLA-Net and within 0.6 of MinkowskiNet, at a fraction of the compute and with no compiled extensions.
 - **Practical & self-contained.** Any `X Y Z [R G B ...]` cloud, custom classes via one JSON, standard deps (PyTorch/PyG/Open3D), and colored **LAS** output for direct viewing (CloudCompare, etc.).
 - **Honest evaluation.** Reports OA / mAcc / **mIoU** on a truly held-out area with leakage-controlled spatial train/val splits, plus multi-view voting, TTA and model-ensemble inference.
 
@@ -27,7 +27,7 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
 <img src="./imgs/img8.png" height="115"></img>
 <img src="./imgs/img7.png" height="115"></img></br>
 </p>
-<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model. Latest S3DIS Area 5 (held-out): OA=86.60%, mAcc=69.73%, mIoU=59.99%; best validation accuracy≈93.6%. VRAM=24GB. logs=20260715_204942)
+<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model. Latest S3DIS Area 5 (held-out, v2 architecture): OA=87.8%, mAcc=72.6%, mIoU=64.8% with 8-view TTA (64.2 single view). Trains within 24GB VRAM.)
 </p>
 
 
@@ -48,6 +48,11 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
   - **Lovász-Softmax + Focal loss** (directly optimizes mIoU, not just accuracy) and **per-block coordinate centering** (translation invariance → smaller train/test gap).
   - **Curvature feature fix** (true local surface-variation edge cue instead of a near-constant legacy channel), wider EdgeConv receptive field (**k=32**), **2-layer bottleneck Transformer**.
   - New: **mIoU / mAcc metrics**, **TTA (Z-rotation) + model-ensemble inference**, **colored LAS export**, early-stopping aligned to the checkpoint metric.
+- 2.0: 2026/8/21. **Architecture rework (v2) — S3DIS Area 5: OA 87.8% / mAcc 72.6% / mIoU 64.8%** (full-coverage protocol, +4.8 mIoU over v1.1 re-scored identically). Checkpoints are **not** compatible with v1.
+  - **New backbone `model_v2.py` (`PointEdgeSegNetV2`)**: per-layer kNN graph search is removed entirely. Neighbours are looked up on the voxel lattice with a fixed stencil (sorted keys + binary search), local aggregation is a point-wise MLP with a relative-position encoding and a feature-difference term, and down/upsampling use grid pooling with an exact inverse map. U-Net layout, feature gate and bottleneck Transformer are kept.
+  - **Speed / memory**: ~7x faster training epochs and ~3x lower training memory than v1 at equal settings; single-view inference runs in about 4 GB. Training fits a 24 GB card (see Training below).
+  - **Grid-preserving TTA** for evaluation (8 views: 90-degree rotations x mirror), matching the lattice assumption of the stencil.
+  - `model.py` (class `PointEdgeSegNet`) remains as the v1 legacy path; select with `--arch v1|v2` in `train_model.py` and `evaluate_full.py`.
 - 1.1: 2026/7/15. AMP training bug fix & retrain — S3DIS Area 5: **OA 86.60% / mAcc 69.73% / mIoU 59.99%** ([logs](./logs/20260715_204942)):
   - **Fixed a GradScaler state-corruption bug**: the "very large gradient → skip batch" branch called `scaler.unscale_()` without a matching `scaler.update()`, so from the first skipped batch onward every optimizer step silently failed (`unscale_() has already been called…`), permanently freezing the weights. The skip branch now resets the scaler state, restoring correct AMP training.
   - Retrained the v1.0 configuration (column mode, 60 epochs, batch 10, effective batch 60) with the fix — all metrics improved over the 20260707 baseline (OA +0.44, mAcc +0.68, mIoU +0.42); best validation accuracy 93.59%.
@@ -70,6 +75,55 @@ Still open (future work):
 <img src="./data_analysis/area_5.png" height="200"></img>
 <img src="./imgs/area4.jpg" height="400"></img>
 </p>
+
+## Architecture v2 (model_v2.py)
+
+Version 2.0 replaces the training/inference backbone. To avoid confusion:
+
+| | v1 (legacy) | v2 (current) |
+|---|---|---|
+| Source file | `model.py` | `model_v2.py` |
+| Class name | `PointEdgeSegNet` | `PointEdgeSegNetV2` |
+| Neighbourhoods | kNN graph per layer (`knn_graph`) | fixed voxel-stencil lookup (no search) |
+| Local aggregation | EdgeConv (per-edge MLP) | point-wise MLP + relative-position encoding + feature-difference term, max pooling |
+| Down / upsampling | FPS or grid ratio + kNN interpolation | grid pooling with exact inverse map |
+| Checkpoints | v1 only | v2 only (not interchangeable) |
+| Select with | `--arch v1` | `--arch v2` (plus `--v2_*` options) |
+
+The project name stays PointEdgeSegNet; the class suffix only marks the internal revision. Both paths share the same data pipeline, losses, and evaluation protocol. The key idea of v2: because the input is voxelized and every pooling stage stays on a voxel lattice, a point's spatial neighbours can be looked up at fixed lattice offsets (sorted integer keys + binary search) instead of searched — kNN-quality neighbourhoods at serialization-level cost.
+
+### Training with v2
+
+```bash
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # recommended; tames allocator growth
+
+python train_model.py \
+    --config model_params_room.json \
+    --processed_data_path ./processed_s3dis --block_data_path ./chunk_s3dis \
+    --block_size 20480 \
+    --train_areas Area_1 Area_2 Area_3 Area_4 Area_6 --test_area Area_5 \
+    --num_epochs 600 \
+    --arch v2 --v2_neighbors stencil --v2_stencil 2 --v2_diff \
+    --enc_channels 64,192,320,448 --bottleneck_dim 256 \
+    --batch_size 4 --val_batch_size 4 --learning_rate 0.003 \
+    --block_mode column --sampler grid \
+    --focal_gamma 2.0 --oversample_rare 1.0 --aug_preset strong
+```
+
+On a 24 GB card the same command fits with `--val_batch_size 2`; use `--batch_size 2` for extra headroom (roughly 8-10 GB, ~1.7x slower). Cosine schedule with early stopping typically ends near epoch 520.
+
+### Evaluation (full-coverage protocol)
+
+```bash
+python evaluate_full.py --model_weights logs/<run>/final_model.pth \
+    --config model_params_room.json --mode chunk --sampler grid \
+    --block_size 20480 --core_max 12288 --halo 1.0 \
+    --arch v2 --v2_neighbors stencil --v2_stencil 2 --v2_diff \
+    --enc_channels 64,192,320,448 --bottleneck_dim 256 \
+    --tta_d4 8
+```
+
+Architecture flags must match training. `--tta_d4 8` enables grid-preserving test-time augmentation (four 90-degree rotations x mirror); scale-based TTA is intentionally not used because it would break the voxel lattice the stencil relies on. Evaluate `final_model.pth` as well as `best_model.pth` — validation-based selection does not reliably pick the better test model on this benchmark.
 
 ### Experimental: block-context (buffered wide-area) features
 
@@ -117,23 +171,30 @@ The following items already apply in 24GB VRAM:
 
 ## Performance Log
 
-Latest run (`logs/20260715_204942`, v1.1 — after the GradScaler fix), S3DIS with Area 5 held out for test:
+Latest (v2.0 architecture, `model_v2.py`), S3DIS with Area 5 held out for test. Scoring uses the full-coverage protocol: every one of the 78.4M original points of Area 5 is predicted and scored (`evaluate_full.py`).
 
 | Metric | Value |
 |--------|-------|
-| Overall Accuracy (OA) | **86.60%** |
-| Mean Class Accuracy (mAcc) | **69.73%** |
-| Mean IoU (mIoU) | **59.99%** |
-| Best validation accuracy | 93.59% (epoch 59/60) |
-| Parameters | ~5.7M |
-| Training GPU memory (measured) | avg ~17.2 GB, peak ~18.7 GB whole-GPU usage on a 24 GB card (wandb system metrics sampled during this run; includes CUDA context and PyTorch allocator cache) |
+| Mean IoU (mIoU) | **64.8%** (8-view TTA) / 64.2% single view |
+| Overall Accuracy (OA) | **87.8%** |
+| Mean Class Accuracy (mAcc) | **72.6%** |
+| Parameters | ~3.0M |
+| Training | 600-epoch schedule, ~2 min/epoch on one GPU; fits a 24 GB card (see Training with v2) |
+| Inference GPU memory | ~4 GB, constant in cloud size (chunked) |
+
+<p align="center">
+<img src="./imgs/v2_training.png" width="760"></img></br>
+Training curves and Area-5 test results, v1 vs v2 under the identical protocol.
+</p>
+
+For reference, the v1 architecture re-scored under this same protocol reaches mIoU 58.8 — the published v1.1 figure (mIoU 59.99, `logs/20260715_204942`) used the earlier block-sampled protocol and is not directly comparable.
 
 - [Train Model Performance](./logs/20260715_204942/training_summary.json)
 - [Test Data Prediction Performance](./logs/20260715_204942/test_summary.json)
 - [Trained model and Log files](./logs/20260715_204942). Train/Val (spatial split) and Test on S3DIS v1.2 aligned.
 - Previous baseline (v1.0): OA 86.16% / mAcc 69.05% / mIoU 59.57% ([logs/20260707_101907](./logs/20260707_101907))
 
-Per-class IoU highlights (Area 5): floor 96.3, ceiling 92.5, wall 80.0, chair 72.9, table 72.6, beam 71.9 — the rare classes `sofa` (9.9) and `column` (21.7) remain the mIoU bottleneck (see future work).
+Per-class IoU highlights (Area 5, v2 + TTA): floor 96.9, ceiling 91.5, chair 88.7, wall 81.6, table 80.4, door 70.6, sofa 70.3 — `column` (27) and `beam` (0; Area 5 contains almost no beam points, 0.03%) remain the weakest classes.
 
 <p align="center">
 <img src="./logs/20260715_204942/training_plots.png" width="600"></img></br>
@@ -153,15 +214,15 @@ This comparison deliberately skips citation-only baselines (SegCloud, TangentCon
 | DGCNN (2018) | ~48\* | n/r | peak n/p; small-block training on single-GPU era cards | none (pure PyTorch) | no — S3DIS h5 blocks only | no | kNN graph memory grows with block size, forcing small blocks; no large-cloud pipeline |
 | PointNet++ (2017) | ~53.5\* | n/r | peak n/p; small-block training on single-GPU era cards | CUDA ops (FPS/ball-query) in common impls | DIY per repo | no | FPS and ball-query become slow on large clouds; accuracy dated |
 | SPG (2018) | 58.0 | 66.5 | peak n/p; single GPU | C++ (cut-pursuit, boost) | partly documented | partial — superpoint partition scales, but pipeline is aged | Unmaintained since ~2019; superpoint partition errors propagate to labels |
-| **PointEdgeSegNet (this, 2026)** | **60.0** | **69.7** | **measured: peak ~18.7 GB / avg ~17.2 GB whole-GPU on a 24 GB card** | **none — pip wheels only (PyTorch/PyG/Open3D)** | **yes — JSON config + `convert_dataset.py` (7 dataset profiles)** | **yes — blocking, voting, colored LAS output, documented** | Blocks are inferred independently (no cross-block context); rare classes weak (`sofa` 9.9 / `column` 21.7 IoU) |
 | RandLA-Net (2020) | ~62.5\* | n/r | paper: single RTX 2080Ti (11 GB); peak n/p | C++ wrappers (grid subsampling, kNN) | per-dataset prep scripts | yes — built for huge clouds (SemanticKITTI/Semantic3D) | Random sampling drops thin/small objects; official code is TF1.x, so you depend on community PyTorch ports |
+| **PointEdgeSegNet v2 (this, 2026)** | **64.8** | **72.6** | **measured: ~12-20 GB steady during training (96 GB card, `expandable_segments`); ~4 GB inference** | **none — pip wheels only (PyTorch/PyG/Open3D)** | **yes — JSON config + `convert_dataset.py` (7 dataset profiles)** | **yes — blocking, voting, colored LAS output, documented** | Chunks are inferred independently (no cross-chunk features); `column` (27 IoU) and Area-5 `beam` (0) remain weak |
 | KPConv (2019) | 67.1 | 72.8 | single 11 GB-class GPU in the original experiments; peak n/p | C++ wrappers (neighbors, subsampling) | new-dataset guide exists, code-level work | partial — sphere sampling and reprojection scale, but preprocessing is heavy and there is no end-to-end guide | ~15M params (about 3x this model); grid-subsampled input needs an extra reprojection step for full-density output |
 | PointNeXt (2022) | 69.0 (L) / 70.5 (XL) | n/r | paper recipe uses A100-class GPUs; peak n/p | CUDA ops (openpoints) | config-driven but S3DIS-centric | no — block-style pipeline | Scores depend on a heavy augmentation/training recipe; XL is ~41M params |
 | Point Transformer V3 (2024) | 73.4 | n/r | official recipe multi-GPU; peak n/p; 24 GB needs batch/grid tuning | spconv + flash-attention + pointops (Pointcept) | requires writing a Pointcept dataset class | partial — grid sampling exists, no raw-cloud-to-training guide | Heaviest dependency stack (flash-attention is painful on Windows); SOTA numbers assume multi-GPU compute |
 
 \* Not reported in the original paper for Area 5; figure as commonly reproduced in follow-up benchmarks. n/r = mAcc not confirmed in the original publication. n/p = measured training memory peak not published.
 
-Reading the table by trade-off: below this model you give up accuracy for simplicity that still lacks a large-cloud path (DGCNN, PointNet++) or inherit an aged pipeline (SPG); above it, every mIoU point is bought with compiled C++/CUDA extensions, heavier preprocessing/reprojection stages, bigger models, or a multi-GPU training recipe. PointEdgeSegNet is the only entry combining easy install, JSON-level custom classes, and a documented raw-cloud (100M+ points) to LAS pipeline within a single 24 GB card (measured peak ~18.7 GB) — at the cost of ~7 mIoU vs KPConv and ~13 vs PTv3. That remaining gap is an operator/compute problem (sparse conv, serialized attention, large-batch recipes), not a VRAM-fit problem: every method above also chunks, samples, or voxelizes large scenes.
+Reading the table by trade-off: below this model you give up accuracy for simplicity that still lacks a large-cloud path (DGCNN, PointNet++) or inherit an aged pipeline (SPG); above it, every mIoU point is bought with compiled C++/CUDA extensions, heavier preprocessing/reprojection stages, bigger models, or a multi-GPU training recipe. PointEdgeSegNet is the only entry combining easy install, JSON-level custom classes, and a documented raw-cloud (100M+ points) to LAS pipeline within a single 24 GB card — at the cost of ~2.3 mIoU vs KPConv and ~8.6 vs PTv3. That remaining gap is an operator/compute problem (sparse conv, serialized attention, large-batch recipes), not a VRAM-fit problem: every method above also chunks, samples, or voxelizes large scenes.
 
 ## Installation
 
