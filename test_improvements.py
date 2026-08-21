@@ -122,7 +122,7 @@ spec_terrain = dp.resolve_feature_config({'features': {'use_rgb': False, 'spatia
 check("terrain spec: scale=5, no rgb/curv -> 6D (3,0,3)", spec_terrain['spatial_scale'] == 5.0 and
       spec_terrain['num_features'] == 6 and spec_terrain['geo_dim'] == 3, f"(got {spec_terrain['num_features']}D)")
 
-print("\n[7] model.FeatureGate / PointEdgeSegNet: adapt to feature layout (real model.py via PyG stub)")
+print("\n[7] FeatureGate / PointEdgeSegNet: adapt to feature layout (real models/edgeconv.py via PyG stub)")
 import types
 for name, attrs in [('torch_geometric', {}),
                     ('torch_geometric.nn', {'fps': lambda *a, **k: None, 'knn_interpolate': lambda *a, **k: None}),
@@ -133,7 +133,7 @@ for name, attrs in [('torch_geometric', {}),
         setattr(m, k, v)
     sys.modules[name] = m
 import importlib
-M = importlib.import_module('model')
+M = importlib.import_module('models.edgeconv')
 
 fg = M.FeatureGate(geo_dim=4, rgb_dim=0, spatial_dim=3)  # colorless -> 7D, 2 gates
 xg = torch.rand(40, 7)

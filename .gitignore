@@ -17,6 +17,9 @@ sample/*.txt
 
 # --- python / tooling ---
 __pycache__/
+build/
+dist/
+*.egg-info/
 *.pyc
 .vscode/
 .claude/
