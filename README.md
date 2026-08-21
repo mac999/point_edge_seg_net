@@ -1,8 +1,8 @@
 ## Overview
 
-PointEdgeSegNet is the lightweight 3D point cloud segmentation model based on EdgeConv, Transforer and U-Net architecture. This project has purpose of researching and developing 3D point cloud segmenation model in [3D Scan to BIM pipeline](https://github.com/mac999/scan_to_bim_pipeline), [3D scan to Model](https://github.com/mac999/scan_to_model_pipeline) development that can classify each point in large-scale 3D PCD into semantic categories such as ceiling, floor, wall, furniture, and other industry objects which you can customize easily under small size VRAM like 24GB under. This is a personal project that I develop in my spare time, but if you're interested, you're welcome to join me in developing it at any time.
+PointEdgeSegNet is the lightweight 3D point cloud segmentation model based on EdgeConv, Transforer and U-Net architecture. This project has purpose of researching and developing 3D point cloud segmenation model in [3D Scan to BIM pipeline](https://github.com/mac999/scan_to_bim_pipeline), [3D scan to Model](https://github.com/mac999/scan_to_model_pipeline) development that can classify each point in large-scale 3D PCD into semantic categories such as ceiling, floor, wall, furniture, and other industry objects which you can customize easily while keeping the memory footprint modest (measured ~12-20 GB during training and ~4 GB at inference with the current recipe). This is a personal project that I develop in my spare time, but if you're interested, you're welcome to join me in developing it at any time.
 
-Although many research and open-source models exist for PCD segmentation, they have been challenging to use in practice. For example, some SOTA models in this research field use lots of GPU with VRAM, so it's difficult to train the models for industry. They have issues under the limited VRAM like 24 GB, large dataset processing in specific industry domain etc. When processing large PCD files, open-source models often did not perform as well as claimed in papers or required additional development to handle them. Some model codes were too outdated to be installed and run in current development environments. Some open-source models had overly complex structures and modules, making them difficult to modify for specific purposes. Models that consumed excessive GPU resources were problematic in practice. Some models used specialized libraries or file formats for training, limiting their overall usability. Few similar projects had well-documented learning and training methods. This project strives to address these issues to the best of its ability.
+Although many research and open-source models exist for PCD segmentation, they have been challenging to use in practice. For example, some SOTA models in this research field use lots of GPU with VRAM, so it's difficult to train the models for industry. They have issues under a limited VRAM budget, large dataset processing in specific industry domain etc. When processing large PCD files, open-source models often did not perform as well as claimed in papers or required additional development to handle them. Some model codes were too outdated to be installed and run in current development environments. Some open-source models had overly complex structures and modules, making them difficult to modify for specific purposes. Models that consumed excessive GPU resources were problematic in practice. Some models used specialized libraries or file formats for training, limiting their overall usability. Few similar projects had well-documented learning and training methods. This project strives to address these issues to the best of its ability.
 
 The current backbone (v2, `models/stencil.py`) voxelizes the input once and keeps every stage on a voxel lattice, so spatial neighbourhoods are looked up at fixed lattice offsets instead of searched — kNN-quality local geometry at a fraction of the cost. Local features are aggregated with point-wise MLPs plus relative-position and feature-difference encodings inside a U-Net encoder-decoder, and a lightweight Transformer at the bottleneck preserves global context across scales. The original EdgeConv backbone (v1, `models/edgeconv.py`) is kept as a legacy path. This approach enables accurate semantic segmentation of complex indoor scenes. 
 
@@ -10,7 +10,7 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
 
 ### Benefits
 
-- **Single-GPU project.** Every result in this README was trained and evaluated on one GPU: measured training memory is ~12-20 GB steady for the v2 backbone, inference about 4 GB regardless of cloud size. Smaller cards should work with reduced batch sizes, though this has not been verified. Large clouds are handled by chunking rather than by down-voxelizing or hundreds of sliding windows.
+- **Measured, modest memory footprint.** With the published v2 recipe, training sits at ~12-20 GB steady and inference at about 4 GB regardless of cloud size; `--batch_size 2` brings training down to roughly 8-10 GB. These are measurements from the runs in `logs/`, not a hardware requirement — smaller budgets have not been benchmarked. Large clouds are handled by chunking rather than by down-voxelizing or hundreds of sliding windows.
 - **Scales to arbitrarily large clouds.** Space is split into fixed-size blocks (constant memory per block, linear scaling), so a 100M-point LAS scan is handled like a single room — every point is covered at full density, not coarse-voxelized.
 - **Lightweight yet competitive.** ~3.0M parameters (about 1/5 of KPConv) reaching S3DIS Area-5 **OA 87.8% / mIoU 64.8%** — past RandLA-Net and within 0.6 of MinkowskiNet, at a fraction of the compute and with no compiled extensions.
 - **Practical & self-contained.** Any `X Y Z [R G B ...]` cloud, custom classes via one JSON, standard deps (PyTorch/PyG/Open3D), and colored **LAS** output for direct viewing (CloudCompare, etc.).
@@ -27,7 +27,7 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
 <img src="./imgs/img8.png" height="115"></img>
 <img src="./imgs/img7.png" height="115"></img></br>
 </p>
-<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model. Latest S3DIS Area 5 (held-out, v2 architecture): OA=87.8%, mAcc=72.6%, mIoU=64.8% with 8-view TTA (64.2 single view). Single-GPU training and inference.)
+<p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model. Latest S3DIS Area 5 (held-out, v2 architecture): OA=87.8%, mAcc=72.6%, mIoU=64.8% with 8-view TTA (64.2 single view).
 </p>
 
 
@@ -59,12 +59,12 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
   - Architectures are registered by name in `models/` (`edgeconv` = legacy v1, `stencil` = current); select with `--arch` in `train_model.py` and `evaluate_full.py`. Checkpoints are not interchangeable between the two.
 
 
-Optimization strategy under 24GB VRAM constraints (boundary artifacts, class imbalance, generalization):
+Optimization strategy under a fixed per-block memory budget (boundary artifacts, class imbalance, generalization):
 * **Overlapping context-preserving blocks:** `column` mode builds overlapping full-height columns instead of context-losing cubic grid cells, preserving the topology of objects (e.g., columns/doors) bisected by grid boundaries.
 * **Coordinate normalization:** per-block coordinate centering (translation invariance) inside the model, applied identically at train and inference — improves generalization to unseen areas.
 * **mIoU-aware loss:** Lovász-Softmax combined with Focal loss directly optimizes per-class IoU, lifting rare classes without a recall-only bias.
 * **Multi-view voting inference:** predictions from overlapping/rotated (TTA) blocks are aggregated per point to suppress boundary noise; a coverage-guaranteed blocker ensures every point of large/dense clouds is predicted.
-* **Curvature feature fix + wider receptive field (k=32) + 2-layer bottleneck Transformer** for stronger local/global context.
+* **Curvature feature fix + wider receptive field + 2-layer bottleneck Transformer** for stronger local/global context (v1 widened the EdgeConv neighbourhood to `k=32`; v2 gets the same reach from a radius-2 voxel stencil, 125 lattice offsets).
 
 Still open (future work):
 * **Global Context Injection:** append normalized global Z to features to better separate height-dependent classes (e.g., beam vs. sofa).
@@ -110,7 +110,7 @@ python train_model.py \
     --focal_gamma 2.0 --oversample_rare 1.0 --aug_preset strong
 ```
 
-Measured on our hardware this runs at ~12-20 GB steady. For smaller cards, reduce `--batch_size`/`--val_batch_size` to 2 (roughly 8-10 GB, ~1.7x slower) — expected to fit a 24 GB card, but not verified there. Cosine schedule with early stopping typically ends near epoch 520.
+As measured on the run this README reports, the command above sits at ~12-20 GB steady. Reducing `--batch_size`/`--val_batch_size` to 2 brings it to roughly 8-10 GB at ~1.7x the epoch time; tighter budgets than that have not been benchmarked. Cosine schedule with early stopping typically ends near epoch 520.
 
 ### Evaluation (full-coverage protocol)
 
@@ -129,7 +129,7 @@ Architecture flags must match training. `--tta_d4 8` enables grid-preserving tes
 
 Enable with `--block_context` on `train_model.py` / `inference.py`, or `"features": {"use_block_context": true}` in `model_params.json`.
 
-Blocks are sized for VRAM, so the model never sees what lies *around* a block — the "long-range context between blocks" bottleneck named above. Instead of enlarging blocks (which costs VRAM), each block's XY bounds are expanded by `context_buffer` metres and the points of **neighbouring blocks** inside that buffer are aggregated into a small statistics vector: horizontal/vertical surface shares (from normals), mean surface variation (edge-ness), block/buffer density ratio, and a normalized Z-histogram (`context_bins`). This vector is appended to every point of the block as constant channels (default 10D → 18D), so the network learns each point's label *conditioned on a wide-area summary* — at zero VRAM cost (input channels only, ≈+4K params) and computed once at block-build time.
+Blocks are sized for VRAM, so the model never sees what lies *around* a block — the "long-range context between blocks" bottleneck named above. Instead of enlarging blocks (which costs VRAM), each block's XY bounds are expanded by `context_buffer` metres and the points of **neighbouring blocks** inside that buffer are aggregated into a small statistics vector: horizontal/vertical surface shares (from normals), mean surface variation (edge-ness), block/buffer density ratio, and a normalized Z-histogram (`context_bins`). This vector is appended to every point of the block as constant channels (`context_dim = 4 + context_bins`, so 10D → 18D with the shipped `context_bins` 4), so the network learns each point's label *conditioned on a wide-area summary* — at zero VRAM cost (input channels only, ≈+4K params) and computed once at block-build time.
 
 Related work (input-level context injection): PointNet's per-block normalized room-global coordinates, Engelmann et al. 2017 (enlarged/multi-scale block context), SCF-Net's global contextual features (CVPR 2021), classical multi-scale eigenfeatures (verticality etc., Weinmann et al. 2015 / Hackel et al. 2016), and the buffered-tile ("halo") practice of large-scale GIS point-cloud pipelines. This option combines the buffered-tile idea with handcrafted wide-area statistics as block-constant input channels.
 
@@ -144,18 +144,18 @@ python train_model.py --block_context --context_buffer 2.0 --context_bins 4 --no
 python inference.py --block_context -m ./logs/<ctx_run>/best_model.pth -i ./sample/area_6_conferenceRoom_1.txt
 ```
 
-Notes: the shipped weights are 10D, so enabling context requires retraining; a stale block cache with the wrong feature width is detected and reported with an actionable error.
+Notes: the released checkpoints carry no context channels (7D for the v2 run, 10D for v1), so enabling context requires retraining; a stale block cache with the wrong feature width is detected and reported with an actionable error.
 
-The following items already apply in 24GB VRAM:
-- **Increased depth**: 2-layer bottleneck Transformer added on top of the EdgeConv U-Net (bottleneck operates on the downsampled set, so extra depth costs almost no memory).
-- **Tuned k-NN**: `EdgeConv` neighbourhood raised to `k=32` (batch/accumulation adjusted so training fits a 24 GB card — measured whole-GPU peak ~18.7 GB — with the effective batch kept at 60).
+Training-side settings already in place:
+- **Increased depth**: 2-layer bottleneck Transformer on top of the U-Net (the bottleneck operates on the downsampled set, so the extra depth costs almost no memory). Both backbones keep it.
+- **Tuned neighbourhood**: in v1 the `EdgeConv` graph was raised to `k=32`, with batch/accumulation adjusted to keep the effective batch at 60 (measured whole-GPU peak ~18.7 GB). v2 replaces the kNN graph with a radius-2 voxel stencil, so `k` is no longer a tuning knob.
 - **LR warm-up + Cosine annealing**: linear warm-up precedes `CosineAnnealingLR` (`T_max = num_epochs`, so the LR fully anneals by the last epoch).
 - **AdamW optimizer** with weight decay for better generalization.
 
 ## Features
 
 - Large-scale point cloud training and segmentation
-- Edge-based convolution layers for capturing local geometric relationships
+- Search-free voxel-stencil aggregation for local geometric relationships (v2); EdgeConv layers kept as the legacy v1 path
 - U-Net encoder-decoder architecture with skip connections
 - Lightweight Model Architecture with Transformers
 - Block-based processing for memory efficiency. Here, the concept of a block refers to a unit of point cloud file that divides a large number of point clouds, such as 100 million, into units that enable model learning and prediction within VRAM.
@@ -171,7 +171,7 @@ The following items already apply in 24GB VRAM:
 
 ## Performance Log
 
-Latest (v2.0 architecture, `model_v2.py`), S3DIS with Area 5 held out for test. Scoring uses the full-coverage protocol: every one of the 78.4M original points of Area 5 is predicted and scored (`evaluate_full.py`).
+Latest (v2.0 architecture, `models/stencil.py`), S3DIS with Area 5 held out for test. Scoring uses the full-coverage protocol: every one of the 78.4M original points of Area 5 is predicted and scored (`evaluate_full.py`).
 
 | Metric | Value |
 |--------|-------|
@@ -179,7 +179,7 @@ Latest (v2.0 architecture, `model_v2.py`), S3DIS with Area 5 held out for test. 
 | Overall Accuracy (OA) | **87.8%** |
 | Mean Class Accuracy (mAcc) | **72.6%** |
 | Parameters | ~3.0M |
-| Training | 600-epoch schedule, ~2 min/epoch on one GPU; measured ~12-20 GB steady (see Training with v2) |
+| Training | 600-epoch schedule, ~2 min/epoch (~20 h total); measured ~12-20 GB steady (see Training with v2) |
 | Inference GPU memory | ~4 GB, constant in cloud size (chunked) |
 
 <p align="center">
@@ -194,15 +194,16 @@ Inference example: Area 5 office_1 (816K points, held out from training), chunke
 
 For reference, the v1 architecture re-scored under this same protocol reaches mIoU 58.8 — the published v1.1 figure (mIoU 59.99, `logs/20260715_204942`) used the earlier block-sampled protocol and is not directly comparable.
 
-- [Train Model Performance](./logs/20260715_204942/training_summary.json)
-- [Test Data Prediction Performance](./logs/20260715_204942/test_summary.json)
-- [Trained model and Log files](./logs/20260715_204942). Train/Val (spatial split) and Test on S3DIS v1.2 aligned.
-- Previous baseline (v1.0): OA 86.16% / mAcc 69.05% / mIoU 59.57% ([logs/20260707_101907](./logs/20260707_101907))
+- [Train Model Performance (v2.0)](./logs/20260818_003229/training_summary.json)
+- [Test Data Prediction Performance (v2.0, full coverage + 8-view TTA)](./logs/20260818_003229/test_full_final_d4tta.json)
+- [Trained model and Log files (v2.0)](./logs/20260818_003229). Train/Val (spatial split) and Test on S3DIS v1.2 aligned.
+- Previous baselines: v1.1 OA 86.60% / mAcc 69.73% / mIoU 59.99% ([logs/20260715_204942](./logs/20260715_204942)); v1.0 OA 86.16% / mAcc 69.05% / mIoU 59.57% ([logs/20260707_101907](./logs/20260707_101907))
 
 Per-class IoU highlights (Area 5, v2 + TTA): floor 96.9, ceiling 91.5, chair 88.7, wall 81.6, table 80.4, door 70.6, sofa 70.3 — `column` (27) and `beam` (0; Area 5 contains almost no beam points, 0.03%) remain the weakest classes.
 
 <p align="center">
-<img src="./logs/20260715_204942/training_plots.png" width="600"></img></br>
+<img src="./logs/20260818_003229/training_plots.png" width="600"></img></br>
+Training curves of the v2.0 run (logs/20260818_003229, 600 epochs).
 </p>
 
 ### Where it stands (S3DIS Area 5)
@@ -242,7 +243,7 @@ The remaining gap to the top rows (~2.3 mIoU vs KPConv, ~8.6 vs PTv3) is an oper
 
 - Python 3.8 or higher
 - NVIDIA GPU with CUDA support (recommended)
-- Minimum 8GB GPU memory
+- GPU memory: ~12-20 GB for training with the published v2 recipe, ~8-10 GB at `--batch_size 2`, ~4 GB for inference
 
 Download source code and install it like below.
 ```bash
@@ -299,8 +300,9 @@ Two training variants:
 python train_model.py --config model_params.json --block_mode column --column_window 2.0 --column_stride 2.0 --num_epochs 60 --batch_size 10
 
 # (b) GLOBAL context - same as (a) plus --block_context: appends a wide-area neighbourhood
-#     descriptor (verticality/horizontality/curvature/density + z-histogram over a 4 m buffer)
-#     to every block -> 10D base + 12D context = 22D input (blocks cached in block_s3dis_ctx/)
+#     descriptor (verticality/horizontality/curvature/density + z-histogram over the
+#     `context_buffer` ring, 2 m in model_params.json) to every block
+#     -> 10D base + 8D context = 18D input (blocks cached in block_s3dis_ctx/)
 python train_model.py --config model_params.json --block_mode column --column_window 2.0 --column_stride 2.0 --num_epochs 60 --batch_size 10 --block_context
 ```
 
@@ -316,11 +318,11 @@ python inference.py                       # confirmed model + sample cloud
 python inference.py -i ./my_scan.txt      # your own X Y Z [R G B] cloud
 python inference.py --tta                 # extra accuracy via rotation voting
 
-# --block_context-trained (22D) model:
+# --block_context-trained (18D with the shipped config) model:
 python inference.py --block_context -m logs/<timestamp>/best_model.pth -i ./my_scan.txt
 ```
 
-On Windows, **`run_infer_global.bat <model.pth> [input.txt]`** wraps the context (22D) inference — pair it with models produced by `run_train_global.bat`.
+On Windows, **`run_infer_global.bat <model.pth> [input.txt]`** wraps the context (18D) inference — pair it with models produced by `run_train_global.bat`.
 
 > The inference feature settings must match how the model was trained (same config / `--block_context` state); a mismatch fails fast with a dimension error.
 
@@ -563,41 +565,46 @@ To ensure a robust evaluation, consider the following:
 
 ### PointEdgeSegNet Theory
 
-PointEdgeSegNet is built on two key concepts:
+PointEdgeSegNet is built on two key concepts. The local operator differs between the two backbones; the U-Net around it does not.
 
-#### 1. EdgeConv Layers
+#### 1. Local aggregation
 
-EdgeConv (Edge Convolution) is designed specifically for point cloud processing:
+**v2 — voxel-stencil aggregation (`models/stencil.py`, current).** The cloud is voxelized once and every stage stays on that lattice, so a point's neighbours are simply the occupied cells at fixed stencil offsets (radius 2 = 125 offsets in the published recipe), located by binary search over sorted integer keys instead of a kNN query:
 
-- Constructs dynamic k-nearest neighbor graphs for each point
-- Captures local geometric relationships through edge features
-- Combines point features with relative position information
-- Maintains permutation invariance while being sensitive to local structure
+```
+e_j      = W1*h_j + Pose(p_j - p_i) + (W2*h_j - W2*h_i)
+output_i = MLP(max(e_j) for all j in stencil(i))
+```
 
-Mathematical formulation:
+The relative-position term keeps the local geometry and the feature-difference term keeps the edge cue, but neither needs a per-edge MLP or a neighbour search.
+
+**v1 — EdgeConv layers (`models/edgeconv.py`, legacy).** EdgeConv builds a dynamic k-nearest-neighbour graph per layer (`k=32` in the v1.1 recipe) and learns a feature per edge:
+
 ```
 edge_feature = MLP([x_i, x_j - x_i])
 output_i = max(edge_feature) for all j in neighbors(i)
 ```
 
+Both are permutation invariant and combine point features with relative position; v2 drops the neighbour *search*, not the neighbour *quality*.
+
 #### 2. U-Net Architecture
 
 The encoder-decoder structure with skip connections:
 
-**Encoder Path:**
-- Stage 1: Input features -> 64 channels
-- Stage 2: 64 -> 128 channels (4x downsampling)
-- Stage 3: 128 -> 256 channels (4x downsampling)  
-- Stage 4: 256 -> 512 channels (4x downsampling)
+**Encoder Path** (v2 defaults, `--enc_channels 64,192,320,448`; v1 used 64/128/256/512):
+- Stage 1: Input features -> 64 channels at the 4 cm base grid
+- Stage 2: 64 -> 192 channels (grid pooling to 8 cm)
+- Stage 3: 192 -> 320 channels (grid pooling to 16 cm)
+- Stage 4: 320 -> 448 channels (grid pooling to 32 cm), then a 2-layer Transformer bottleneck
 
 **Decoder Path:**
-- Upsampling with k-NN interpolation
+- Upsampling by the exact inverse of the grid pooling in v2 (k-NN interpolation in v1)
 - Skip connections preserve fine-grained details
 - Progressive feature fusion at each scale
 
 ### Network Flow
 
-1. **Input Processing**: Raw point coordinates + geometric features + RGB + spatial (10D: normals 3 + curvature 1 + RGB 3 + spatial 3), with per-block coordinate centering
+1. **Input Processing**: Raw point coordinates + geometric features + RGB (7D: normals 3 + curvature 1 + RGB 3 — the layout of the published v2 run, `model_params_room.json`; enabling `use_spatial` adds 3 channels for the 10D layout used by v1), with per-block coordinate centering
 2. **Hierarchical Encoding**: Multi-scale feature extraction with progressive downsampling
 3. **Bottleneck**: Highest-level feature representation
 4. **Hierarchical Decoding**: Feature upsampling with skip connections
@@ -605,7 +612,7 @@ The encoder-decoder structure with skip connections:
 
 ### Key Innovations
 
-- **Dynamic Graph Construction**: Adapts to local point density variations
+- **Search-free neighbourhoods**: fixed voxel-lattice stencil lookups in v2 (dynamic kNN graph construction in v1)
 - **Multi-scale Feature Fusion**: Combines global context with local details
 - **Geometric Feature Integration**: Leverages Open3D for robust normal/curvature computation
 - **Memory Efficient Processing**: Block-based training and inference
@@ -702,7 +709,7 @@ python train_model.py --batch_size 2 --block_size 4096
 - `--learning_rate`: Learning rate for optimizer
 - `--num_features`: Number of input features (default: 10)
 - `--block_mode`: `column` (default, context-preserving) or `grid` (legacy)
-- `--block_context`: append the wide-area per-block context descriptor (22D input; blocks cached in `block_s3dis_ctx`), with `--context_buffer` (m) and `--context_bins` to tune it
+- `--block_context`: append the wide-area per-block context descriptor (`context_dim = 4 + context_bins`, so 18D input with the shipped `context_bins` 4; blocks cached in `block_s3dis_ctx`), with `--context_buffer` (m) and `--context_bins` to tune it
 - `--num_classes`: Number of output classes (default: 13)
 - `--block_size`: Size of point cloud blocks (default: 8192)
 - `--block_context` / `--no_block_context`: enable/disable the buffered block-context descriptor (overrides `features.use_block_context`)
@@ -718,7 +725,7 @@ python train_model.py --batch_size 2 --block_size 4096
 - `--tta`: test-time augmentation (Z-rotations 90/180/270 voted together)
 - `--ensemble WEIGHTS.pth [...]`: extra model weights to softmax-average with the primary model
 - `--column_window`, `--column_stride`: column size / step (m); output is always a colored `_segmented.las` + `_segmented.txt`
-- `--block_context` / `--no_block_context`: must match how the model was trained (22D context models need `--block_context`; see `run_infer_global.bat`)
+- `--block_context` / `--no_block_context`: must match how the model was trained (context-trained models need `--block_context`; see `run_infer_global.bat`)
 - `--block_context` / `--no_block_context`, `--context_buffer`, `--context_bins`: block-context descriptor — must match how the model was trained
 
 ## Training
@@ -808,8 +815,9 @@ point_unet/
 
 ### Training Performance
 
-- Training Time: ~3 hours for 60 epochs on a single 24GB GPU
-- GPU Memory (measured, v1.1 run): avg ~17.2 GB / peak ~18.7 GB whole-GPU on a 24 GB card (wandb system metrics; BATCH_SIZE=10, EdgeConv k=32, effective batch 60 via gradient accumulation)
+- Training Time (v2.0): ~2 min/epoch, ~20 hours for the 600-epoch schedule (batch 4, block 20480)
+- GPU Memory (v2.0, measured): ~12-20 GB steady during training; ~8-10 GB at `--batch_size 2`
+- For reference, the v1.1 run measured avg ~17.2 GB / peak ~18.7 GB whole-GPU and ~3 hours for 60 epochs (wandb system metrics; BATCH_SIZE=10, EdgeConv k=32, effective batch 60 via gradient accumulation)
 - Scales to arbitrarily large training sets — memory is per block, not per scene
 
 ### Inference Performance
@@ -833,9 +841,11 @@ point_unet/
 - Clear GPU cache between experiments
 
 ## Insight
-When training point cloud data, it's crucial to assume all data characteristics. Inputs that deviate from these assumptions will not yield good results (e.g., indoor vs. outdoor, bright vs. dark lighting, and variations in label object types and features). In Example of S3DIS dataset, The Area 1 (Train) and Area 5 (Test) datasets are representative examples. Because these two datasets exhibit such high variation, standard training alone won't significantly improve Test Acc. This consideration must be taken into account when designing the model to determine which data features to train. Statistical analysis must be performed first to ensure inductive inference, a golden rule in deep learning model training. When I tried to improve the performance (accuray, loss) of test dataset (unseen), I used some solutions like the argumented dataset with features, model size increasement within 24G VRAM etc, but the performance was limited. Local features acceptance is always an issue in tranining model becuase it's difficult to increase the model size and architecture in usecase under the small VRAM.
+When training point cloud data, it's crucial to assume all data characteristics. Inputs that deviate from these assumptions will not yield good results (e.g., indoor vs. outdoor, bright vs. dark lighting, and variations in label object types and features). In Example of S3DIS dataset, The Area 1 (Train) and Area 5 (Test) datasets are representative examples. Because these two datasets exhibit such high variation, standard training alone won't significantly improve Test Acc. This consideration must be taken into account when designing the model to determine which data features to train. Statistical analysis must be performed first to ensure inductive inference, a golden rule in deep learning model training. When I tried to improve the performance (accuray, loss) of test dataset (unseen), I used some solutions like the argumented dataset with features, model size increasement within the memory budget of that time etc, but the performance was limited. Local features acceptance is always an issue in tranining model becuase it's difficult to increase the model size and architecture in usecase under the small VRAM.
 
 Update (v1.0): several of these limits were pushed back without any hardware upgrade — context-preserving column blocks, per-block coordinate centering (translation invariance), an mIoU-aware Lovász+Focal loss, a corrected surface-variation curvature feature, and a fixed coverage-guaranteed voting pipeline together raised held-out Area 5 from ~mIoU 49 to **59.6** (OA 86.2%); fixing a silent AMP GradScaler bug and retraining (v1.1) pushed this to **mIoU 60.0** (OA 86.6%). The remaining bottleneck is long-range context between blocks and the two rarest classes (`column`, `sofa`); closing the gap to sparse-conv/transformer methods (65–70+) is an *architecture* problem (a different convolution/attention operator), not a VRAM one — all such methods still chunk or down-voxelize large clouds rather than fitting them whole.
+
+Update (v2.0): that prediction held. Replacing the operator — kNN EdgeConv out, voxel-stencil aggregation in — moved Area 5 to **mIoU 64.8 / OA 87.8** on the full-coverage protocol (+4.8 over v1.1 re-scored the same way) while *lowering* both training memory and epoch time. `column` and `beam` are still the weakest classes, and long-range context between blocks is still the open problem.
 
 ## Contributing
 
