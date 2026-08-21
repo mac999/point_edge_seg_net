@@ -24,3 +24,16 @@ __pycache__/
 *.pth
 *.ckpt
 chunk_s3dis_2cm/
+
+# --- internal experiment runners (kept locally, not part of the release) ---
+run_*_queue.sh
+run_e[0-9]*.sh
+run_v2_*.sh
+run_rebal*.sh
+run_lr_probe*.sh
+run_train_arch*.sh
+run_train_chunk*.sh
+run_train_ctx*.sh
+run_train_long.sh
+run_train_oversample.sh
+run_train_stage*.sh
