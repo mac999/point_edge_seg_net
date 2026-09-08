@@ -199,7 +199,25 @@ For reference, the v1 architecture re-scored under this same protocol reaches mI
 - [Trained model and Log files (v2.0)](./logs/20260818_003229). Train/Val (spatial split) and Test on S3DIS v1.2 aligned.
 - Previous baselines: v1.1 OA 86.60% / mAcc 69.73% / mIoU 59.99% ([logs/20260715_204942](./logs/20260715_204942)); v1.0 OA 86.16% / mAcc 69.05% / mIoU 59.57% ([logs/20260707_101907](./logs/20260707_101907))
 
-Per-class IoU highlights (Area 5, v2 + TTA): floor 96.9, ceiling 91.5, chair 88.7, wall 81.6, table 80.4, door 70.6, sofa 70.3 — `column` (27) and `beam` (0; Area 5 contains almost no beam points, 0.03%) remain the weakest classes.
+Per-class IoU (Area 5, v2 + 8-view TTA, all 78,404,494 points scored):
+
+| Class | IoU | Acc | Share of Area 5 GT |
+|---|---|---|---|
+| floor | 96.9 | 98.3 | 16.6% |
+| ceiling | 91.5 | 94.7 | 19.4% |
+| chair | 88.7 | 95.2 | 1.9% |
+| wall | 81.6 | 93.2 | 29.3% |
+| table | 80.4 | 90.9 | 3.8% |
+| door | 70.6 | 83.7 | 3.0% |
+| sofa | 70.3 | 78.1 | 0.3% |
+| bookcase | 68.9 | 78.0 | 10.4% |
+| board | 66.6 | 76.8 | 1.2% |
+| clutter | 52.0 | 73.5 | 8.9% |
+| **window** | **47.5** | 49.1 | 3.5% |
+| **column** | **27.3** | 31.8 | 1.8% |
+| **beam** | **0.0** | 0.0 | 0.03% |
+
+Ten of the thirteen classes sit between 52 and 97; almost the entire remaining gap is three classes. Raising just `window`, `column` and `beam` to 60 IoU each would put mIoU at 72.9. `beam` is not a tuning problem — Area 5 ground truth contains 22,424 beam points (0.029%), and a 3.0 loss weight left it at 0.0 — while `column` resisted both a wider receptive field and directional gating (see VERSIONS.md, E8/E10).
 
 <p align="center">
 <img src="./logs/20260818_003229/training_plots.png" width="600"></img></br>
@@ -212,30 +230,34 @@ Accuracy alone does not decide whether a model is usable on your own data. Three
 
 **This model** — the reference row every trade-off below is measured against:
 
-| Model | mIoU | mAcc | Install | Custom data | Large clouds |
-|---|---|---|---|---|---|
-| **PointEdgeSegNet v2 (2026)** | **64.8** | **72.6** | ✓ pip only | ✓ JSON config + `convert_dataset.py` | ✓ chunking, voting, LAS output |
+| Model | mIoU | mAcc | Params | Install | Custom data | Large clouds |
+|---|---|---|---|---|---|---|
+| **PointEdgeSegNet v2 (2026)** | **64.8** | **72.6** | **3.07M** | ✓ pip only | ✓ JSON config + `convert_dataset.py` | ✓ chunking, voting, LAS output |
 
 **More accurate, but you pay for it** — every mIoU point above is bought with compiled extensions, heavier preprocessing, bigger models, or multi-GPU recipes:
 
-| Model | mIoU | Install | Custom data | Large clouds | Cost of the extra accuracy |
-|---|---|---|---|---|---|
-| Point Transformer V3 (2024) | 73.4 | ✗ spconv + flash-attn + pointops | ✗ Pointcept dataset class | △ no raw-cloud guide | heaviest dependency stack; official recipe is multi-GPU |
-| PointNeXt-XL (2022) | 70.5 | ✗ CUDA ops (openpoints) | △ S3DIS-centric | ✗ | ~41M params; score depends on heavy training recipe |
-| KPConv (2019) | 67.1 | ✗ C++ wrappers | △ code-level work | △ heavy preprocessing | ~15M params (5x this model); reprojection step for full-density output |
+| Model | mIoU | Params | Install | Custom data | Large clouds | Cost of the extra accuracy |
+|---|---|---|---|---|---|---|
+| Point Transformer V3 (2024) | 73.4 | ~46M | ✗ spconv + flash-attn + pointops | ✗ Pointcept dataset class | △ no raw-cloud guide | heaviest dependency stack; official recipe is multi-GPU |
+| PointNeXt-XL (2022) | 70.5 | ~42M | ✗ CUDA ops (openpoints) | △ S3DIS-centric | ✗ | 14x this model; score depends on heavy training recipe |
+| Superpoint Transformer (2023) | 68.9 | ~0.8M | △ geometric-partition dependencies | △ partition parameters need tuning | ✓ superpoint partition scales to large scenes | the one row that is both smaller and more accurate; accuracy rides on partition quality |
+| KPConv (2019) | 67.1 | ~15M | ✗ C++ wrappers | △ code-level work | △ heavy preprocessing | 5x this model; reprojection step for full-density output |
+| MinkowskiNet (2019) | 65.4 | ~38M | ✗ MinkowskiEngine build | △ code-level work | △ depends on voxel size | closest row above (+0.6); the engine build is the usual blocker |
 
 **Simpler era, lower accuracy** — what this model replaces:
 
-| Model | mIoU | Why not |
-|---|---|---|
-| RandLA-Net (2020) | ~62.5\* | random sampling drops thin objects; official code TF1.x |
-| SPG (2018) | 58.0 | unmaintained since ~2019; partition errors propagate |
-| PointNet++ (2017) | ~53.5\* | dated accuracy; slow FPS/ball-query on large clouds |
-| DGCNN (2018) | ~48\* | kNN memory forces small blocks; no large-cloud pipeline |
+| Model | mIoU | Params | Why not |
+|---|---|---|---|
+| RandLA-Net (2020) | ~62.5\* | ~1.2M | random sampling drops thin objects; official code TF1.x |
+| SPG (2018) | 58.0 | ~0.3M | unmaintained since ~2019; partition errors propagate |
+| PointNet++ (2017) | ~53.5\* | ~1M | dated accuracy; slow FPS/ball-query on large clouds |
+| DGCNN (2018) | ~48\* | ~1M | kNN memory forces small blocks; no large-cloud pipeline |
 
 \* Commonly reproduced figures; not reported for Area 5 in the original papers.
 
-The remaining gap to the top rows (~2.3 mIoU vs KPConv, ~8.6 vs PTv3) is an operator/compute trade — every method above also chunks, samples, or voxelizes large scenes; the difference this project aims at is keeping installation, custom data, and the large-cloud path simple while closing that gap.
+Only this project's row is measured here — every other mIoU is the published figure, scored under that method's own protocol rather than the full-coverage protocol used above. Parameter counts are the commonly cited figures for each method's reference configuration and differ between paper and public implementations; the 3.07M is counted from the released checkpoint.
+
+The remaining gap to the rows above (0.6 mIoU to MinkowskiNet, 2.3 to KPConv, 8.6 to PTv3) is an operator/compute trade — every method above also chunks, samples, or voxelizes large scenes; the difference this project aims at is keeping installation, custom data, and the large-cloud path simple while closing that gap. Per the per-class table, nearly all of that gap is concentrated in three classes rather than spread across the label set.
 
 ## Installation
 
