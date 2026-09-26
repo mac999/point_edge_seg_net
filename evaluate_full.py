@@ -237,14 +237,26 @@ def main():
 	model.eval()
 	print(f"Model: {args.model_weights}  ({spec['num_features']}D, dims={feature_dims})")
 	views = tta_views(n_scale=args.tta, flip=args.tta_flip)
+	# Two independent TTA families live here: chunk mode votes over the grid-preserving D4
+	# set (--tta_d4), every other mode over the scale x mirror set (--tta/--tta_flip).
+	# Resolve which one is actually in play BEFORE the banner, so the printout and the result
+	# JSON report the views that really ran instead of the unused default set.
+	if args.mode == 'chunk':
+		from voxel_chunk import d4_views
+		active_views, tta_family = d4_views(args.tta_d4), 'd4_rot90_flip'
+		if len(views) > 1:
+			print(f"WARNING: --tta/--tta_flip ({len(views)} scale views) is ignored in chunk mode -- "
+				  f"scale TTA breaks the voxel lattice. Use --tta_d4 instead (currently {args.tta_d4}).")
+	else:
+		active_views, tta_family = views, 'scale_flip'
 	if args.mode == 'room':
 		print(f"Protocol: ALL points of {args.test_area} | ROOM mode, grid={args.room_grid} m, "
-			  f"chunk cap {args.room_max_points:,} voxels, TTA={len(views)} view(s). "
+			  f"chunk cap {args.room_max_points:,} voxels, TTA={len(active_views)} view(s). "
 			  f"Voxel predictions are propagated to every original point by nearest neighbour.")
 	else:
 		print(f"Protocol: ALL points of {args.test_area}, window={args.window}, stride={args.stride}, "
 			  f"block_size={args.block_size}, voting={'on (overlap)' if args.stride < args.window else 'coverage-only'}, "
-			  f"TTA={len(views)} view(s)")
+			  f"TTA={len(active_views)} view(s) [{tta_family}]")
 
 	rooms = sorted(glob(os.path.join(args.processed_data_path, args.test_area, '*.pt')))
 	if not rooms:
@@ -254,8 +266,8 @@ def main():
 	total_blocks = 0
 	t0 = time.time()
 	if args.mode == 'chunk':
-		from voxel_chunk import predict_room_chunks, d4_views
-		chunk_views = d4_views(args.tta_d4)
+		from voxel_chunk import predict_room_chunks
+		chunk_views = active_views
 		if len(chunk_views) > 1:
 			print(f"Chunk-mode TTA: {len(chunk_views)} grid-preserving D4 views (rot90 x flip)")
 		for room_pt in tqdm(rooms, desc=f'[Full eval {args.test_area} / chunk]'):
@@ -303,8 +315,9 @@ def main():
 		'eval_config': {'mode': args.mode, 'room_grid': args.room_grid,
 						'block_size': args.block_size, 'window': args.window, 'stride': args.stride,
 						'block_context': bool(args.block_context), 'num_blocks': total_blocks,
-						'num_rooms': len(rooms), 'tta_views': len(views),
-						'tta_view_list': [list(v) for v in views]},
+						'num_rooms': len(rooms), 'tta_views': len(active_views),
+						'tta_family': tta_family, 'tta_d4': args.tta_d4,
+						'tta_view_list': [list(v) for v in active_views]},
 		'overall_metrics': {'accuracy': m['accuracy'], 'mAcc': m['mAcc'], 'mIoU': m['mIoU'],
 							'total_points': int(conf.sum())},
 		'per_class_results': {

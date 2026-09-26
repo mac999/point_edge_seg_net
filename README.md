@@ -68,7 +68,7 @@ Optimization strategy under a fixed per-block memory budget (boundary artifacts,
 
 Still open (future work):
 * **Global Context Injection:** append normalized global Z to features to better separate height-dependent classes (e.g., beam vs. sofa).
-* **Copy-Paste Augmentation:** copy rare-class points into wall-dominated blocks to further address imbalance (currently the two rarest classes, `column`/`sofa`, remain the mIoU bottleneck).
+* **Copy-Paste Augmentation:** copy rare-class points into wall-dominated blocks to further address imbalance. The measured bottlenecks are `column` (IoU 27.3) and `window` (47.5) — not rarity as such, since `sofa` is rarer than either (0.27% of Area 5) and already reaches 70.3. `beam` is beyond reach of any reweighting: it is 0.029% of Area 5 ground truth and stayed at IoU 0.0 even with its loss weight raised to 3.0, so the realistic targets are `column` and `window`.
 
 <p align="center">
 <img src="./data_analysis/area_1.png" height="200"></img>
