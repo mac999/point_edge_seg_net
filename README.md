@@ -778,12 +778,6 @@ point_edge_seg_net/
   - **Named inference protocols** (`--protocol single | overlap | mirror | overlap_mirror`) so a reported number states how densely the window was swept and how many views were voted.
   - A study of the context/resolution trade-off, the coverage and scoring defects found along the way, and the ablations behind the shipped recipe are being written up separately; this README states the released configuration only.
 
-<p align="center">
-<img src="./imgs/bridge_segmentation_example.png" width="760"
-     alt="Elevation view of a held-out bridge: ground truth, prediction, and the misclassified points"><br>
-<sub>A held-out test bridge, seen along the deck axis: labels, the released model's prediction, and where the two disagree.</sub>
-</p>
-
 Optimization strategy under a fixed per-block memory budget (boundary artifacts, class imbalance, generalization):
 * **Overlapping context-preserving blocks:** `column` mode builds overlapping full-height columns instead of context-losing cubic grid cells, preserving the topology of objects (e.g., columns/doors) bisected by grid boundaries.
 * **Coordinate normalization:** per-block coordinate centering (translation invariance) inside the model, applied identically at train and inference — improves generalization to unseen areas.
