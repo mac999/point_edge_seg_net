@@ -44,7 +44,7 @@ from glob import glob
 from tqdm import tqdm
 from torch_geometric.data import Data
 
-from data_processing import compute_surface_variation, spatial_split_is_val, EPSILON
+from data_processing import get_model_config, compute_surface_variation, spatial_split_is_val, EPSILON
 
 def invariant_geo_features(points: np.ndarray, normals: np.ndarray, knn: int = 15) -> np.ndarray:
     """linearity, planarity, verticality -- a rotation- and scale-invariant replacement for
@@ -203,6 +203,12 @@ def prepare_chunk_cache(processed_data_path, out_path, areas, test_area,
     if os.path.exists(out_path) and len(glob(os.path.join(out_path, '*.pt'))) > 0:
         print(f"Chunk cache already present at {out_path}; skipping.")
         return
+    if (get_model_config().get('features') or {}).get('use_global_position'):
+        raise NotImplementedError(
+            "use_global_position is wired into the column block builder, not this chunk "
+            "builder. Dropping it here would train on a feature width the config does not "
+            "describe, so this refuses instead. Use --block_mode column, or add the same "
+            "hook here.")
     os.makedirs(out_path, exist_ok=True)
     rng = np.random.default_rng(seed)
     n_chunk = 0

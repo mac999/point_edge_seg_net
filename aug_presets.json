@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "Augmentation presets for train_model.py --aug_preset <name> (--aug_presets to point at",
+    "another file). Presets used to be two hardcoded branches, which meant trying a third",
+    "recipe required a code edit -- unworkable when the same pipeline serves several domains.",
+    "",
+    "Any key here overrides the module default of the same name; unknown keys are rejected so",
+    "a typo fails the run instead of silently changing nothing.",
+    "",
+    "  full_rotate        yaw over the full circle instead of small angles",
+    "  isotropic_scale    one scale factor for all axes (preserves proportions)",
+    "  scale_range        [min, max] scale factor",
+    "  flip_prob          probability of mirroring",
+    "  tilt_std           std (radians) of small x/y rotations",
+    "  autocontrast_prob  probability of chromatic auto-contrast",
+    "  rgb_dropout_prob   probability of dropping colour entirely",
+    "  decay              whether augmentation strength decays over training"
+  ],
+
+  "legacy": {
+    "_note": "Historical setup. Measured weak: mean (prob x strength) 0.046 over 60 epochs, about an order of magnitude below standard practice.",
+    "full_rotate": false,
+    "isotropic_scale": false,
+    "scale_range": [0.9, 1.1],
+    "flip_prob": 0.0,
+    "tilt_std": 0.0,
+    "autocontrast_prob": 0.0
+  },
+
+  "strong": {
+    "_note": "What S3DIS SOTA models use (DeLA, Pointcept, KPConvX). Targets the val->test gap, which sat at a constant 8.4 points across every architecture tried -- generalization, not capacity, was the binding constraint.",
+    "full_rotate": true,
+    "isotropic_scale": true,
+    "scale_range": [0.8, 1.2],
+    "flip_prob": 0.5,
+    "tilt_std": 0.04908738521234052,
+    "autocontrast_prob": 0.2,
+    "rgb_dropout_prob": 0.2
+  },
+
+  "strong_no_flip": {
+    "_note": "For domains where mirroring changes semantics. A bridge abutment sits at a specific end of the structure, so a mirrored scene can teach the wrong end-vs-middle cue.",
+    "full_rotate": true,
+    "isotropic_scale": true,
+    "scale_range": [0.8, 1.2],
+    "flip_prob": 0.0,
+    "tilt_std": 0.04908738521234052,
+    "autocontrast_prob": 0.2,
+    "rgb_dropout_prob": 0.2
+  }
+}

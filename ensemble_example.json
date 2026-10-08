@@ -1,0 +1,54 @@
+{
+  "_comment": [
+    "Ensemble spec for `evaluate_full.py --ensemble_config`. Member softmaxes are averaged.",
+    "",
+    "`defaults` applies to every member; each member may override any of the same keys, so",
+    "checkpoints trained with DIFFERENT architecture flags can be combined -- which matters",
+    "here, because the record run (20260818_003229, E8) is the only one with directional",
+    "gating and the others are not. Architecture flags MUST match how each checkpoint was",
+    "trained or it will refuse to load.",
+    "",
+    "`weight` is optional (default 1.0) and is normalized across members.",
+    "",
+    "Run:",
+    "  python evaluate_full.py --ensemble_config ensemble_example.json \\",
+    "      --config model_params_room.json --mode chunk --sampler grid \\",
+    "      --block_size 20480 --core_max 12288 --halo 1.0 --tta_d4 8 \\",
+    "      --out logs/ensemble_e8_e5_e10.json"
+  ],
+
+  "defaults": {
+    "arch": "stencil",
+    "enc_channels": [64, 192, 320, 448],
+    "bottleneck_dim": 256,
+    "v2": {
+      "neighbors": "stencil",
+      "stencil": 2,
+      "diff": true,
+      "directional": false,
+      "base_grid": 0.04,
+      "pool_grids": [0.08, 0.16, 0.32],
+      "stencil_z": 0
+    }
+  },
+
+  "models": [
+    {
+      "_note": "E8 -- the 64.79 record run. Only member with directional gating.",
+      "weights": "logs/20260818_003229/final_model.pth",
+      "weight": 1.0,
+      "v2": { "directional": true }
+    },
+    {
+      "_note": "E5 -- 64.23, isotropic. Architecturally the most different from E8.",
+      "weights": "logs/20260815_232933/final_model.pth",
+      "weight": 1.0
+    },
+    {
+      "_note": "E10 -- 62.92, vertical stencil reach 4. Weaker alone; kept for diversity.",
+      "weights": "logs/20260819_224432/final_model.pth",
+      "weight": 0.5,
+      "v2": { "stencil_z": 4 }
+    }
+  ]
+}

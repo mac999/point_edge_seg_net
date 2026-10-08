@@ -30,127 +30,39 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
 <p align="center">Example. Input point cloud and segments in output results using PointEdgeSegNet model. Latest S3DIS Area 5 (held-out, v2 architecture): OA=87.8%, mAcc=72.6%, mIoU=64.8% with 8-view TTA (64.2 single view).
 </p>
 
+## Results at a glance
 
-## Version
+Two worked examples run on the same code; each has its own page with the full recipe, the
+data path and the numbers to check a reproduction against.
 
-- 0.1: 2025/9/21. Draft version.
-- 0.2: 2025/9/24. CLI args, bug fixed.
-- 0.3: 2025/9/26. GPU safety mode was added.
-- 0.4: 2025/9/28. Diagnose was added. Points grid generation using grid hash spatial indexing
-- 0.5: 2025/10/1. Train dataset development (area 1 to 6)
-- 0.6: 2025/10/3. Hyperparameter finetuning (support VRAM 8GB, 24GB) and Dataset augumentation (e.g. on the fly)
-- 0.7: 2025/12/30. Integrate Attention Mechanism, Focal Loss, Area 5 test
-- 0.8: 2026/1/17. Update source code and [model file](https://github.com/mac999/point_edge_seg_net/tree/main/logs/20260113_231712).
-- 0.9: 2026/2/1. Support custom train dataset with classes of points. Please refer to [model_params.json](./model_params.json).
-- 1.0: 2026/7/7. Major accuracy & large-cloud overhaul — S3DIS Area 5: **OA 86.2% / mAcc 69.0% / mIoU 59.6%** ([logs](./logs/20260707_101907)):
-  - **Context-preserving `column` block mode** (overlapping full-height columns) with a leakage-controlled *spatial* train/val split (replaces context-losing grid cells).
-  - **Coverage-guaranteed inference blocking + fixed multi-view voting** — dense/large clouds no longer collapse to a single class (uncovered points were silently labelled `ceiling`; now every point is predicted and voted).
-  - **Lovász-Softmax + Focal loss** (directly optimizes mIoU, not just accuracy) and **per-block coordinate centering** (translation invariance → smaller train/test gap).
-  - **Curvature feature fix** (true local surface-variation edge cue instead of a near-constant legacy channel), wider EdgeConv receptive field (**k=32**), **2-layer bottleneck Transformer**.
-  - New: **mIoU / mAcc metrics**, **TTA (Z-rotation) + model-ensemble inference**, **colored LAS export**, early-stopping aligned to the checkpoint metric.
-- 1.1: 2026/7/15. AMP training bug fix & retrain — S3DIS Area 5: **OA 86.60% / mAcc 69.73% / mIoU 59.99%** ([logs](./logs/20260715_204942)):
-  - **Fixed a GradScaler state-corruption bug**: the "very large gradient → skip batch" branch called `scaler.unscale_()` without a matching `scaler.update()`, so from the first skipped batch onward every optimizer step silently failed (`unscale_() has already been called…`), permanently freezing the weights. The skip branch now resets the scaler state, restoring correct AMP training.
-  - Retrained the v1.0 configuration (column mode, 60 epochs, batch 10, effective batch 60) with the fix — all metrics improved over the 20260707 baseline (OA +0.44, mAcc +0.68, mIoU +0.42); best validation accuracy 93.59%.
-  - Added `run_train_global.bat` to reproduce the training run.
-- 2.0: 2026/8/21. **Architecture rework (v2) — S3DIS Area 5: OA 87.8% / mAcc 72.6% / mIoU 64.8%** (full-coverage protocol, +4.8 mIoU over v1.1 re-scored identically). Checkpoints are **not** compatible with v1.
-  - **New backbone `models/stencil.py`**: per-layer kNN graph search is removed entirely. Neighbours are looked up on the voxel lattice with a fixed stencil (sorted keys + binary search), local aggregation is a point-wise MLP with a relative-position encoding and a feature-difference term, and down/upsampling use grid pooling with an exact inverse map. U-Net layout, feature gate and bottleneck Transformer are kept.
-  - **Speed / memory**: ~7x faster training epochs and ~3x lower training memory than v1 at equal settings; single-view inference runs in about 4 GB; measured training memory ~12-20 GB steady (see Training below).
-  - **Grid-preserving TTA** for evaluation (8 views: 90-degree rotations x mirror), matching the lattice assumption of the stencil.
-  - Architectures are registered by name in `models/` (`edgeconv` = legacy v1, `stencil` = current); select with `--arch` in `train_model.py` and `evaluate_full.py`. Checkpoints are not interchangeable between the two.
-
-
-Optimization strategy under a fixed per-block memory budget (boundary artifacts, class imbalance, generalization):
-* **Overlapping context-preserving blocks:** `column` mode builds overlapping full-height columns instead of context-losing cubic grid cells, preserving the topology of objects (e.g., columns/doors) bisected by grid boundaries.
-* **Coordinate normalization:** per-block coordinate centering (translation invariance) inside the model, applied identically at train and inference — improves generalization to unseen areas.
-* **mIoU-aware loss:** Lovász-Softmax combined with Focal loss directly optimizes per-class IoU, lifting rare classes without a recall-only bias.
-* **Multi-view voting inference:** predictions from overlapping/rotated (TTA) blocks are aggregated per point to suppress boundary noise; a coverage-guaranteed blocker ensures every point of large/dense clouds is predicted.
-* **Curvature feature fix + wider receptive field + 2-layer bottleneck Transformer** for stronger local/global context (v1 widened the EdgeConv neighbourhood to `k=32`; v2 gets the same reach from a radius-2 voxel stencil, 125 lattice offsets).
-
-Still open (future work):
-* **Global Context Injection:** append normalized global Z to features to better separate height-dependent classes (e.g., beam vs. sofa).
-* **Copy-Paste Augmentation:** copy rare-class points into wall-dominated blocks to further address imbalance. The measured bottlenecks are `column` (IoU 27.3) and `window` (47.5) — not rarity as such, since `sofa` is rarer than either (0.27% of Area 5) and already reaches 70.3. `beam` is beyond reach of any reweighting: it is 0.029% of Area 5 ground truth and stayed at IoU 0.0 even with its loss weight raised to 3.0, so the realistic targets are `column` and `window`.
+| | [Buildings — S3DIS](./building_example.md) | [Bridges — SemanticBridge](./bridge_example.md) |
+|---|---|---|
+| scene | indoor interiors, 13 classes | outdoor structures, 9 classes |
+| held out | Area 5 (78.4 M points) | 5 bridges (84.2 M points) |
+| **mIoU** | **64.8** (8-view) / 64.2 single | **69.81** single view |
+| OA | 87.8 | 91.6 |
+| parameters | 3.07 M | 3.06 M |
+| training | ~20 h, one GPU | ~38 h, one GPU |
+| released weights | `logs/20260818_003229/` | `weights/bridge_w6_final_model.pth` |
 
 <p align="center">
-<img src="./data_analysis/area_1.png" height="200"></img>
-<img src="./data_analysis/area_5.png" height="200"></img>
-<img src="./imgs/area4.jpg" height="400"></img>
+<img src="./imgs/v2_training.png" width="760"
+     alt="Training curves and Area-5 test results, v1 vs v2 under the identical protocol"><br>
+<sub>S3DIS: training curves and Area-5 results, v1 vs v2 under an identical protocol.</sub>
 </p>
 
-## Architecture v2 (models/stencil.py)
+<p align="center">
+<img src="./imgs/v2_inference_example.png" width="760"
+     alt="Inference on a held-out S3DIS room"><br>
+<sub>Inference on a held-out room (Area 5 <code>office_1</code>, 816 K points).</sub>
+</p>
 
-Version 2.0 replaces the training/inference backbone. To avoid confusion:
-
-| | v1 (legacy) | v2 (current) |
-|---|---|---|
-| Module | `models/edgeconv.py` | `models/stencil.py` |
-| Class name | `PointEdgeSegNet` | `PointEdgeSegNet` (same name; the module path disambiguates) |
-| Neighbourhoods | kNN graph per layer (`knn_graph`) | fixed voxel-stencil lookup (no search) |
-| Local aggregation | EdgeConv (per-edge MLP) | point-wise MLP + relative-position encoding + feature-difference term, max pooling |
-| Down / upsampling | FPS or grid ratio + kNN interpolation | grid pooling with exact inverse map |
-| Checkpoints | v1 only | v2 only (not interchangeable) |
-| Select with | `--arch edgeconv` | `--arch stencil` (plus `--v2_*` options); `v1`/`v2` accepted as aliases |
-
-Architectures live under `models/` and are named after what they are, not after a version number — a future backbone is one new module plus one registry entry in `models/__init__.py`. `train_model.py`, `inference.py` and `evaluate_full.py` all build their network through that registry, so a checkpoint is loaded by the architecture named in `--arch`. Both paths share the same data pipeline, losses, and evaluation protocol. The key idea of v2: because the input is voxelized and every pooling stage stays on a voxel lattice, a point's spatial neighbours can be looked up at fixed lattice offsets (sorted integer keys + binary search) instead of searched — kNN-quality neighbourhoods at serialization-level cost.
-
-### Training with v2
-
-```bash
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # recommended; tames allocator growth
-
-python train_model.py \
-    --config model_params_room.json \
-    --processed_data_path ./processed_s3dis --block_data_path ./chunk_s3dis \
-    --block_size 20480 \
-    --train_areas Area_1 Area_2 Area_3 Area_4 Area_6 --test_area Area_5 \
-    --num_epochs 600 \
-    --arch stencil --v2_neighbors stencil --v2_stencil 2 --v2_diff --v2_directional \
-    --enc_channels 64,192,320,448 --bottleneck_dim 256 \
-    --batch_size 4 --val_batch_size 4 --learning_rate 0.003 \
-    --block_mode column --sampler grid \
-    --focal_gamma 2.0 --oversample_rare 1.0 --aug_preset strong
-```
-
-This is the configuration of the released run (`logs/20260818_003229`), which additionally raised the `beam` class weight to 3.0 — worth ~nothing on Area 5 (its beam ground truth is 0.03% of the points), so `model_params_room.json` as shipped is the sensible starting point. As measured, the command above sits at ~12-20 GB steady. Reducing `--batch_size`/`--val_batch_size` to 2 brings it to roughly 8-10 GB at ~1.7x the epoch time; tighter budgets than that have not been benchmarked. Cosine schedule with early stopping typically ends near epoch 520.
-
-### Evaluation (full-coverage protocol)
-
-```bash
-python evaluate_full.py --model_weights logs/<run>/final_model.pth \
-    --config model_params_room.json --mode chunk --sampler grid \
-    --block_size 20480 --core_max 12288 --halo 1.0 \
-    --arch stencil --v2_neighbors stencil --v2_stencil 2 --v2_diff --v2_directional \
-    --enc_channels 64,192,320,448 --bottleneck_dim 256 \
-    --tta_d4 8
-```
-
-Architecture flags must match training — the released `logs/20260818_003229/final_model.pth` needs exactly the `--v2_*` set above, and a mismatch is reported as a checkpoint/architecture error rather than silently loading. `--tta_d4 8` enables grid-preserving test-time augmentation (four 90-degree rotations x mirror); scale-based TTA is intentionally not used because it would break the voxel lattice the stencil relies on. Evaluate `final_model.pth` as well as `best_model.pth` — validation-based selection does not reliably pick the better test model on this benchmark.
-
-### Experimental: block-context (buffered wide-area) features
-
-Enable with `--block_context` on `train_model.py` / `inference.py`, or `"features": {"use_block_context": true}` in `model_params.json`.
-
-Blocks are sized for VRAM, so the model never sees what lies *around* a block — the "long-range context between blocks" bottleneck named above. Instead of enlarging blocks (which costs VRAM), each block's XY bounds are expanded by `context_buffer` metres and the points of **neighbouring blocks** inside that buffer are aggregated into a small statistics vector: horizontal/vertical surface shares (from normals), mean surface variation (edge-ness), block/buffer density ratio, and a normalized Z-histogram (`context_bins`). This vector is appended to every point of the block as constant channels (`context_dim = 4 + context_bins`, so 10D → 18D with the shipped `context_bins` 4), so the network learns each point's label *conditioned on a wide-area summary* — at zero VRAM cost (input channels only, ≈+4K params) and computed once at block-build time.
-
-Related work (input-level context injection): PointNet's per-block normalized room-global coordinates, Engelmann et al. 2017 (enlarged/multi-scale block context), SCF-Net's global contextual features (CVPR 2021), classical multi-scale eigenfeatures (verticality etc., Weinmann et al. 2015 / Hackel et al. 2016), and the buffered-tile ("halo") practice of large-scale GIS point-cloud pipelines. This option combines the buffered-tile idea with handcrafted wide-area statistics as block-constant input channels.
-
-A/B comparison (block caches are kept separate automatically — the context run writes to `<block_data_path>_ctx`):
-
-```bash
-# baseline (identical to current pipeline)
-python train_model.py --no_block_context --no_wandb
-# with block context (2 m buffer, 4 z-histogram bins)
-python train_model.py --block_context --context_buffer 2.0 --context_bins 4 --no_wandb
-# inference feature layout must match how the model was trained
-python inference.py --block_context -m ./logs/<ctx_run>/best_model.pth -i ./sample/area_6_conferenceRoom_1.txt
-```
-
-Notes: the released checkpoints carry no context channels (7D for the v2 run, 10D for v1), so enabling context requires retraining; a stale block cache with the wrong feature width is detected and reported with an actionable error.
-
-Training-side settings already in place:
-- **Increased depth**: 2-layer bottleneck Transformer on top of the U-Net (the bottleneck operates on the downsampled set, so the extra depth costs almost no memory). Both backbones keep it.
-- **Tuned neighbourhood**: in v1 the `EdgeConv` graph was raised to `k=32`, with batch/accumulation adjusted to keep the effective batch at 60 (measured whole-GPU peak ~18.7 GB). v2 replaces the kNN graph with a radius-2 voxel stencil, so `k` is no longer a tuning knob.
-- **LR warm-up + Cosine annealing**: linear warm-up precedes `CosineAnnealingLR` (`T_max = num_epochs`, so the LR fully anneals by the last epoch).
-- **AdamW optimizer** with weight decay for better generalization.
+<p align="center">
+<img src="./imgs/bridge_segmentation_example.png" width="760"
+     alt="Elevation view of a held-out bridge: ground truth, prediction, and misclassified points"><br>
+<sub>Inference on a held-out bridge, seen along the deck axis: labels, prediction, and where
+the two disagree.</sub>
+</p>
 
 ## Features
 
@@ -168,96 +80,6 @@ Training-side settings already in place:
 - OA / mAcc / **mIoU** evaluation (standard S3DIS metric) reported to console and JSON
 - Lovász-Softmax + Focal loss and in-model per-block coordinate normalization for accuracy under limited VRAM
 - Colored **LAS** export (per-class RGB + `classification` field) for direct viewing in CloudCompare, etc.
-
-## Performance Log
-
-Latest (v2.0 architecture, `models/stencil.py`), S3DIS with Area 5 held out for test. Scoring uses the full-coverage protocol: every one of the 78.4M original points of Area 5 is predicted and scored (`evaluate_full.py`).
-
-| Metric | Value |
-|--------|-------|
-| Mean IoU (mIoU) | **64.8%** (8-view TTA) / 64.2% single view |
-| Overall Accuracy (OA) | **87.8%** |
-| Mean Class Accuracy (mAcc) | **72.6%** |
-| Parameters | ~3.0M |
-| Training | 600-epoch schedule, ~2 min/epoch (~20 h total); measured ~12-20 GB steady (see Training with v2) |
-| Inference GPU memory | ~4 GB, constant in cloud size (chunked) |
-
-<p align="center">
-<img src="./imgs/v2_training.png" width="760"></img></br>
-Training curves and Area-5 test results, v1 vs v2 under the identical protocol.
-</p>
-
-<p align="center">
-<img src="./imgs/v2_inference_example.png" width="760"></img></br>
-Inference example: Area 5 office_1 (816K points, held out from training), chunked v2 inference with 8-view TTA; 83.6% point accuracy on this room.
-</p>
-
-For reference, the v1 architecture re-scored under this same protocol reaches mIoU 58.8 — the published v1.1 figure (mIoU 59.99, `logs/20260715_204942`) used the earlier block-sampled protocol and is not directly comparable.
-
-- [Train Model Performance (v2.0)](./logs/20260818_003229/training_summary.json)
-- [Test Data Prediction Performance (v2.0, full coverage + 8-view TTA)](./logs/20260818_003229/test_full_final_d4tta.json)
-- [Trained model and Log files (v2.0)](./logs/20260818_003229). Train/Val (spatial split) and Test on S3DIS v1.2 aligned.
-- Previous baselines: v1.1 OA 86.60% / mAcc 69.73% / mIoU 59.99% ([logs/20260715_204942](./logs/20260715_204942)); v1.0 OA 86.16% / mAcc 69.05% / mIoU 59.57% ([logs/20260707_101907](./logs/20260707_101907))
-
-Per-class IoU (Area 5, v2 + 8-view TTA, all 78,404,494 points scored):
-
-| Class | IoU | Acc | Share of Area 5 GT |
-|---|---|---|---|
-| floor | 96.9 | 98.3 | 16.6% |
-| ceiling | 91.5 | 94.7 | 19.4% |
-| chair | 88.7 | 95.2 | 1.9% |
-| wall | 81.6 | 93.2 | 29.3% |
-| table | 80.4 | 90.9 | 3.8% |
-| door | 70.6 | 83.7 | 3.0% |
-| sofa | 70.3 | 78.1 | 0.3% |
-| bookcase | 68.9 | 78.0 | 10.4% |
-| board | 66.6 | 76.8 | 1.2% |
-| clutter | 52.0 | 73.5 | 8.9% |
-| **window** | **47.5** | 49.1 | 3.5% |
-| **column** | **27.3** | 31.8 | 1.8% |
-| **beam** | **0.0** | 0.0 | 0.03% |
-
-Ten of the thirteen classes sit between 52 and 97; almost the entire remaining gap is three classes. Raising just `window`, `column` and `beam` to 60 IoU each would put mIoU at 72.9. `beam` is not a tuning problem — Area 5 ground truth contains 22,424 beam points (0.029%), and a 3.0 loss weight left it at 0.0 — while `column` resisted both a wider receptive field and directional gating (see VERSIONS.md, E8/E10).
-
-<p align="center">
-<img src="./logs/20260818_003229/training_plots.png" width="600"></img></br>
-Training curves of the v2.0 run (logs/20260818_003229, 600 epochs).
-</p>
-
-### Where it stands (S3DIS Area 5)
-
-Accuracy alone does not decide whether a model is usable on your own data. Three practical criteria matter as much: **Install** (pip wheels vs compiled C++/CUDA extensions), **Custom data** (own classes without rewriting dataset code), and **Large clouds** (a documented path from a 100M+ point raw scan to training/inference).
-
-**This model** — the reference row every trade-off below is measured against:
-
-| Model | mIoU | mAcc | Params | Install | Custom data | Large clouds |
-|---|---|---|---|---|---|---|
-| **PointEdgeSegNet v2 (2026)** | **64.8** | **72.6** | **3.07M** | ✓ pip only | ✓ JSON config + `convert_dataset.py` | ✓ chunking, voting, LAS output |
-
-**More accurate, but you pay for it** — every mIoU point above is bought with compiled extensions, heavier preprocessing, bigger models, or multi-GPU recipes:
-
-| Model | mIoU | Params | Install | Custom data | Large clouds | Cost of the extra accuracy |
-|---|---|---|---|---|---|---|
-| Point Transformer V3 (2024) | 73.4 | ~46M | ✗ spconv + flash-attn + pointops | ✗ Pointcept dataset class | △ no raw-cloud guide | heaviest dependency stack; official recipe is multi-GPU |
-| PointNeXt-XL (2022) | 70.5 | ~42M | ✗ CUDA ops (openpoints) | △ S3DIS-centric | ✗ | 14x this model; score depends on heavy training recipe |
-| Superpoint Transformer (2023) | 68.9 | ~0.8M | △ geometric-partition dependencies | △ partition parameters need tuning | ✓ superpoint partition scales to large scenes | the one row that is both smaller and more accurate; accuracy rides on partition quality |
-| KPConv (2019) | 67.1 | ~15M | ✗ C++ wrappers | △ code-level work | △ heavy preprocessing | 5x this model; reprojection step for full-density output |
-| MinkowskiNet (2019) | 65.4 | ~38M | ✗ MinkowskiEngine build | △ code-level work | △ depends on voxel size | closest row above (+0.6); the engine build is the usual blocker |
-
-**Simpler era, lower accuracy** — what this model replaces:
-
-| Model | mIoU | Params | Why not |
-|---|---|---|---|
-| RandLA-Net (2020) | ~62.5\* | ~1.2M | random sampling drops thin objects; official code TF1.x |
-| SPG (2018) | 58.0 | ~0.3M | unmaintained since ~2019; partition errors propagate |
-| PointNet++ (2017) | ~53.5\* | ~1M | dated accuracy; slow FPS/ball-query on large clouds |
-| DGCNN (2018) | ~48\* | ~1M | kNN memory forces small blocks; no large-cloud pipeline |
-
-\* Commonly reproduced figures; not reported for Area 5 in the original papers.
-
-Only this project's row is measured here — every other mIoU is the published figure, scored under that method's own protocol rather than the full-coverage protocol used above. Parameter counts are the commonly cited figures for each method's reference configuration and differ between paper and public implementations; the 3.07M is counted from the released checkpoint.
-
-The remaining gap to the rows above (0.6 mIoU to MinkowskiNet, 2.3 to KPConv, 8.6 to PTv3) is an operator/compute trade — every method above also chunks, samples, or voxelizes large scenes; the difference this project aims at is keeping installation, custom data, and the large-cloud path simple while closing that gap. Per the per-class table, nearly all of that gap is concentrated in three classes rather than spread across the label set.
 
 ## Installation
 
@@ -380,241 +202,6 @@ On Windows, **`run_infer_global.bat <model.pth> [input.txt]`** wraps the context
 
 > The architecture and feature settings must match how the model was trained (`--arch` plus the `--v2_*` flags, same config / `--block_context` state); a mismatch fails fast with a checkpoint/architecture error rather than loading silently.
 
-## Dataset Preparation
-
-### Using Custom Point Cloud Datasets
-
-**PointEdgeSegNet now supports custom point cloud datasets!** You can train and infer on any point cloud dataset by configuring the `model_params.json` file with your own class names, colors, and parameters.
-
-#### Configuration File: model_params.json
-
-Create or modify `model_params.json` to define your dataset configuration:
-
-```json
-{
-  "dataset_name": "Your_Dataset_Name",
-  "num_classes": 8,
-  "class_names": ["class1", "class2", "class3", ...],
-  "class_colors": [[R, G, B], [R, G, B], ...],
-  "class_weights": [1.0, 0.8, 0.9, ...],
-  "num_features": 10,
-  "block_size": 8192,
-  "preprocessing": {
-    "grid_min_coords": [0.0, 0.0, 0.0],
-    "grid_resolution": 1.0
-  },
-  "description": "Description of your dataset"
-}
-```
-
-**Configuration Parameters:**
-
-| Parameter | Type | Description | Example |
-|-----------|------|-------------|---------|
-| `dataset_name` | string | Name of your dataset | "Custom_Outdoor_Scene" |
-| `num_classes` | int | Number of semantic classes | 8 |
-| `class_names` | array | List of class names | ["ground", "building", "tree", ...] |
-| `class_colors` | array | RGB colors for visualization (0-255) | [[139, 69, 19], [255, 0, 0], ...] |
-| `class_weights` | array | Loss weights for class balancing | [1.0, 0.8, 0.9, ...] |
-| `num_features` | int | Feature dimension (default: 10) | 10 |
-| `block_size` | int | Points per block (default: 8192) | 8192 |
-| `preprocessing.grid_min_coords` | array | Minimum coordinates for grid normalization | [0.0, 0.0, 0.0] |
-| `preprocessing.grid_resolution` | float | Grid resolution for spatial hashing | 1.0 |
-
-**Example Configurations:**
-
-1. **Indoor Scene (S3DIS-like)**: `model_params.json`
-   - 13 classes: ceiling, floor, wall, furniture, etc.
-   - Fine grid resolution (0.5) for detailed indoor spaces
-   - Negative min_coords for normalized coordinate handling
-
-2. **Outdoor Scene**: `model_params_example_outdoor.json`
-   - 8 classes: ground, building, tree, vehicle, etc.
-   - Coarser grid resolution (2.0) for large outdoor spaces
-   - Zero-origin min_coords for outdoor coordinates
-
-#### Training with Custom Configuration
-
-```bash
-# Train with your custom configuration
-python train_model.py --config model_params_custom.json
-
-# Train with outdoor example
-python train_model.py --config model_params_example_outdoor.json \
-    --processed_data_path ./processed_outdoor \
-    --block_data_path ./block_outdoor
-```
-
-#### Inference with Custom Configuration
-
-```bash
-# Inference with custom model
-python inference.py --config model_params_custom.json \
-    --model_weights ./logs/custom_model/best_model.pth \
-    --input_cloud ./data/custom_scene.txt
-```
-
-### Public Datasets for Infrastructure & Urban Point Clouds
-
-Below is a curated list of **publicly available, labeled point cloud datasets** for outdoor / infrastructure domains (bridge, tunnel, railway, earthwork/utilities, urban and aerial scenes). Because PointEdgeSegNet reads a configurable input format (`input` / `features` blocks in `model_params.json`: enable/disable RGB, set `spatial_scale`, map input columns), these datasets can be adapted for training after converting them to the `X Y Z [R G B ...]` text/array format the preprocessor expects. Most are distributed as **LAS/PLY**, so a one-time conversion (e.g. with `laspy`, `open3d`, or `PDAL`) is usually required, and `spatial_scale` should be tuned to each domain's point spacing (indoor ≈ 0.1 m, bridge/tunnel ≈ 0.3–1 m, aerial/terrain ≈ 1–10 m).
-
-> Always check each dataset's own **license / terms of use** before training or redistribution. Several require a short data-request form.
-
-| Domain | Dataset | Description (sensor · scale · classes) | Format | Access / Download |
-|--------|---------|----------------------------------------|--------|-------------------|
-| **Bridge** | SemanticBridge | TLS + MLS scans of **20 bridges** (UK & Germany), ~245M points, **9 classes** (abutment, superstructure, deck, pillar, railing, vegetation, ground, sign, unlabeled); includes sensor domain-gap analysis | PLY/LAS | [GitHub](https://github.com/mvg-inatech/3d_bridge_segmentation) · [paper](https://arxiv.org/abs/2512.15369) |
-| **Bridge** | BrPCD (Bridge Point Cloud Databank) | Multi-type bridge databank, **98 bridges** (10 real-scanned + 88 augmented/virtual), 2,827 labeled components; suspension / cable-stayed / girder types | PCD | [paper (Google Drive link inside)](https://onlinelibrary.wiley.com/doi/10.1111/mice.13384) |
-| **Tunnel** | STSD (Subway Tunnel Seg. Dataset) | rMMS mobile LiDAR, **>2.26B points** over 2,700 m, **12 classes**, 3 tunnel shapes; point clouds + projected images | LAS (+images) | [GitHub](https://github.com/lichking2017/STSD) (data-request form; GPL-3.0) |
-| **Tunnel** | Seg2Tunnel | Segmental tunnel-lining point clouds from **5 tunnels / 1,300 rings**, hierarchical (ring / block / component) annotations | LAS/PLY | [paper](https://www.sciencedirect.com/science/article/abs/pii/S0886779824001536) (data on request) |
-| **Railway** | WHU-Railway3D | Mobile LiDAR, **~4.6B points** over ~30 km (urban/rural/plateau), **11 classes** (rails, masts, overhead lines, fences, …); includes intensity, scan angle, returns | PLY + `.npy` labels | [GitHub](https://github.com/WHU-USI3DV/WHU-Railway3D) (data-request form) |
-| **Earthwork / Utilities** | OpenTrench3D | Open-trench underground-utility scans, **310 clouds / 528M points**, **5 classes** (utilities, surroundings, …); first public trench dataset (CVPRW 2024) | PLY | [GitHub](https://github.com/SimonBuusJensen/OpenTrench3D) |
-| **Urban (MLS)** | Toronto-3D | Mobile LiDAR of ~1 km urban roadway, **78.3M points**, **8 classes** (road, marking, natural, building, utility line, pole, car, fence); XYZ+RGB+intensity | LAS/PLY | [GitHub](https://github.com/WeikaiTan/Toronto-3D) (CC BY-NC 4.0) |
-| **Urban (UAV)** | SensatUrban | UAV photogrammetry of UK cities, **~3B points** over ~6 km², **13 classes** | PLY | [GitHub](https://github.com/QingyongHu/SensatUrban) (form; MIT code) |
-| **Aerial (ALS)** | DALES | Airborne LiDAR, **>0.5B points** over 10 km² (40 scenes), **8 classes** (ground, vegetation, cars, trucks, poles, power lines, fences, buildings) | multiple (PLY/LAS/…) | [Project page](https://sites.google.com/a/udayton.edu/vasari1/research/earth-vision/dales) · [paper](https://arxiv.org/abs/2004.11985) |
-| **Aerial (photogrammetry)** | STPLS3D | Real + synthetic aerial photogrammetry, **>17 km²**, up to **18 classes**, 0.1 m spacing; includes terrain/ground | PLY | [Website](https://www.stpls3d.com/data) · [GitHub](https://github.com/meidachen/STPLS3D) |
-
-Notes:
-- **Indoor reference:** the default configuration targets **S3DIS** (indoor), described below.
-- **Roads / driving** (not infrastructure-specific but widely used): [SemanticKITTI](http://semantic-kitti.org/), [Paris-Lille-3D](https://npm3d.fr/paris-lille-3d), and [nuScenes-lidarseg](https://www.nuscenes.org/nuscenes) provide additional large-scale urban/road point clouds.
-- After conversion, set the appropriate `num_classes`, `class_names`, `class_colors`, `input.rgb_cols` (or `use_rgb: false` for colorless LiDAR), and `features.spatial_scale` in `model_params.json` (see [model_params_example_terrain.json](model_params_example_terrain.json) for a colorless, large-scale example).
-
-#### Converting a dataset to this repo's format
-
-Use [convert_dataset.py](convert_dataset.py) to turn a downloaded dataset into the processed `.pt` format the training pipeline consumes (same `Data(pos, x, y)` objects as the S3DIS preprocessor). It reads **PLY / LAS / TXT / paired-NPY**, remaps each dataset's class ids, extracts the configured features, writes `processed_<name>/train|test/<scene>.pt`, and can emit a ready-to-use `model_params_<name>.json`.
-
-Built-in profiles (override any field from the CLI): `toronto3d`, `sensaturban`, `dales`, `stpls3d`, `opentrench3d`, `whu_railway3d`, `semanticbridge`.
-
-```bash
-# 0) install optional readers for the format you downloaded
-pip install plyfile        # .ply    (Toronto-3D, SensatUrban, OpenTrench3D, STPLS3D, DALES-ply)
-pip install laspy          # .las/.laz (DALES-las, some bridge/tunnel exports)
-
-# 1) inspect first (no files written): checks parsing, point counts, labeled ratio
-python convert_dataset.py --dataset opentrench3d --input_dir ./raw/OpenTrench3D --dry_run
-
-# 2) convert + emit a matching config
-python convert_dataset.py --dataset opentrench3d --input_dir ./raw/OpenTrench3D \
-    --output_dir ./processed_opentrench3d --emit_config
-
-# 3) train with the generated config
-python train_model.py --config model_params_opentrench3d.json \
-    --processed_data_path ./processed_opentrench3d --train_areas train --test_area test \
-    --block_mode column --no_wandb --cooldown_sec 0
-
-# Colorless aerial LiDAR that ships pre-split into train/ and test/ folders (e.g. DALES):
-python convert_dataset.py --dataset dales --input_dir ./raw/DALES/train --split train --no_rgb --emit_config
-python convert_dataset.py --dataset dales --input_dir ./raw/DALES/test  --split test  --no_rgb
-```
-
-Notes on the converter:
-- `.ply`/`.las` field names differ between download versions — override with `--label_field`, force color with `--rgb`/`--no_rgb`, and tune the analysis scale with `--spatial_scale`.
-- Large-coordinate clouds (UTM, e.g. Toronto-3D) are auto-translated to a local origin to avoid float32 precision loss (disable with `--no_recenter`).
-- Very large scenes (hundreds of millions of points) should be tiled before conversion, since normal/curvature/spatial features are computed per file.
-
-### Stanford 3D Indoor Spaces Dataset (S3DIS)
-
-1. Download the S3DIS dataset from [Stanford Vision Lab](https://cvgl.stanford.edu/resources.html) and [point cloud storage](https://sdss.redivis.com/datasets/9q3m-9w5pa1a2h/files)
-2. Extract the dataset to `./s3dis_v1.2_aligned/` directory
-3. Run data preprocessing with input_path, output_path arguments:
-
-```bash
-# S3DIS preprocessing with default configuration
-python data_preparation.py --config model_params.json
-
-# Custom data preparation with specific areas
-python data_preparation.py --config model_params.json \
-    --s3dis_path ./s3dis_v1.2_aligned \
-    --save_path ./processed_s3dis \
-    --areas Area_1 Area_2 Area_3
-```
-
-The preprocessing script will:
-- Convert raw point cloud data to PyTorch Geometric format. You can download [the converted point cloud and PLY files](https://drive.google.com/drive/folders/1QdISVNKUnVrUVxugQrmezWmNuL78ZXoq)
-- Calculate geometric features (normals, curvature)
-- Split data into 8192-point blocks for efficient training
-- Save processed data to `./processed_s3dis/`
-
-### Supported Classes
-
-#### S3DIS Dataset (Default Configuration)
-
-The default model supports 13 semantic classes for indoor scene segmentation:
-
-| Class ID | Class Name | RGB Color | Color Name | Hex Code |
-|----------|------------|-----------|------------|----------|
-| 0 | ceiling | (233, 229, 107) | Light Yellow | #E9E56B |
-| 1 | floor | (95, 156, 196) | Light Blue | #5F9CC4 |
-| 2 | wall | (179, 116, 81) | Brown | #B37451 |
-| 3 | beam | (241, 149, 131) | Light Coral | #F19583 |
-| 4 | column | (81, 163, 163) | Teal | #51A3A3 |
-| 5 | window | (223, 160, 168) | Light Pink | #DFA0A8 |
-| 6 | door | (142, 86, 114) | Dark Pink | #8E5672 |
-| 7 | table | (153, 223, 138) | Light Green | #99DF8A |
-| 8 | chair | (149, 149, 241) | Light Purple | #9595F1 |
-| 9 | sofa | (107, 229, 233) | Cyan | #6BE5E9 |
-| 10 | bookcase | (233, 107, 229) | Magenta | #E96BE5 |
-| 11 | board | (107, 233, 107) | Bright Green | #6BE96B |
-| 12 | clutter | (160, 160, 160) | Gray | #A0A0A0 |
-
-**Color Scheme Design:**
-- **Structural elements** (ceiling, floor, wall): Natural tones (yellow, blue, brown)
-- **Architectural features** (beam, column, window, door): Warm and cool contrasts
-- **Furniture** (table, chair, sofa, bookcase): Vibrant colors for easy identification
-- **Functional items** (board): Bright green for visibility
-- **Miscellaneous** (clutter): Neutral gray
-
-#### Custom Dataset Classes
-
-You can define your own classes in `model_params.json`. For example, an outdoor scene configuration:
-
-| Class ID | Class Name | RGB Color | Description |
-|----------|------------|-----------|-------------|
-| 0 | ground | (139, 69, 19) | Ground surface |
-| 1 | building | (255, 0, 0) | Building structures |
-| 2 | tree | (0, 255, 0) | Trees and vegetation |
-| 3 | vehicle | (0, 0, 255) | Cars, trucks, etc. |
-| 4 | road | (128, 128, 128) | Road surfaces |
-| 5 | vegetation | (34, 139, 34) | Low vegetation |
-| 6 | pedestrian | (255, 255, 0) | People |
-| 7 | others | (128, 0, 128) | Miscellaneous objects |
-
-**Tips for Defining Custom Classes:**
-1. Choose distinct RGB colors for easy visual discrimination
-2. Set `class_weights` based on class frequency (higher weights for rare classes)
-3. Adjust `grid_resolution` based on scene scale (smaller for indoor, larger for outdoor)
-4. Set `grid_min_coords` to normalize your coordinate system
-
-### S3DIS dataset Characteristics
-
-The S3DIS dataset is not uniform. Each of the 6 areas, sourced from 3 different buildings, has a unique size, layout, and purpose. This leads to significant variations in point cloud size and class distribution. A precise statistical breakdown per area is not officially provided and requires manual data analysis.
-
-| Area | Building Source | Primary Room Types | Expected Characteristics |
-| :--- | :--- | :--- | :--- |
-| **Area 1** | Building 1 | Offices, conference rooms, hallways | High density of furniture (`table`, `chair`, `bookcase`). |
-| **Area 2** | Building 2 | Lounge, hallways, offices | Similar to Area 1, but with a potentially higher proportion of `sofa`. |
-| **Area 3** | Building 1 | Open spaces, hallways, restrooms | Dominated by structural elements (`wall`, `floor`, `ceiling`); sparse furniture. |
-| **Area 4** | Building 2 | Offices, hallways, storage areas | Similar characteristics to other office-centric areas. |
-| **Area 5** | Building 3 | Auditorium, lobby, offices, hallways | The most diverse area; likely the largest point cloud. In example, high chair count due to the auditorium. Frequently used as a test set. |
-| **Area 6** | Building 1 | Hallways, offices, pantry | Office-centric distribution, similar to Area 1. |
-
-#### Pros
-
-* **Realistic Diversity**: The variation mimics real-world scenarios where models must adapt to different environments.
-* **Robustness Testing**: The distinct nature of each area provides an excellent framework for testing a model's generalization capabilities.
-
-#### Cons
-
-* **Data Imbalance**: The dataset has a significant class imbalance not only overall but also within and between areas.
-* **Evaluation Bias**: Testing on a single area (e.g., Area 5) can lead to a misleading evaluation of a model's performance, as it may be over-fitted to the specific objects and layouts of the training areas.
-
-To ensure a robust evaluation, consider the following:
-
-* **Use 6-Fold Cross-Validation**: The standard evaluation protocol for S3DIS is **6-fold cross-validation**. You train on 5 areas and test on the remaining one, repeating this process for all 6 areas. This ensures the model is evaluated against all environmental types.
-
-* **Be Aware of Bias**: A model's performance on a specific hold-out area is heavily influenced by the composition of the training areas. For instance, if you test on Area 5, but none of the training areas had a similar space like an auditorium, the performance on certain classes might suffer.
-
-* **Consider Data Augmentation**: Employ data augmentation strategies that account for the dataset's diversity. This can help the model generalize better by creating more balanced exposure to different types of environments and objects.
-
 ## Model Architecture
 
 ### PointEdgeSegNet Theory
@@ -671,7 +258,353 @@ The encoder-decoder structure with skip connections:
 - **Geometric Feature Integration**: Leverages Open3D for robust normal/curvature computation
 - **Memory Efficient Processing**: Block-based training and inference
 
-## Train model and Inference 
+## Architecture v2 (models/stencil.py)
+
+Version 2.0 replaces the training/inference backbone. To avoid confusion:
+
+| | v1 (legacy) | v2 (current) |
+|---|---|---|
+| Module | `models/edgeconv.py` | `models/stencil.py` |
+| Class name | `PointEdgeSegNet` | `PointEdgeSegNet` (same name; the module path disambiguates) |
+| Neighbourhoods | kNN graph per layer (`knn_graph`) | fixed voxel-stencil lookup (no search) |
+| Local aggregation | EdgeConv (per-edge MLP) | point-wise MLP + relative-position encoding + feature-difference term, max pooling |
+| Down / upsampling | FPS or grid ratio + kNN interpolation | grid pooling with exact inverse map |
+| Checkpoints | v1 only | v2 only (not interchangeable) |
+| Select with | `--arch edgeconv` | `--arch stencil` (plus `--v2_*` options); `v1`/`v2` accepted as aliases |
+
+Architectures live under `models/` and are named after what they are, not after a version number — a future backbone is one new module plus one registry entry in `models/__init__.py`. `train_model.py`, `inference.py` and `evaluate_full.py` all build their network through that registry, so a checkpoint is loaded by the architecture named in `--arch`. Both paths share the same data pipeline, losses, and evaluation protocol. The key idea of v2: because the input is voxelized and every pooling stage stays on a voxel lattice, a point's spatial neighbours can be looked up at fixed lattice offsets (sorted integer keys + binary search) instead of searched — kNN-quality neighbourhoods at serialization-level cost.
+
+### Training with v2
+
+```bash
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # recommended; tames allocator growth
+
+python train_model.py \
+    --config model_params_room.json \
+    --processed_data_path ./processed_s3dis --block_data_path ./chunk_s3dis \
+    --block_size 20480 \
+    --train_areas Area_1 Area_2 Area_3 Area_4 Area_6 --test_area Area_5 \
+    --num_epochs 600 \
+    --arch stencil --v2_neighbors stencil --v2_stencil 2 --v2_diff --v2_directional \
+    --enc_channels 64,192,320,448 --bottleneck_dim 256 \
+    --batch_size 4 --val_batch_size 4 --learning_rate 0.003 \
+    --block_mode chunk --room_grid 0.04 --core_max 12288 --halo 1.0 --sampler grid \
+    --focal_gamma 2.0 --oversample_rare 1.0 --aug_preset strong
+```
+
+`--block_mode chunk` is the partition the record was trained on, and the same one
+`evaluate_full.py --mode chunk` scores with: each room is voxelized at `--room_grid`, the
+voxels are KD-split into cores of at most `--core_max`, and every core carries a `--halo`
+ring of context the network sees but is never supervised on. Verified to rebuild the
+released `chunk_s3dis` cache exactly (same block count, feature width and core sizes).
+
+Earlier revisions of this command said `--block_mode column`, which is a *different*
+builder — overlapping full-height columns at full resolution. It appeared to work only
+because a pre-built `chunk_s3dis/` was already on disk and silently reused; on a clean
+checkout it builds its own cache and the run then aborts on a feature-width mismatch.
+Column mode remains available and is the right choice where rooms are not dense enough to
+need voxelizing (see `domains/bridge.json`), but it does not reproduce the S3DIS numbers.
+
+This is the configuration of the released run (`logs/20260818_003229`), which additionally raised the `beam` class weight to 3.0 — worth ~nothing on Area 5 (its beam ground truth is 0.03% of the points), so `model_params_room.json` as shipped is the sensible starting point. As measured, the command above sits at ~12-20 GB steady. Reducing `--batch_size`/`--val_batch_size` to 2 brings it to roughly 8-10 GB at ~1.7x the epoch time; tighter budgets than that have not been benchmarked. Cosine schedule with early stopping typically ends near epoch 520.
+
+### Evaluation (full-coverage protocol)
+
+```bash
+python evaluate_full.py --model_weights logs/<run>/final_model.pth \
+    --config model_params_room.json --mode chunk --sampler grid \
+    --block_size 20480 --core_max 12288 --halo 1.0 \
+    --arch stencil --v2_neighbors stencil --v2_stencil 2 --v2_diff --v2_directional \
+    --enc_channels 64,192,320,448 --bottleneck_dim 256 \
+    --tta_d4 8
+```
+
+Architecture flags must match training — the released `logs/20260818_003229/final_model.pth` needs exactly the `--v2_*` set above, and a mismatch is reported as a checkpoint/architecture error rather than silently loading. `--core_max` and `--halo`, by contrast, are **scoring-side knobs that do not have to match training** (see [building_example.md](./building_example.md#tuning-the-scoring-knobs---core_max---halo)). `--tta_d4 8` enables grid-preserving test-time augmentation (four 90-degree rotations x mirror); scale-based TTA is intentionally not used because it would break the voxel lattice the stencil relies on. Evaluate `final_model.pth` as well as `best_model.pth` — validation-based selection does not reliably pick the better test model on this benchmark.
+
+### Matched-geometry scoring (`--domain`, `--protocol`)
+
+A checkpoint has to be scored on the geometry it was trained on. `--domain` reads that
+geometry — block size, window/stride, voxel lattice, architecture — back out of the run's
+own recipe instead of having it retyped; explicit flags still win.
+
+```bash
+python evaluate_full.py --domain bridge_w6 --protocol single \
+    --model_weights weights/bridge_w6_final_model.pth --out score.json
+
+# or through the wrapper (sets PYTORCH_CUDA_ALLOC_CONF and pins one GPU)
+./run_domain_eval.sh bridge_w6 weights/bridge_w6_final_model.pth single
+```
+
+`--protocol` names the inference protocol so a reported number says how it was produced:
+`single` (stride = window, one view), `overlap` (stride = window/2), `mirror` (two views),
+`overlap_mirror` (both). Compare `single` against published baselines that vote once, and
+report the others as a separate row rather than in place of it. Scoring batch width also
+moves the result slightly, which is why `--domain` takes it from the recipe as well.
+
+For the bridge benchmark, [bridge_example.md](./bridge_example.md) lists the expected figure per protocol.
+
+### Experimental: block-context (buffered wide-area) features
+
+Enable with `--block_context` on `train_model.py` / `inference.py`, or `"features": {"use_block_context": true}` in `model_params.json`.
+
+Blocks are sized for VRAM, so the model never sees what lies *around* a block — the "long-range context between blocks" bottleneck named above. Instead of enlarging blocks (which costs VRAM), each block's XY bounds are expanded by `context_buffer` metres and the points of **neighbouring blocks** inside that buffer are aggregated into a small statistics vector: horizontal/vertical surface shares (from normals), mean surface variation (edge-ness), block/buffer density ratio, and a normalized Z-histogram (`context_bins`). This vector is appended to every point of the block as constant channels (`context_dim = 4 + context_bins`, so 10D → 18D with the shipped `context_bins` 4), so the network learns each point's label *conditioned on a wide-area summary* — at zero VRAM cost (input channels only, ≈+4K params) and computed once at block-build time.
+
+Related work (input-level context injection): PointNet's per-block normalized room-global coordinates, Engelmann et al. 2017 (enlarged/multi-scale block context), SCF-Net's global contextual features (CVPR 2021), classical multi-scale eigenfeatures (verticality etc., Weinmann et al. 2015 / Hackel et al. 2016), and the buffered-tile ("halo") practice of large-scale GIS point-cloud pipelines. This option combines the buffered-tile idea with handcrafted wide-area statistics as block-constant input channels.
+
+A/B comparison (block caches are kept separate automatically — the context run writes to `<block_data_path>_ctx`):
+
+```bash
+# baseline (identical to current pipeline)
+python train_model.py --no_block_context --no_wandb
+# with block context (2 m buffer, 4 z-histogram bins)
+python train_model.py --block_context --context_buffer 2.0 --context_bins 4 --no_wandb
+# inference feature layout must match how the model was trained
+python inference.py --block_context -m ./logs/<ctx_run>/best_model.pth -i ./sample/area_6_conferenceRoom_1.txt
+```
+
+Notes: the released checkpoints carry no context channels (7D for the v2 run, 10D for v1), so enabling context requires retraining; a stale block cache with the wrong feature width is detected and reported with an actionable error.
+
+Training-side settings already in place:
+- **Increased depth**: 2-layer bottleneck Transformer on top of the U-Net (the bottleneck operates on the downsampled set, so the extra depth costs almost no memory). Both backbones keep it.
+- **Tuned neighbourhood**: in v1 the `EdgeConv` graph was raised to `k=32`, with batch/accumulation adjusted to keep the effective batch at 60 (measured whole-GPU peak ~18.7 GB). v2 replaces the kNN graph with a radius-2 voxel stencil, so `k` is no longer a tuning knob.
+- **LR warm-up + Cosine annealing**: linear warm-up precedes `CosineAnnealingLR` (`T_max = num_epochs`, so the LR fully anneals by the last epoch).
+- **AdamW optimizer** with weight decay for better generalization.
+
+## Worked examples
+
+Both pages use the command surface above; only the dataset profile, the run recipe and the
+block geometry differ.
+
+| | what it covers |
+|---|---|
+| [building_example.md](./building_example.md) | S3DIS: the 13 classes and their characteristics, the published Area-5 numbers and how this model sits against other architectures, the scoring-knob sweep, checkpoint ensembling |
+| [bridge_example.md](./bridge_example.md) | SemanticBridge: fetching and converting the public TLS/MLS scans, scoring the released checkpoint, the figure to expect per protocol, and what counts as a reproduction |
+
+## Dataset Preparation
+
+### Using Custom Point Cloud Datasets
+
+**PointEdgeSegNet now supports custom point cloud datasets!** You can train and infer on any point cloud dataset by configuring the `model_params.json` file with your own class names, colors, and parameters.
+
+#### Configuration File: model_params.json
+
+Create or modify `model_params.json` to define your dataset configuration:
+
+```json
+{
+  "dataset_name": "Your_Dataset_Name",
+  "num_classes": 8,
+  "class_names": ["class1", "class2", "class3", ...],
+  "class_colors": [[R, G, B], [R, G, B], ...],
+  "class_weights": [1.0, 0.8, 0.9, ...],
+  "num_features": 10,
+  "block_size": 8192,
+  "preprocessing": {
+    "grid_min_coords": [0.0, 0.0, 0.0],
+    "grid_resolution": 1.0
+  },
+  "description": "Description of your dataset"
+}
+```
+
+**Configuration Parameters:**
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `dataset_name` | string | Name of your dataset | "Custom_Outdoor_Scene" |
+| `num_classes` | int | Number of semantic classes | 8 |
+| `class_names` | array | List of class names | ["ground", "building", "tree", ...] |
+| `class_colors` | array | RGB colors for visualization (0-255) | [[139, 69, 19], [255, 0, 0], ...] |
+| `class_weights` | array | Loss weights for class balancing. **A uniform list silently disables both the focal loss weighting and the rare-class block oversampler** — generate real ones with `compute_class_weights.py` | [1.0, 0.8, 0.9, ...] |
+| `num_features` | int | Feature dimension (default: 10) | 10 |
+| `block_size` | int | Points per block (default: 8192) | 8192 |
+| `preprocessing.grid_min_coords` | array | Minimum coordinates for grid normalization | [0.0, 0.0, 0.0] |
+| `preprocessing.grid_resolution` | float | Grid resolution for spatial hashing | 1.0 |
+
+**Example Configurations:**
+
+1. **Indoor Scene (S3DIS-like)**: `model_params.json`
+   - 13 classes: ceiling, floor, wall, furniture, etc.
+   - Fine grid resolution (0.5) for detailed indoor spaces
+   - Negative min_coords for normalized coordinate handling
+
+2. **Outdoor Scene**: `model_params_example_outdoor.json`
+   - 8 classes: ground, building, tree, vehicle, etc.
+   - Coarser grid resolution (2.0) for large outdoor spaces
+   - Zero-origin min_coords for outdoor coordinates
+
+#### Domain presets: `domains/*.json`
+
+`model_params_*.json` describes the *dataset* (classes, colors, feature layout). What was
+still scattered across shell scripts is the *run recipe* — data paths, block geometry,
+architecture flags and hyperparameters — which differs per application domain and is what
+actually has to be reproduced. A domain file collects all of it:
+
+```bash
+python train_model.py --domain bridge     # domains/bridge.json
+python train_model.py --domain room       # domains/room.json
+```
+
+That replaces a ~30-flag command line. `train_args` keys are `train_model.py` option names
+without the leading `--`, so any option can be set there with no code change, and an
+unknown key is a hard error rather than a silent no-op. **Anything given explicitly on the
+command line wins over the preset**, so a preset is a starting point, not a straitjacket:
+
+```bash
+python train_model.py --domain bridge --num_epochs 40 --learning_rate 0.001
+```
+
+```json
+{
+  "name": "bridge",
+  "description": "SemanticBridge TLS/MLS bridge scans, 9 classes",
+  "config": "model_params_semanticbridge.json",
+  "train_args": {
+    "block_data_path": "bridge/chunks_nopad",
+    "block_size": 20480,
+    "block_mode": "column",
+    "pad_blocks": false,
+    "arch": "stencil",
+    "num_epochs": 150
+  }
+}
+```
+
+The run prints every value it took from the preset, so a log says where each setting came
+from.
+
+#### Class weights: `compute_class_weights.py`
+
+`class_weights` drives two separate mechanisms — the focal loss, and the rare-class block
+oversampler, which boosts a block by `max(class_weights[c])` over the classes in it. Leave
+the list uniform and **both turn off**, which is easy to miss because a uniform list looks
+like valid config rather than a disabled feature. This measures the real distribution in
+the cached blocks and writes weights back:
+
+```bash
+python compute_class_weights.py --blocks bridge/chunks_nopad \
+    --config model_params_semanticbridge.json --write
+```
+
+Weights are `(1/frequency) ** power` rescaled to mean 1 and clipped; `--power 0.5` (the
+default) matches the shape of the existing S3DIS weights. The report also shows how many
+blocks each class reaches 1% of, which is what the oversampler actually keys on — a class
+that never clears that share can only be helped through its loss weight.
+
+#### Block padding: `--pad_blocks`
+
+In `column` mode, a column holding fewer points than `--block_size` is padded up with
+resampled points. Those points are masked out of the loss but still run through the whole
+network. On datasets of dense columns the cost is negligible; on SemanticBridge, whose
+columns are mostly sparse, **38% of all training compute went into padding** (measured).
+`--pad_blocks false` emits each column at its natural size instead — batching handles
+variable sizes natively, so nothing else changes. It needs a fresh `--block_data_path`,
+and reusing a padded cache with the flag off is refused rather than silently honoured.
+
+#### Training with Custom Configuration
+
+```bash
+# Train with your custom configuration
+python train_model.py --config model_params_custom.json
+
+# Train with outdoor example
+python train_model.py --config model_params_example_outdoor.json \
+    --processed_data_path ./processed_outdoor \
+    --block_data_path ./block_outdoor
+```
+
+#### Inference with Custom Configuration
+
+```bash
+# Inference with custom model
+python inference.py --config model_params_custom.json \
+    --model_weights ./logs/custom_model/best_model.pth \
+    --input_cloud ./data/custom_scene.txt
+```
+
+### Public Datasets for Infrastructure & Urban Point Clouds
+
+Below is a curated list of **publicly available, labeled point cloud datasets** for outdoor / infrastructure domains (bridge, tunnel, railway, earthwork/utilities, urban and aerial scenes). Because PointEdgeSegNet reads a configurable input format (`input` / `features` blocks in `model_params.json`: enable/disable RGB, set `spatial_scale`, map input columns), these datasets can be adapted for training after converting them to the `X Y Z [R G B ...]` text/array format the preprocessor expects. Most are distributed as **LAS/PLY**, so a one-time conversion (e.g. with `laspy`, `open3d`, or `PDAL`) is usually required, and `spatial_scale` should be tuned to each domain's point spacing (indoor ≈ 0.1 m, bridge/tunnel ≈ 0.3–1 m, aerial/terrain ≈ 1–10 m).
+
+> Always check each dataset's own **license / terms of use** before training or redistribution. Several require a short data-request form.
+
+| Domain | Dataset | Description (sensor · scale · classes) | Format | Access / Download |
+|--------|---------|----------------------------------------|--------|-------------------|
+| **Bridge** | SemanticBridge | TLS + MLS scans of **20 bridges** (UK & Germany), ~245M points, **9 classes** (abutment, superstructure, deck, pillar, railing, vegetation, ground, sign, unlabeled); includes sensor domain-gap analysis | PLY/LAS | [GitHub](https://github.com/mvg-inatech/3d_bridge_segmentation) · [paper](https://arxiv.org/abs/2512.15369) |
+| **Bridge** | BrPCD (Bridge Point Cloud Databank) | Multi-type bridge databank, **98 bridges** (10 real-scanned + 88 augmented/virtual), 2,827 labeled components; suspension / cable-stayed / girder types | PCD | [paper (Google Drive link inside)](https://onlinelibrary.wiley.com/doi/10.1111/mice.13384) |
+| **Tunnel** | STSD (Subway Tunnel Seg. Dataset) | rMMS mobile LiDAR, **>2.26B points** over 2,700 m, **12 classes**, 3 tunnel shapes; point clouds + projected images | LAS (+images) | [GitHub](https://github.com/lichking2017/STSD) (data-request form; GPL-3.0) |
+| **Tunnel** | Seg2Tunnel | Segmental tunnel-lining point clouds from **5 tunnels / 1,300 rings**, hierarchical (ring / block / component) annotations | LAS/PLY | [paper](https://www.sciencedirect.com/science/article/abs/pii/S0886779824001536) (data on request) |
+| **Railway** | WHU-Railway3D | Mobile LiDAR, **~4.6B points** over ~30 km (urban/rural/plateau), **11 classes** (rails, masts, overhead lines, fences, …); includes intensity, scan angle, returns | PLY + `.npy` labels | [GitHub](https://github.com/WHU-USI3DV/WHU-Railway3D) (data-request form) |
+| **Earthwork / Utilities** | OpenTrench3D | Open-trench underground-utility scans, **310 clouds / 528M points**, **5 classes** (utilities, surroundings, …); first public trench dataset (CVPRW 2024) | PLY | [GitHub](https://github.com/SimonBuusJensen/OpenTrench3D) |
+| **Urban (MLS)** | Toronto-3D | Mobile LiDAR of ~1 km urban roadway, **78.3M points**, **8 classes** (road, marking, natural, building, utility line, pole, car, fence); XYZ+RGB+intensity | LAS/PLY | [GitHub](https://github.com/WeikaiTan/Toronto-3D) (CC BY-NC 4.0) |
+| **Urban (UAV)** | SensatUrban | UAV photogrammetry of UK cities, **~3B points** over ~6 km², **13 classes** | PLY | [GitHub](https://github.com/QingyongHu/SensatUrban) (form; MIT code) |
+| **Aerial (ALS)** | DALES | Airborne LiDAR, **>0.5B points** over 10 km² (40 scenes), **8 classes** (ground, vegetation, cars, trucks, poles, power lines, fences, buildings) | multiple (PLY/LAS/…) | [Project page](https://sites.google.com/a/udayton.edu/vasari1/research/earth-vision/dales) · [paper](https://arxiv.org/abs/2004.11985) |
+| **Aerial (photogrammetry)** | STPLS3D | Real + synthetic aerial photogrammetry, **>17 km²**, up to **18 classes**, 0.1 m spacing; includes terrain/ground | PLY | [Website](https://www.stpls3d.com/data) · [GitHub](https://github.com/meidachen/STPLS3D) |
+
+Notes:
+- **Indoor reference:** the default configuration targets **S3DIS** (indoor), described below.
+- **Roads / driving** (not infrastructure-specific but widely used): [SemanticKITTI](http://semantic-kitti.org/), [Paris-Lille-3D](https://npm3d.fr/paris-lille-3d), and [nuScenes-lidarseg](https://www.nuscenes.org/nuscenes) provide additional large-scale urban/road point clouds.
+- After conversion, set the appropriate `num_classes`, `class_names`, `class_colors`, `input.rgb_cols` (or `use_rgb: false` for colorless LiDAR), and `features.spatial_scale` in `model_params.json` (see [model_params_example_terrain.json](model_params_example_terrain.json) for a colorless, large-scale example).
+
+#### Converting a dataset to this repo's format
+
+Use [convert_dataset.py](convert_dataset.py) to turn a downloaded dataset into the processed `.pt` format the training pipeline consumes (same `Data(pos, x, y)` objects as the S3DIS preprocessor). It reads **PLY / LAS / TXT / paired-NPY**, remaps each dataset's class ids, extracts the configured features, writes `processed_<name>/train|test/<scene>.pt`, and can emit a ready-to-use `model_params_<name>.json`.
+
+Profiles live in [dataset_profiles.json](dataset_profiles.json), not in the code: `toronto3d`, `sensaturban`, `dales`, `stpls3d`, `opentrench3d`, `whu_railway3d`, `semanticbridge`. Any field can also be overridden from the CLI.
+
+**Adding a dataset is a JSON entry, not a code change.** Copy an existing profile, change the extension, label field, class names and split, and pass it with `--profiles`:
+
+```json
+{
+  "profiles": {
+    "my_tunnel_scan": {
+      "ext": ".las",
+      "has_rgb": false,
+      "spatial_scale": 0.5,
+      "label_map": {"10": 0, "20": 1, "30": 2},
+      "ignore": [0],
+      "class_names": ["lining", "invert", "equipment"],
+      "test_stems": ["tunnel_c"]
+    }
+  }
+}
+```
+
+```bash
+python convert_dataset.py --dataset my_tunnel_scan --profiles my_datasets.json \
+    --input_dir ./raw/tunnel --emit_config
+```
+
+`class_names` must be **in label-id order** — it names the ids the files actually contain, so writing it in any other order silently relabels every per-class metric. `label_map` remaps raw ids to a contiguous `0..K-1` (use `null` when they already are), and `ignore` lists ids dropped before training.
+
+```bash
+# 0) install optional readers for the format you downloaded
+pip install plyfile        # .ply    (Toronto-3D, SensatUrban, OpenTrench3D, STPLS3D, DALES-ply)
+pip install laspy          # .las/.laz (DALES-las, some bridge/tunnel exports)
+
+# 1) inspect first (no files written): checks parsing, point counts, labeled ratio
+python convert_dataset.py --dataset opentrench3d --input_dir ./raw/OpenTrench3D --dry_run
+
+# 2) convert + emit a matching config
+python convert_dataset.py --dataset opentrench3d --input_dir ./raw/OpenTrench3D \
+    --output_dir ./processed_opentrench3d --emit_config
+
+# 3) train with the generated config
+python train_model.py --config model_params_opentrench3d.json \
+    --processed_data_path ./processed_opentrench3d --train_areas train --test_area test \
+    --block_mode column --no_wandb --cooldown_sec 0
+
+# Colorless aerial LiDAR that ships pre-split into train/ and test/ folders (e.g. DALES):
+python convert_dataset.py --dataset dales --input_dir ./raw/DALES/train --split train --no_rgb --emit_config
+python convert_dataset.py --dataset dales --input_dir ./raw/DALES/test  --split test  --no_rgb
+```
+
+Notes on the converter:
+- `.ply`/`.las` field names differ between download versions — override with `--label_field`, force color with `--rgb`/`--no_rgb`, and tune the analysis scale with `--spatial_scale`.
+- Large-coordinate clouds (UTM, e.g. Toronto-3D) are auto-translated to a local origin to avoid float32 precision loss (disable with `--no_recenter`).
+- Very large scenes (hundreds of millions of points) should be tiled before conversion, since normal/curvature/spatial features are computed per file.
+
+## Train model and Inference
+
 ### Training
 
 Basic training with default settings:
@@ -720,37 +653,6 @@ python inference.py \
     --no_vis
 ```
 
-### Common Run Scenarios
-
-**Scenario 1: Quick Test Run**
-```bash
-# Minimal training for testing (5 epochs)
-python train_model.py --num_epochs 5 --batch_size 2
-
-# Quick inference test
-python inference.py --no_visualization
-```
-
-**Scenario 2: Production Training**
-```bash
-# Full training with optimal settings
-python train_model.py --num_epochs 50 --batch_size 8 --learning_rate 0.0005
-```
-
-**Scenario 3: Batch Processing**
-```bash
-# Process multiple files without visualization
-for file in ./test_scenes/*.txt; do
-    python inference.py --input_cloud "$file" --no_vis
-done
-```
-
-**Scenario 4: Memory-Constrained Training**
-```bash
-# Reduce memory usage with smaller batch size and block size
-python train_model.py --batch_size 2 --block_size 4096
-```
-
 ### Available Arguments
 
 **train_model.py arguments:**
@@ -778,77 +680,11 @@ python train_model.py --batch_size 2 --block_size 4096
 - `--no_visualization, --no_vis`: Skip 3D visualization
 - `--voting` / `--no_voting`: coverage-guaranteed column voting (default on) vs legacy sequential chunks
 - `--tta`: test-time augmentation (Z-rotations 90/180/270 voted together)
-- `--ensemble WEIGHTS.pth [...]`: extra model weights to softmax-average with the primary model
+- `--ensemble WEIGHTS.pth [...]`: extra checkpoints to softmax-average with `--model_weights`. Every member is built from the architecture flags on the command line, so they must share one architecture
+- `--ensemble_config SPEC.json`: ensemble whose members each declare their own architecture (see `ensemble_example.json`). Use this to mix checkpoints trained with different `--v2_*` flags. Mutually exclusive with `--ensemble`
 - `--column_window`, `--column_stride`: column size / step (m); output is always a colored `_segmented.las` + `_segmented.txt`
 - `--block_context` / `--no_block_context`: must match how the model was trained (context-trained models need `--block_context`; see `run_infer_global.bat`)
 - `--block_context` / `--no_block_context`, `--context_buffer`, `--context_bins`: block-context descriptor — must match how the model was trained
-
-## Training
-
-### Quick Start
-
-```bash
-python train_model.py
-```
-
-### Configuration
-
-Edit the configuration section in `train_model.py`:
-
-```python
-TRAIN_AREAS = ['Area_1', 'Area_2', 'Area_3', 'Area_4', 'Area_6']
-TEST_AREA = 'Area_5'
-NUM_EPOCHS = 30
-BATCH_SIZE = 4
-LEARNING_RATE = 0.001
-BLOCK_SIZE = 8192
-```
-
-### Training Features
-
-- Automatic train/validation split
-- Learning rate scheduling with warmup
-- Gradient clipping for stability
-- Comprehensive logging (CSV + JSON)
-- Model checkpointing (best and latest)
-- Real-time loss visualization
-
-### Output Structure
-
-```
-logs_YYYYMMDD_HHMMSS/
-├── training_log.csv
-├── config.json
-├── best_model.pth
-├── latest_model.pth
-└── loss_curves.png
-```
-
-## Inference
-
-### Basic Usage
-
-```bash
-python inference.py
-```
-
-### Inference Process
-
-1. **Block Creation**: Splits input point cloud into 8192-point blocks (you can customize it)
-2. **Feature Calculation**: Computes geometric features using Open3D
-3. **Model Inference**: Processes each block through trained model
-4. **Result Merging**: Combines predictions from all blocks
-5. **Visualization**: Displays results with Open3D viewer
-
-### Configuration
-
-Everything is a CLI flag; the defaults live at the top of `inference.py` if you prefer to change them once:
-
-```python
-DEFAULT_MODEL_WEIGHTS_PATH = './logs/20260715_204942/best_model.pth'   # -m
-DEFAULT_TEST_POINT_CLOUD_PATH = './sample/area_6_conferenceRoom_1.txt'  # -i
-DEFAULT_CONFIG_PATH = 'model_params.json'                               # -c
-```
 
 ## File Structure
 
@@ -858,43 +694,41 @@ point_edge_seg_net/
 │   ├── __init__.py         #   name -> class, 'v1'/'v2' aliases
 │   ├── stencil.py          #   v2, current: voxel-stencil aggregation
 │   ├── edgeconv.py         #   v1, legacy: kNN EdgeConv
-│   └── common.py           #   feature gate, attention, bottleneck Transformer
+│   ├── common.py           #   feature gate, attention, bottleneck Transformer
+│   └── builder.py          #   flags/JSON -> network, checkpoint loading, ensembles
 ├── train_model.py          # training (block/column pipeline, losses, schedules)
 ├── inference.py            # segment a new cloud -> colored LAS + TXT
 ├── evaluate_full.py        # full-coverage scoring of a held-out area (OA/mAcc/mIoU)
+├── sweep_eval.py           # grid-search evaluate_full scoring knobs (see sweep_eval.json)
+├── compute_class_weights.py # measure a block cache -> class_weights for its config
 ├── data_preparation.py     # raw S3DIS rooms -> per-room feature tensors
 ├── data_processing.py      # features, blocking, augmentation, voting, config resolution
 ├── room_pipeline.py        # whole-room ("room" mode) data path
 ├── voxel_chunk.py          # large-cloud chunking used by evaluate_full --mode chunk
 ├── convert_dataset.py      # any X Y Z [R G B ...] dataset -> training format
+├── dataset_profiles.json   # per-dataset extension/labels/split; --profiles overrides it
 ├── convert_ifc_to_las.py   # IFC model -> labelled LAS (class map in config.json)
 ├── data_analysis.py        # class-distribution plots of a block cache
 ├── diagnose_kpi_grad.py    # gradient/KPI monitoring used by train_model.py --diagnose
 ├── test_improvements.py    # standalone smoke tests (no training, no torch_geometric)
 ├── view_points_block.py    # quick Open3D viewer for cached blocks
+├── domains/                # per-domain run recipes (--domain bridge | room)
+├── domain_config.py        # loads domains/*.json onto the CLI (explicit flags win)
 ├── model_params*.json      # dataset/class/feature configs (-c / --config)
 ├── pyproject.toml          # packaging: pip install . and the pesn-* commands
+├── scripts/get_bridge_data.sh|bat  # fetch + convert the SemanticBridge scans
+├── weights/                # released checkpoint (+ SHA256SUMS)
+├── run_domain_train.sh|bat # train any domains/*.json recipe (per-model flags live there)
+├── run_domain_eval.sh|bat  # score a checkpoint on its own training geometry
+├── run_bridge_reproduce.sh # regenerate the reported SemanticBridge figures
 ├── run_train_*.sh|bat      # reproduction scripts (baseline / block-context)
 ├── run_infer_global.sh|bat # inference wrapper for block-context models
-├── logs/<timestamp>/       # released runs: weights, metrics, curves
+├── logs/<timestamp>/       # released S3DIS runs: weights, metrics, curves
+├── building_example.md     # worked example: S3DIS buildings
+├── bridge_example.md       # worked example: SemanticBridge bridges
 ├── sample/                 # example cloud for a first inference run
 └── imgs/, data_analysis/   # figures used by this README
 ```
-
-## Performance
-
-### Training Performance
-
-- Training Time (v2.0): ~2 min/epoch, ~20 hours for the 600-epoch schedule (batch 4, block 20480)
-- GPU Memory (v2.0, measured): ~12-20 GB steady during training; ~8-10 GB at `--batch_size 2`
-- For reference, the v1.1 run measured avg ~17.2 GB / peak ~18.7 GB whole-GPU and ~3 hours for 60 epochs (wandb system metrics; BATCH_SIZE=10, EdgeConv k=32, effective batch 60 via gradient accumulation)
-- Scales to arbitrarily large training sets — memory is per block, not per scene
-
-### Inference Performance
-
-- Coverage-guaranteed column voting: every point of a large/dense cloud is predicted (no drop-to-`ceiling`)
-- Optional TTA and model ensembling for extra accuracy at no extra VRAM
-- Memory Efficiency: processes 100M-point clouds block by block; outputs colored LAS + TXT
 
 ## Troubleshooting
 
@@ -910,12 +744,62 @@ point_edge_seg_net/
 - Enable mixed precision training
 - Clear GPU cache between experiments
 
-## Insight
-When training point cloud data, it's crucial to assume all data characteristics. Inputs that deviate from these assumptions will not yield good results (e.g., indoor vs. outdoor, bright vs. dark lighting, and variations in label object types and features). In Example of S3DIS dataset, The Area 1 (Train) and Area 5 (Test) datasets are representative examples. Because these two datasets exhibit such high variation, standard training alone won't significantly improve Test Acc. This consideration must be taken into account when designing the model to determine which data features to train. Statistical analysis must be performed first to ensure inductive inference, a golden rule in deep learning model training. When I tried to improve the performance (accuray, loss) of test dataset (unseen), I used some solutions like the argumented dataset with features, model size increasement within the memory budget of that time etc, but the performance was limited. Local features acceptance is always an issue in tranining model becuase it's difficult to increase the model size and architecture in usecase under the small VRAM.
+## Version
 
-Update (v1.0): several of these limits were pushed back without any hardware upgrade — context-preserving column blocks, per-block coordinate centering (translation invariance), an mIoU-aware Lovász+Focal loss, a corrected surface-variation curvature feature, and a fixed coverage-guaranteed voting pipeline together raised held-out Area 5 from ~mIoU 49 to **59.6** (OA 86.2%); fixing a silent AMP GradScaler bug and retraining (v1.1) pushed this to **mIoU 60.0** (OA 86.6%). The remaining bottleneck is long-range context between blocks and the two rarest classes (`column`, `sofa`); closing the gap to sparse-conv/transformer methods (65–70+) is an *architecture* problem (a different convolution/attention operator), not a VRAM one — all such methods still chunk or down-voxelize large clouds rather than fitting them whole.
+- 0.1: 2025/9/21. Draft version.
+- 0.2: 2025/9/24. CLI args, bug fixed.
+- 0.3: 2025/9/26. GPU safety mode was added.
+- 0.4: 2025/9/28. Diagnose was added. Points grid generation using grid hash spatial indexing
+- 0.5: 2025/10/1. Train dataset development (area 1 to 6)
+- 0.6: 2025/10/3. Hyperparameter finetuning (support VRAM 8GB, 24GB) and Dataset augumentation (e.g. on the fly)
+- 0.7: 2025/12/30. Integrate Attention Mechanism, Focal Loss, Area 5 test
+- 0.8: 2026/1/17. Update source code and [model file](https://github.com/mac999/point_edge_seg_net/tree/main/logs/20260113_231712).
+- 0.9: 2026/2/1. Support custom train dataset with classes of points. Please refer to [model_params.json](./model_params.json).
+- 1.0: 2026/7/7. Major accuracy & large-cloud overhaul — S3DIS Area 5: **OA 86.2% / mAcc 69.0% / mIoU 59.6%** ([logs](./logs/20260707_101907)):
+  - **Context-preserving `column` block mode** (overlapping full-height columns) with a leakage-controlled *spatial* train/val split (replaces context-losing grid cells).
+  - **Coverage-guaranteed inference blocking + fixed multi-view voting** — dense/large clouds no longer collapse to a single class (uncovered points were silently labelled `ceiling`; now every point is predicted and voted).
+  - **Lovász-Softmax + Focal loss** (directly optimizes mIoU, not just accuracy) and **per-block coordinate centering** (translation invariance → smaller train/test gap).
+  - **Curvature feature fix** (true local surface-variation edge cue instead of a near-constant legacy channel), wider EdgeConv receptive field (**k=32**), **2-layer bottleneck Transformer**.
+  - New: **mIoU / mAcc metrics**, **TTA (Z-rotation) + model-ensemble inference**, **colored LAS export**, early-stopping aligned to the checkpoint metric.
+- 1.1: 2026/7/15. AMP training bug fix & retrain — S3DIS Area 5: **OA 86.60% / mAcc 69.73% / mIoU 59.99%** ([logs](./logs/20260715_204942)):
+  - **Fixed a GradScaler state-corruption bug**: the "very large gradient → skip batch" branch called `scaler.unscale_()` without a matching `scaler.update()`, so from the first skipped batch onward every optimizer step silently failed (`unscale_() has already been called…`), permanently freezing the weights. The skip branch now resets the scaler state, restoring correct AMP training.
+  - Retrained the v1.0 configuration (column mode, 60 epochs, batch 10, effective batch 60) with the fix — all metrics improved over the 20260707 baseline (OA +0.44, mAcc +0.68, mIoU +0.42); best validation accuracy 93.59%.
+  - Added `run_train_global.bat` to reproduce the training run.
+- 2.0: 2026/8/21. **Architecture rework (v2) — S3DIS Area 5: OA 87.8% / mAcc 72.6% / mIoU 64.8%** (full-coverage protocol, +4.8 mIoU over v1.1 re-scored identically). Checkpoints are **not** compatible with v1.
+  - **New backbone `models/stencil.py`**: per-layer kNN graph search is removed entirely. Neighbours are looked up on the voxel lattice with a fixed stencil (sorted keys + binary search), local aggregation is a point-wise MLP with a relative-position encoding and a feature-difference term, and down/upsampling use grid pooling with an exact inverse map. U-Net layout, feature gate and bottleneck Transformer are kept.
+  - **Speed / memory**: ~7x faster training epochs and ~3x lower training memory than v1 at equal settings; single-view inference runs in about 4 GB; measured training memory ~12-20 GB steady (see Training below).
+  - **Grid-preserving TTA** for evaluation (8 views: 90-degree rotations x mirror), matching the lattice assumption of the stencil.
+  - Architectures are registered by name in `models/` (`edgeconv` = legacy v1, `stencil` = current); select with `--arch` in `train_model.py` and `evaluate_full.py`. Checkpoints are not interchangeable between the two.
 
-Update (v2.0): that prediction held. Replacing the operator — kNN EdgeConv out, voxel-stencil aggregation in — moved Area 5 to **mIoU 64.8 / OA 87.8** on the full-coverage protocol (+4.8 over v1.1 re-scored the same way) while *lowering* both training memory and epoch time. `column` and `beam` are still the weakest classes, and long-range context between blocks is still the open problem.
+- 2.1: 2026/10/7. **SemanticBridge support — a bridge segmentation pipeline on the public TLS/MLS benchmark.** The v2 backbone is unchanged; this release adds the data path, the run tooling and the released checkpoint.
+  - **Released model** `weights/bridge_w6_final_model.pth` (3.06 M parameters, 11.8 MiB). On the official 15/5 split, over all 84,153,822 test points: **mIoU 69.81 / OA 91.61** single-view. Published baselines on the same split are UNet3D 70.7, KPConv 70.5, PTv2 63.5, at roughly 4.6x the parameters.
+  - **Reproduction**: `scripts/get_bridge_data.sh|bat` fetches and converts the scans; `run_domain_eval.sh|bat` scores a checkpoint on the geometry its recipe trained it on. See [bridge_example.md](./bridge_example.md) for the full procedure and the numbers to check against.
+  - **Run recipes as data**: per-model settings live in `domains/*.json` (`--domain`, unknown keys are a hard error) rather than in shell strings, so training and scoring read the same recipe. Augmentation presets move to `aug_presets.json`, class weights are computed by `compute_class_weights.py`.
+  - **Named inference protocols** (`--protocol single | overlap | mirror | overlap_mirror`) so a reported number states how densely the window was swept and how many views were voted.
+  - A study of the context/resolution trade-off, the coverage and scoring defects found along the way, and the ablations behind the shipped recipe are being written up separately; this README states the released configuration only.
+
+<p align="center">
+<img src="./imgs/bridge_segmentation_example.png" width="760"
+     alt="Elevation view of a held-out bridge: ground truth, prediction, and the misclassified points"><br>
+<sub>A held-out test bridge, seen along the deck axis: labels, the released model's prediction, and where the two disagree.</sub>
+</p>
+
+Optimization strategy under a fixed per-block memory budget (boundary artifacts, class imbalance, generalization):
+* **Overlapping context-preserving blocks:** `column` mode builds overlapping full-height columns instead of context-losing cubic grid cells, preserving the topology of objects (e.g., columns/doors) bisected by grid boundaries.
+* **Coordinate normalization:** per-block coordinate centering (translation invariance) inside the model, applied identically at train and inference — improves generalization to unseen areas.
+* **mIoU-aware loss:** Lovász-Softmax combined with Focal loss directly optimizes per-class IoU, lifting rare classes without a recall-only bias.
+* **Multi-view voting inference:** predictions from overlapping/rotated (TTA) blocks are aggregated per point to suppress boundary noise; a coverage-guaranteed blocker ensures every point of large/dense clouds is predicted.
+* **Curvature feature fix + wider receptive field + 2-layer bottleneck Transformer** for stronger local/global context (v1 widened the EdgeConv neighbourhood to `k=32`; v2 gets the same reach from a radius-2 voxel stencil, 125 lattice offsets).
+
+Still open (future work):
+* **Global Context Injection:** append normalized global Z to features to better separate height-dependent classes (e.g., beam vs. sofa).
+* **Copy-Paste Augmentation:** copy rare-class points into wall-dominated blocks to further address imbalance. The measured bottlenecks are `column` (IoU 27.3) and `window` (47.5) — not rarity as such, since `sofa` is rarer than either (0.27% of Area 5) and already reaches 70.3. `beam` is beyond reach of any reweighting: it is 0.029% of Area 5 ground truth and stayed at IoU 0.0 even with its loss weight raised to 3.0, so the realistic targets are `column` and `window`.
+
+<p align="center">
+<img src="./data_analysis/area_1.png" height="200"></img>
+<img src="./data_analysis/area_5.png" height="200"></img>
+<img src="./imgs/area4.jpg" height="400"></img>
+</p>
 
 ## Contributing
 
@@ -935,7 +819,3 @@ This project is released under the MIT License. See LICENSE file for details.
 - Stanford Vision Lab for the S3DIS dataset
 - PyTorch Geometric team for the excellent graph neural network library
 - Open3D team for 3D geometry processing tools
-
-
-
-

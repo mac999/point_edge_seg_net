@@ -1,0 +1,235 @@
+{
+  "_comment": [
+    "Dataset profiles for convert_dataset.py. Adding a dataset means adding an entry here,",
+    "not editing Python: --dataset takes its choices from this file, and --profiles points at",
+    "a different one (e.g. a private dataset kept outside the repo).",
+    "",
+    "Fields:",
+    "  ext           input extension: .ply | .las | .laz | .txt | .npy_pair",
+    "  has_rgb       whether the files carry per-point colour",
+    "  rgb_max       value that means full intensity (255 for 8-bit, 1.0 if already normalized)",
+    "  spatial_scale metres used to normalize the spatial-context channels; roughly the size",
+    "                of the structures that matter (0.1 indoor/roadway ... 2.0 aerial)",
+    "  label_field   name of the label property inside a .ply",
+    "  label_map     {raw_id: contiguous_id} as strings, or null when ids are already 0..N-1",
+    "  ignore        raw ids dropped before training (sentinels such as 'unclassified')",
+    "  class_names   IN LABEL-ID ORDER. This is the field that silently corrupts every",
+    "                per-class metric if it is written in some other order.",
+    "  test_stems    file stems held out; empty means the caller picks the split",
+    "  points_suffix / labels_suffix   only for the .npy_pair layout"
+  ],
+  "profiles": {
+    "dales": {
+      "ext": ".ply",
+      "has_rgb": false,
+      "rgb_max": 255.0,
+      "spatial_scale": 2.0,
+      "label_field": "sem_class",
+      "label_map": {
+        "1": 0,
+        "2": 1,
+        "3": 2,
+        "4": 3,
+        "5": 4,
+        "6": 5,
+        "7": 6,
+        "8": 7
+      },
+      "ignore": [
+        0
+      ],
+      "class_names": [
+        "ground",
+        "vegetation",
+        "cars",
+        "trucks",
+        "power_lines",
+        "fences",
+        "poles",
+        "buildings"
+      ],
+      "test_stems": []
+    },
+    "opentrench3d": {
+      "ext": ".ply",
+      "has_rgb": true,
+      "rgb_max": 255.0,
+      "spatial_scale": 0.05,
+      "label_field": "C",
+      "label_map": null,
+      "ignore": [],
+      "class_names": [
+        "main_utility",
+        "other_utility",
+        "trench",
+        "inactive_utility",
+        "misc"
+      ],
+      "test_stems": []
+    },
+    "semanticbridge": {
+      "ext": ".ply",
+      "has_rgb": true,
+      "rgb_max": 255.0,
+      "spatial_scale": 0.3,
+      "label_field": "label",
+      "label_map": null,
+      "ignore": [],
+      "class_names": [
+        "unlabeled",
+        "ground",
+        "high_vegetation",
+        "abutment",
+        "superstructure",
+        "top_surface",
+        "railing",
+        "traffic_sign",
+        "pillar"
+      ],
+      "test_stems": [
+        "bridge_1_cb_faro",
+        "bridge_7_cb_faro",
+        "bridge_13_fr_rtc",
+        "bridge_17_fr_rtc",
+        "bridge_19_fr_rtc"
+      ]
+    },
+    "sensaturban": {
+      "ext": ".ply",
+      "has_rgb": true,
+      "rgb_max": 255.0,
+      "spatial_scale": 0.3,
+      "label_field": "class",
+      "label_map": null,
+      "ignore": [],
+      "class_names": [
+        "ground",
+        "vegetation",
+        "building",
+        "wall",
+        "bridge",
+        "parking",
+        "rail",
+        "traffic_road",
+        "street_furniture",
+        "car",
+        "footpath",
+        "bike",
+        "water"
+      ],
+      "test_stems": []
+    },
+    "stpls3d": {
+      "ext": ".ply",
+      "has_rgb": true,
+      "rgb_max": 255.0,
+      "spatial_scale": 0.1,
+      "label_field": "semantic",
+      "label_map": {
+        "0": 0,
+        "1": 1,
+        "2": 2,
+        "3": 3,
+        "4": 4,
+        "5": 5,
+        "6": 6,
+        "7": 7,
+        "8": 8,
+        "9": 9,
+        "10": 10,
+        "11": 11,
+        "12": 12,
+        "13": 13,
+        "14": 14,
+        "15": 15,
+        "17": 16,
+        "18": 17,
+        "19": 18
+      },
+      "ignore": [
+        -100
+      ],
+      "class_names": [
+        "ground",
+        "building",
+        "low_veg",
+        "med_veg",
+        "high_veg",
+        "vehicle",
+        "truck",
+        "aircraft",
+        "military_vehicle",
+        "bike",
+        "motorcycle",
+        "light_pole",
+        "street_sign",
+        "clutter",
+        "fence",
+        "road",
+        "windows",
+        "dirt",
+        "grass"
+      ],
+      "test_stems": []
+    },
+    "toronto3d": {
+      "ext": ".ply",
+      "has_rgb": true,
+      "rgb_max": 255.0,
+      "spatial_scale": 0.1,
+      "label_field": "scalar_Label",
+      "label_map": {
+        "1": 0,
+        "2": 1,
+        "3": 2,
+        "4": 3,
+        "5": 4,
+        "6": 5,
+        "7": 6,
+        "8": 7
+      },
+      "ignore": [
+        0
+      ],
+      "class_names": [
+        "road",
+        "road_marking",
+        "natural",
+        "building",
+        "utility_line",
+        "pole",
+        "car",
+        "fence"
+      ],
+      "test_stems": [
+        "L002"
+      ]
+    },
+    "whu_railway3d": {
+      "ext": ".npy_pair",
+      "has_rgb": false,
+      "rgb_max": 255.0,
+      "spatial_scale": 0.2,
+      "points_suffix": "_coords.npy",
+      "labels_suffix": "_labels.npy",
+      "label_map": null,
+      "ignore": [
+        255
+      ],
+      "class_names": [
+        "rails",
+        "track_bed",
+        "masts",
+        "support_device",
+        "overhead_line",
+        "fence",
+        "pole",
+        "vegetation",
+        "building",
+        "ground",
+        "others"
+      ],
+      "test_stems": []
+    }
+  }
+}

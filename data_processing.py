@@ -139,6 +139,17 @@ def get_class_weights(as_tensor: bool = False, device: str = 'cpu') -> Union[lis
         return torch.tensor(weights, dtype=torch.float32, device=device)
     return weights
 
+def get_class_names() -> list:
+    """Class names of the ACTIVE config.
+
+    `from data_processing import CLASS_NAMES` binds the value at import time, so a caller
+    that imports the name keeps the default S3DIS list even after a different config is
+    loaded -- which is how a bridge run came to print its 9 classes as "ceiling, floor,
+    wall, ...". Read them through this function instead of importing the constant.
+    """
+    return get_model_config().get('class_names', _DEFAULT_CLASS_NAMES)
+
+
 def resolve_feature_config(config: Optional[Dict] = None) -> Dict:
     """
     Normalize the input/feature description from model_params.json into a concrete spec.
@@ -192,6 +203,7 @@ def resolve_feature_config(config: Optional[Dict] = None) -> Dict:
         'xyz_cols':      list(inp.get('xyz_cols', [0, 1, 2])),
         'rgb_cols':      inp.get('rgb_cols', [3, 4, 5]),
         'rgb_max':       float(inp.get('rgb_max', 255.0)),
+        'use_global_position': bool(feats.get('use_global_position', False)),
         'use_block_context': bool(feats.get('use_block_context', False)),
         'context_buffer':    float(feats.get('context_buffer', 4.0)),
         'context_bins':      int(feats.get('context_bins', 8)),
@@ -204,11 +216,13 @@ def resolve_feature_config(config: Optional[Dict] = None) -> Dict:
     rgb = 3 if spec['use_rgb'] else 0
     spatial = 3 if spec['use_spatial'] else 0
     context = (4 + spec['context_bins']) if spec['use_block_context'] else 0
+    global_pos = 3 if spec['use_global_position'] else 0
     spec['geo_dim'] = geo
     spec['rgb_dim'] = rgb
     spec['spatial_dim'] = spatial
     spec['context_dim'] = context
-    spec['num_features'] = geo + rgb + spatial + context
+    spec['global_position_dim'] = global_pos
+    spec['num_features'] = geo + rgb + spatial + context + global_pos
 
     # Consistency check against an explicit num_features, if provided. The config value
     # documents the BASE layout (what data_preparation stores in the .pt files); the
@@ -583,6 +597,11 @@ def extract_features_from_room_data(points_room: np.ndarray,
             coords_room, grid_size=spec.get('spatial_scale', 0.1))
         parts.append(spatial_features)
 
+    # Global-position group (optional). Appended LAST, after block context, so enabling it
+    # leaves every existing channel at the index a trained checkpoint expects.
+    if spec.get('use_global_position'):
+        parts.append(extract_global_position_features(coords_room))
+
     if not parts:
         raise ValueError("Feature config disables all feature groups; enable at least one.")
 
@@ -876,7 +895,9 @@ def partition_columns(points: np.ndarray,
                       window: float = 1.5,
                       stride: float = 0.75,
                       min_points: int = 256,
-                      seed: Optional[int] = None):
+                      seed: Optional[int] = None,
+                      pad: bool = True,
+                      cover: bool = False):
     """
     Partition a room into OVERLAPPING vertical columns (XY window, full Z extent).
 
@@ -897,11 +918,25 @@ def partition_columns(points: np.ndarray,
                 (stride = window/2 gives 50% overlap)
         min_points: skip columns with fewer real points than this
         seed: optional RNG seed for reproducible sampling/padding
+        cover: tile a column that holds MORE than block_size points into
+            ceil(n/block_size) blocks instead of keeping one random block_size subsample
+            and discarding the rest. Default False is the historical behaviour, under
+            which a dense column contributes one block per cache build and the remaining
+            points never reach training at all -- on SemanticBridge that silently dropped
+            42% of labelled points, unevenly across classes (pillar kept 30%, ground 67%).
+            Tiling costs proportionally more compute per epoch because there is more data.
+        pad: pad every short column up to block_size with resampled points (the historical
+            behaviour, kept as the default so existing caches stay reproducible). Padded
+            points are masked out of the loss but still go through the whole network, so
+            on a dataset of sparse columns they can be a large share of all compute --
+            measured at 38% on SemanticBridge. Set False to emit each column at its
+            natural size instead; batching handles variable sizes natively, so the only
+            effect is that the wasted compute disappears.
 
     Returns:
-        list of (indices, num_real): int index arrays of length exactly block_size
-        (num_real real points followed by resampled padding). Every input point is
-        covered by at least one returned block.
+        list of (indices, num_real): int index arrays, of length exactly block_size when
+        `pad` is set and of length num_real otherwise. Every input point is covered by at
+        least one returned block.
     """
     rng = np.random.default_rng(seed)
     n = len(points)
@@ -934,13 +969,27 @@ def partition_columns(points: np.ndarray,
             if len(idx) < min_points:
                 continue
             covered[idx] = True
+            if len(idx) > block_size and cover:
+                # Shuffle first so each tile is a spatially-spread subset of the column,
+                # matching the block_size-point, reduced-density view the model is trained
+                # on, rather than a coordinate-ordered stripe through it.
+                shuffled = rng.permutation(idx)
+                for start in range(0, len(shuffled), block_size):
+                    tile = shuffled[start:start + block_size]
+                    n_tile = len(tile)
+                    if n_tile < block_size and pad:
+                        filler = rng.choice(tile, block_size - n_tile, replace=True)
+                        tile = np.concatenate([tile, filler])
+                    blocks.append((tile.astype(np.int64), int(n_tile)))
+                continue
             if len(idx) > block_size:
                 idx = rng.choice(idx, block_size, replace=False)
                 num_real = block_size
             elif len(idx) < block_size:
-                pad = rng.choice(idx, block_size - len(idx), replace=True)
                 num_real = len(idx)
-                idx = np.concatenate([idx, pad])
+                if pad:
+                    filler = rng.choice(idx, block_size - num_real, replace=True)
+                    idx = np.concatenate([idx, filler])
             else:
                 num_real = block_size
             blocks.append((idx.astype(np.int64), int(num_real)))
@@ -953,9 +1002,9 @@ def partition_columns(points: np.ndarray,
         for start in range(0, len(missed), block_size):
             chunk = missed[start:start + block_size]
             num_real = len(chunk)
-            if num_real < block_size:
-                pad = rng.choice(chunk, block_size - num_real, replace=True)
-                chunk = np.concatenate([chunk, pad])
+            if num_real < block_size and pad:
+                filler = rng.choice(chunk, block_size - num_real, replace=True)
+                chunk = np.concatenate([chunk, filler])
             blocks.append((chunk.astype(np.int64), int(num_real)))
 
     return blocks
@@ -1240,6 +1289,63 @@ def compute_local_density(points: np.ndarray,
         distances = np.linalg.norm(points - query_point, axis=1)
         densities[i] = np.sum(distances < radius)
     return densities
+
+def feature_dims_from_spec(spec: Dict) -> tuple:
+    """Per-group widths in the order features are concatenated.
+
+    Three entry points (training, evaluation, inference) each used to build this tuple by
+    hand, so adding a group meant remembering all three -- and the one that was forgotten
+    failed only at model-construction time, after a run had already been queued.
+    """
+    return (spec['geo_dim'], spec['rgb_dim'], spec['spatial_dim'],
+            spec['context_dim'], spec.get('global_position_dim', 0))
+
+
+def extract_global_position_features(points: np.ndarray) -> np.ndarray:
+    """Where a point sits in the SCENE, as three numbers in [0, 1]. (N, 3)
+
+    Why this exists. The v2 backbone centres coordinates per block, and the three
+    "spatial" channels are density / anisotropy / local structure -- all local. So the
+    network has no way to know where in the structure a block came from. On bridges that
+    is exactly the cue it needs: abutments sit at the ENDS of the deck and pillars in
+    between, and the two are otherwise the same material and shape. Measured on the five
+    held-out bridges, |position| along the long axis is 0.57-0.78 for abutment against
+    0.06-0.45 for pillar -- cleanly separable, and invisible to the model. Widening the
+    block window from 2 m to 6 m moved neither class, which is what pointed here.
+
+    The axes come from a PCA of the cloud's own XY, NOT from any label: the deck defines
+    the long axis of a bridge scan, so the first principal axis tracks it without needing
+    to know which points are deck. That keeps the feature computable at inference time.
+
+    Returns [|along principal axis|, |along secondary axis|, height], each normalised to
+    the cloud's own extent, so the values are comparable across scenes of different size.
+
+    Limitation worth knowing: the normalisation is relative to the extent of whatever was
+    scanned. A partial scan shifts every value, so a model trained on whole structures
+    should not be handed half of one and trusted.
+    """
+    xy = np.asarray(points[:, :2], dtype=np.float64)
+    centre = xy.mean(axis=0)
+    centred = xy - centre
+    # PCA on a subsample: the axes of a million-point cloud are not measurably different
+    # from those of ten thousand of its points, and this runs per room.
+    sample = centred[:: max(1, len(centred) // 20000)]
+    try:
+        _, _, vt = np.linalg.svd(sample, full_matrices=False)
+        axes = vt[:2]
+    except np.linalg.LinAlgError:                     # degenerate (collinear) cloud
+        axes = np.eye(2)
+
+    out = np.empty((len(points), 3), dtype=np.float32)
+    for i in range(2):
+        t = np.abs(centred @ axes[i])
+        hi = t.max()
+        out[:, i] = (t / hi) if hi > 1e-9 else 0.0
+    z = np.asarray(points[:, 2], dtype=np.float64)
+    lo, hi = z.min(), z.max()
+    out[:, 2] = ((z - lo) / (hi - lo)) if hi - lo > 1e-9 else 0.0
+    return out
+
 
 def extract_spatial_context_features(points: np.ndarray, grid_size: float = 0.1) -> np.ndarray:
     """

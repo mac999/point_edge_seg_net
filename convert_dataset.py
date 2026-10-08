@@ -41,76 +41,43 @@ import numpy as np
 # ignore:    source ids mapped to -1 (ignored by the loss, like S3DIS padding).
 # test_stems: filename stems routed to the test/ folder; others go to train/. If a
 #             dataset ships its own train/ and test/ folders, use --split to force one.
-PROFILES = {
-    "toronto3d": {
-        "ext": ".ply", "has_rgb": True, "rgb_max": 255.0, "spatial_scale": 0.10,
-        "label_field": "scalar_Label",   # some exports: 'Label' / 'scalar_label'
-        "label_map": {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7},
-        "ignore": {0},                    # 0 = unclassified
-        "class_names": ["road", "road_marking", "natural", "building",
-                        "utility_line", "pole", "car", "fence"],
-        "test_stems": ["L002"],           # Toronto-3D standard hold-out
-    },
-    "sensaturban": {
-        "ext": ".ply", "has_rgb": True, "rgb_max": 255.0, "spatial_scale": 0.30,
-        "label_field": "class",
-        "label_map": None,                # 0..12 already contiguous
-        "ignore": set(),                  # unlabeled points may use a value >12 or <0
-        "class_names": ["ground", "vegetation", "building", "wall", "bridge", "parking",
-                        "rail", "traffic_road", "street_furniture", "car", "footpath",
-                        "bike", "water"],
-        "test_stems": [],                 # official test set is withheld; use val split
-    },
-    "dales": {
-        "ext": ".ply", "has_rgb": False, "rgb_max": 255.0, "spatial_scale": 2.0,
-        "label_field": "sem_class",       # DALES Objects: 'sem_class' (+ 'ins_class')
-        "label_map": {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7},
-        "ignore": {0},                    # 0 = unknown
-        "class_names": ["ground", "vegetation", "cars", "trucks",
-                        "power_lines", "fences", "poles", "buildings"],
-        "test_stems": [],                 # DALES ships train/ and test/ folders: use --split
-    },
-    "stpls3d": {
-        "ext": ".ply", "has_rgb": True, "rgb_max": 255.0, "spatial_scale": 0.10,
-        "label_field": "semantic",        # verify field name in your export
-        # ids 0..19 with gaps (16 unused); remap to a contiguous 19-class set
-        "label_map": {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9,
-                      10: 10, 11: 11, 12: 12, 13: 13, 14: 14, 15: 15, 17: 16, 18: 17, 19: 18},
-        "ignore": {-100},                 # ground/unlabeled sentinel in synthetic data
-        "class_names": ["ground", "building", "low_veg", "med_veg", "high_veg", "vehicle",
-                        "truck", "aircraft", "military_vehicle", "bike", "motorcycle",
-                        "light_pole", "street_sign", "clutter", "fence", "road",
-                        "windows", "dirt", "grass"],
-        "test_stems": [],
-    },
-    "opentrench3d": {
-        "ext": ".ply", "has_rgb": True, "rgb_max": 255.0, "spatial_scale": 0.05,
-        "label_field": "C",               # class field per OpenTrench3D docs
-        "label_map": None,                # 0..4 contiguous
-        "ignore": set(),
-        "class_names": ["main_utility", "other_utility", "trench", "inactive_utility", "misc"],
-        "test_stems": [],
-    },
-    "whu_railway3d": {
-        # points and labels ship as separate .npy files (coords float, labels uint8).
-        "ext": ".npy_pair", "has_rgb": False, "rgb_max": 255.0, "spatial_scale": 0.20,
-        "points_suffix": "_coords.npy", "labels_suffix": "_labels.npy",
-        "label_map": None,                # 0..10 contiguous (11 classes)
-        "ignore": {255},                  # common unlabeled sentinel
-        "class_names": ["rails", "track_bed", "masts", "support_device", "overhead_line",
-                        "fence", "pole", "vegetation", "building", "ground", "others"],
-        "test_stems": [],
-    },
-    "semanticbridge": {
-        "ext": ".ply", "has_rgb": True, "rgb_max": 255.0, "spatial_scale": 0.30,
-        "label_field": "label",           # verify: 'label' / 'scalar_Label' / 'class'
-        "label_map": None,                # 0..8 (with 'unlabeled' as one id) - adjust if needed
-        "ignore": set(),
-        "class_names": ["abutment", "superstructure", "deck", "pillar", "railing",
-                        "high_vegetation", "ground", "traffic_sign", "unlabeled"],
-        "test_stems": [],
-    },
-}
+DEFAULT_PROFILES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "dataset_profiles.json")
+
+
+def load_profiles(path=None):
+    """Read the dataset profiles from JSON.
+
+    What differs between datasets -- extension, label field, label-id order, split -- is data,
+    not code, so it lives in `dataset_profiles.json`. Supporting a new dataset is one entry in
+    that file; pass --profiles to use a different file (e.g. a private dataset kept out of the
+    repo). JSON has no set and no integer keys, so `ignore` and `label_map` are converted back
+    to the shapes the rest of this script expects.
+    """
+    path = path or DEFAULT_PROFILES_PATH
+    with open(path, "r", encoding="utf-8") as fh:
+        doc = json.load(fh)
+    raw = doc.get("profiles", doc)          # also accept a bare {name: profile} mapping
+    profiles = {}
+    for name, entry in raw.items():
+        if name.startswith("_"):            # _comment and friends
+            continue
+        p = dict(entry)
+        missing = {"ext", "class_names"} - set(p)
+        if missing:
+            raise ValueError(f"{path}: profile '{name}' is missing {sorted(missing)}")
+        p["ignore"] = set(p.get("ignore") or [])
+        p["label_map"] = ({int(k): v for k, v in p["label_map"].items()}
+                          if p.get("label_map") else None)
+        p.setdefault("has_rgb", False)
+        p.setdefault("rgb_max", 255.0)
+        p.setdefault("spatial_scale", 0.10)
+        # no label_field default: .npy_pair layouts have none, and the use site uses .get()
+        p.setdefault("test_stems", [])
+        profiles[name] = p
+    if not profiles:
+        raise ValueError(f"{path}: no profiles found")
+    return profiles
 
 
 # =====================================================================================
@@ -123,6 +90,38 @@ def _first_present(mapping, names):
     return None
 
 
+def _ply_columns(ply, path):
+    """Flatten a PLY into one {property: array} mapping, whatever element layout it uses.
+
+    Most exports put everything on a single `vertex` element. Some -- SemanticBridge among
+    them -- split the same N points across parallel elements instead:
+
+        element points N   property float x/y/z
+        element color  N    property uchar red/green/blue
+        element label  N    property uchar label
+
+    Both are the same table stored differently, so every element whose length matches the
+    point count is merged into one column mapping. Elements of any other length (faces, say)
+    are skipped, and a property name appearing twice keeps its first occurrence.
+    """
+    elements = list(ply.elements)
+    if not elements:
+        raise ValueError(f"{path}: PLY contains no elements")
+    # The point count is the length of the element carrying the coordinates.
+    n_points = next((len(e.data) for e in elements
+                     if {"x", "y", "z"} <= set(e.data.dtype.names or ())), None)
+    if n_points is None:
+        names = {e.name: (e.data.dtype.names or ()) for e in elements}
+        raise KeyError(f"{path}: no element carries x/y/z. Elements: {names}")
+    cols = {}
+    for e in elements:
+        if len(e.data) != n_points:
+            continue
+        for name in (e.data.dtype.names or ()):
+            cols.setdefault(name, e.data[name])
+    return cols
+
+
 def read_ply(path, label_field, has_rgb, rgb_max):
     """Read x/y/z (+optional rgb) and an integer label field from a .ply file."""
     try:
@@ -130,8 +129,7 @@ def read_ply(path, label_field, has_rgb, rgb_max):
     except ImportError:
         raise ImportError("Reading .ply requires plyfile: pip install plyfile")
     ply = PlyData.read(path)
-    v = ply["vertex"].data
-    cols = {name: v[name] for name in v.dtype.names}
+    cols = _ply_columns(ply, path)
     xyz = np.stack([cols["x"], cols["y"], cols["z"]], axis=1).astype(np.float64)
 
     rgb = None
@@ -331,7 +329,12 @@ def list_scenes(input_dir, profile):
 
 def main():
     ap = argparse.ArgumentParser(description="Convert public datasets to PointEdgeSegNet processed .pt format")
-    ap.add_argument("--dataset", required=True, choices=sorted(PROFILES.keys()))
+    ap.add_argument("--dataset", required=True,
+                    help="Profile name from the profile file (see dataset_profiles.json)")
+    ap.add_argument("--profiles", default=None, metavar="PROFILES.json",
+                    help="Dataset profile definitions (default: dataset_profiles.json next to "
+                         "this script). Point it at your own file to convert a dataset that is "
+                         "not in the repo, without touching any code.")
     ap.add_argument("--input_dir", required=True, help="Folder with the dataset scene files")
     ap.add_argument("--output_dir", default=None, help="Output processed dir (default: ./processed_<dataset>)")
     ap.add_argument("--split", choices=["auto", "train", "test"], default="auto",
@@ -348,7 +351,12 @@ def main():
     ap.add_argument("--dry_run", action="store_true", help="Parse + report shapes, do not write .pt")
     args = ap.parse_args()
 
-    profile = PROFILES[args.dataset]
+    profiles = load_profiles(args.profiles)
+    if args.dataset not in profiles:
+        ap.error(f"unknown dataset '{args.dataset}'. "
+                 f"{args.profiles or DEFAULT_PROFILES_PATH} defines: "
+                 f"{', '.join(sorted(profiles))}")
+    profile = profiles[args.dataset]
     has_rgb = profile["has_rgb"] if args.rgb is None else args.rgb
     label_field = args.label_field or profile.get("label_field")
     out_dir = args.output_dir or f"./processed_{args.dataset}"

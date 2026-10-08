@@ -1,0 +1,57 @@
+{
+  "_comment": [
+    "S3DIS indoor rooms, 13 classes. Reproduces the released run (logs/20260818_003229,",
+    "mIoU 64.79 / OA 87.78 on Area 5).",
+    "",
+    "Run:  python train_model.py --domain room",
+    "",
+    "block_mode chunk is the partition that produced the record and the one",
+    "evaluate_full.py --mode chunk scores with, so training and evaluation split the cloud",
+    "identically: voxelize at room_grid, KD-split the voxels into cores of at most core_max,",
+    "give each core a halo ring of unsupervised context. Verified to rebuild the released",
+    "chunk_s3dis cache exactly -- same block count, feature width and core sizes.",
+    "",
+    "Do NOT switch this to column mode: that is a different builder (full-resolution",
+    "overlapping columns) and does not reproduce these numbers."
+  ],
+  "name": "room",
+  "description": "S3DIS indoor rooms, 13 classes",
+  "config": "model_params_room.json",
+  "train_args": {
+    "block_mode": "chunk",
+    "sampler": "grid",
+    "arch": "stencil",
+    "v2_neighbors": "stencil",
+    "v2_stencil": 2,
+    "v2_diff": true,
+    "v2_directional": true,
+    "enc_channels": [
+      64,
+      192,
+      320,
+      448
+    ],
+    "bottleneck_dim": 256,
+    "num_epochs": 600,
+    "batch_size": 4,
+    "val_batch_size": 4,
+    "learning_rate": 0.003,
+    "aug_preset": "strong",
+    "processed_data_path": "./processed_s3dis",
+    "block_data_path": "./chunk_s3dis",
+    "block_size": 20480,
+    "train_areas": [
+      "Area_1",
+      "Area_2",
+      "Area_3",
+      "Area_4",
+      "Area_6"
+    ],
+    "test_area": "Area_5",
+    "room_grid": 0.04,
+    "core_max": 12288,
+    "halo": 1.0,
+    "focal_gamma": 2.0,
+    "oversample_rare": 1.0
+  }
+}

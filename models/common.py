@@ -8,7 +8,8 @@ from torch_geometric.utils import scatter
 
 
 class FeatureGate(nn.Module):
-	"""Lightweight feature-wise gating for Geo, RGB, Spatial and Block-Context groups.
+	"""Lightweight feature-wise gating for the Geo, RGB, Spatial, Block-Context and
+	Global-Position groups.
 
 	Adapts to the configured feature layout: any group whose dim is 0 (e.g. a colorless
 	cloud with rgb_dim=0, or context_dim=0 when block context is off) is skipped, and a
@@ -16,14 +17,18 @@ class FeatureGate(nn.Module):
 	spatial=3, context=0) this is byte-identical to the original 10D gate, so existing
 	weights load unchanged.
 	"""
-	def __init__(self, geo_dim=4, rgb_dim=3, spatial_dim=3, context_dim=0):
+	def __init__(self, geo_dim=4, rgb_dim=3, spatial_dim=3, context_dim=0,
+				 global_position_dim=0):
 		super(FeatureGate, self).__init__()
 		self.geo_dim = geo_dim
 		self.rgb_dim = rgb_dim
 		self.spatial_dim = spatial_dim
 		self.context_dim = context_dim
-		self.dims = [geo_dim, rgb_dim, spatial_dim, context_dim]
-		self.offsets = [0, geo_dim, geo_dim + rgb_dim, geo_dim + rgb_dim + spatial_dim]
+		self.global_position_dim = global_position_dim
+		# Group order must match how features are concatenated in data_processing:
+		# [geo | rgb | spatial | block-context | global-position].
+		self.dims = [geo_dim, rgb_dim, spatial_dim, context_dim, global_position_dim]
+		self.offsets = [sum(self.dims[:i]) for i in range(len(self.dims))]
 		self.present = [i for i, d in enumerate(self.dims) if d > 0]  # which groups exist
 		total_dim = sum(self.dims)
 		num_gates = len(self.present)
@@ -37,13 +42,14 @@ class FeatureGate(nn.Module):
 		self.sigmoid = nn.Sigmoid()
 
 	def forward(self, x):
-		# x: [N, total_dim] laid out as [geo | rgb | spatial | context] (absent groups omitted)
+		# x: [N, total_dim] laid out as [geo | rgb | spatial | context | global-pos]
+		# (absent groups omitted)
 		gates = self.sigmoid(self.encoder(x))  # [N, num_gates]
 
 		out = []
-		# full_gates keeps a stable [N, 4] (geo, rgb, spatial, context) view for logging;
-		# absent groups report gate 0 (indices 0-2 keep their original meaning).
-		full_gates = x.new_zeros(x.size(0), 4)
+		# full_gates keeps a stable per-group view for logging; absent groups report gate 0
+		# and indices 0-3 keep the meaning they had before global position was added.
+		full_gates = x.new_zeros(x.size(0), len(self.dims))
 		gi = 0
 		for group_idx, d in enumerate(self.dims):
 			if d == 0:
@@ -133,6 +139,10 @@ class LightweightTransformer(nn.Module):
 			spatial: [Total_Points, spatial_dim] or None (density, anisotropy, structure)
 			batch: [Total_Points] (batch assignment)
 		"""
+		if self.spatial_dim > 0 and spatial is None:
+			raise ValueError(
+				f'position encoder was built for 3 + {self.spatial_dim} inputs but forward() got no '
+				'spatial tensor. Either pass the spatial channels or construct with spatial_dim=0.')
 		use_spatial = self.spatial_dim > 0 and spatial is not None
 		# Force float32 for indexing operations (FP16 not supported)
 		original_dtype = x.dtype

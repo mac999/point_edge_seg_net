@@ -22,10 +22,11 @@ dist/
 *.egg-info/
 *.pyc
 .vscode/
-.claude/
 
 # --- model weights (belong to logs/, but guard against strays) ---
 *.pth
+# the released checkpoint is small enough to ship; the datasets are not
+!weights/*.pth
 *.ckpt
 chunk_s3dis_2cm/
 
@@ -43,3 +44,23 @@ run_train_oversample.sh
 run_train_stage*.sh
 run_train_dgx.*
 PROGRESS.md
+
+# --- SemanticBridge dataset (separate from the S3DIS tree; GBs, downloadable) ---
+bridge/
+
+# Scoring output of run_bridge_reproduce.sh (regenerable from the released weights)
+reproduce/
+
+# --- manuscript working directory (figures/tables are the paper's contribution;
+#     released only on publication) ---
+paper/
+TODO.md
+
+# --- ablation recipes and the structure-prior machinery: these carry the analysis behind
+#     the released configuration and ship with the paper, not before ---
+domains/bridge_w12.json
+domains/bridge_w24.json
+domains/bridge_w6_gpos.json
+domains/bridge_w6_sol.json
+model_params_semanticbridge_gpos.json
+structure_presets.local.json

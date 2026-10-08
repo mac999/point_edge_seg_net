@@ -1,0 +1,28 @@
+{
+  "_comment": [
+    "Structure-oriented loss presets: spatial priors about WHERE a component sits in a",
+    "structure, applied as a training-time penalty rather than an input channel.",
+    "",
+    "Select with --structure_loss NAME (default 'none' = the loss is untouched), and point",
+    "--structure_presets at another file to use your own. Class names are resolved against",
+    "the active config, so a preset written for one dataset fails loudly on another.",
+    "",
+    "Schema of a preset:",
+    "  weight       scalar multiplier on the whole term",
+    "  axis         {source: 'pca_xy', class_subset: [<class names>], normalize: 'max_abs'}",
+    "               the structure's main horizontal axis, estimated per scene from the",
+    "               subset classes (e.g. the deck) so it follows the structure, not the survey",
+    "  constraints  list of {type: 'ordering', feature: 'abs_axis', outer: <class>,",
+    "               inner: <class>, margin: <float>, min_mass: <float>} -- asks the",
+    "               probability-weighted mean axis position of `outer` to exceed that of",
+    "               `inner` by `margin`, and skips the term when either class has less than",
+    "               `min_mass` of predicted probability in the batch",
+    "",
+    "Only an ordering constraint is implemented. Dataset-specific presets are distributed",
+    "with the study that measured them."
+  ],
+  "none": {
+    "description": "No structure prior (default)",
+    "constraints": []
+  }
+}

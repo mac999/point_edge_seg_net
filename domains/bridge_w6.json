@@ -1,0 +1,52 @@
+{
+  "_comment": [
+    "Released SemanticBridge recipe: 6 m column window at a 4 cm input voxel.",
+    "",
+    "The window and the voxel are sized together. With cover tiling the effective per-block",
+    "density is block_size / window^2, so widening the window on its own thins every block;",
+    "widening the voxel with it keeps points per block roughly constant. At 20480 points this",
+    "recipe holds about 569 pts/m^2 against 808 available (a 1.4x subsample).",
+    "",
+    "This is the configuration the released checkpoint was trained with; see BRIDGE.md.",
+    "",
+    "Run:  ./run_domain_train.sh bridge_w6"
+  ],
+  "name": "bridge_w6",
+  "description": "6 m window at 4 cm voxels",
+  "config": "model_params_semanticbridge.json",
+  "train_args": {
+    "processed_data_path": "bridge/processed",
+    "block_data_path": "bridge/chunks_w6",
+    "log_root": "bridge/logs",
+    "train_areas": "train",
+    "test_area": "test",
+    "block_size": 20480,
+    "block_mode": "column",
+    "sampler": "grid",
+    "arch": "stencil",
+    "v2_neighbors": "stencil",
+    "v2_stencil": 2,
+    "v2_diff": true,
+    "v2_directional": true,
+    "enc_channels": [
+      64,
+      192,
+      320,
+      448
+    ],
+    "bottleneck_dim": 256,
+    "num_epochs": 400,
+    "batch_size": 4,
+    "val_batch_size": 4,
+    "learning_rate": 0.003,
+    "focal_gamma": 2.0,
+    "oversample_rare": 1.0,
+    "aug_preset": "strong",
+    "cooldown_sec": 0,
+    "pad_blocks": false,
+    "cover_columns": true,
+    "column_window": 6.0,
+    "column_stride": 6.0,
+    "column_grid": 0.04
+  }
+}

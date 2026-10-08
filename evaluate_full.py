@@ -24,22 +24,24 @@
 # Output: <model_dir>/test_full_summary.json (+ console table). Existing
 # test_summary.json files are left untouched for comparison.
 
-import os, json, argparse, time
+import os, sys, json, argparse, time
 import numpy as np
 import torch
 from glob import glob
 from tqdm import tqdm
 
 from torch_geometric.data import Data, Batch
-from models import resolve_arch
-from models.edgeconv import PointEdgeSegNet
+from models.builder import (spec_from_args, describe_spec, load_ensemble_members,
+                           add_ensemble_arguments)
 from data_processing import (
 	load_model_config,
 	resolve_feature_config,
 	partition_columns_cover,
+	extract_global_position_features,
 	compute_surface_variation,
 	make_block_context_extractor,
 	append_block_context,
+	feature_dims_from_spec,
 )
 
 def refresh_curvature(features, points, spec):
@@ -71,25 +73,46 @@ def tta_views(n_scale=5, flip=True):
 	return views
 
 def evaluate_room(model, room_pt, spec, num_classes, device, block_size, window, stride,
-				  batch_size, use_amp=False, views=((1.0, False),)):
+				  batch_size, use_amp=False, views=((1.0, False),), column_grid=0.0,
+				  save_probs=None):
 	"""Return (13x13 confusion-matrix counts, points scored, blocks used) for one room.
 
 	`views` is a list of (scale, flip_x) TTA transforms; per-point softmax is summed over
 	all of them (and over overlapping blocks when stride < window) before the argmax.
+
+	`save_probs`: optional path; the per-point mean softmax (over views and overlapping
+	blocks), carried back to every ORIGINAL point, is written there as float16 so models
+	scored on different voxel grids can be fused point-for-point afterwards (fuse_votes.py).
 	"""
 	d = torch.load(room_pt, weights_only=False)
-	points = d.pos.numpy().astype(np.float32)
+	all_points = d.pos.numpy().astype(np.float32)
 	features = d.x.numpy().astype(np.float32).copy()
 	labels = d.y.numpy()
-	n = len(points)
 
-	features = refresh_curvature(features, points, spec)
+	# Score where the model was trained. A checkpoint trained on a voxelised cloud sees a
+	# different point density than the raw room, and scoring it raw measures the wrong
+	# thing -- so voxelise first and propagate the result back, exactly as chunk mode does.
+	# Coverage is unaffected: every original point still receives a prediction.
+	if column_grid and column_grid > 0:
+		from voxel_chunk import voxelize_and_featurize
+		base_dim = spec['num_features'] - spec.get('global_position_dim', 0)
+		_, points, features = voxelize_and_featurize(all_points, features, column_grid,
+													 neighbor_knn=spec['neighbor_knn'],
+													 feature_dim=base_dim)
+	else:
+		points = all_points
+		features = refresh_curvature(features, points, spec)
+	if spec.get('global_position_dim'):
+		# after voxelisation, matching how the training cache builds it
+		features = np.concatenate([features, extract_global_position_features(points)], axis=1)
+	n = len(points)
 	ctx = make_block_context_extractor(points, features, spec)
 
 	blocks = partition_columns_cover(points, block_size=block_size,
 									 window=window, stride=stride, seed=0)
 
 	votes = np.zeros((n, num_classes), dtype=np.float32)
+	nvotes = np.zeros(n, dtype=np.int32)      # how many softmax rows each point received
 	for scale, flip_x in views:
 		# Apply the view transform to coordinates only. Blocks were computed on the
 		# original coordinates, so point membership (and therefore coverage) is identical
@@ -118,9 +141,22 @@ def evaluate_room(model, room_pt, spec, num_classes, device, block_size, window,
 			for j, (idx, num_real) in enumerate(chunk):
 				p = probs[j * block_size:(j + 1) * block_size][:num_real]
 				np.add.at(votes, idx[:num_real], p)  # scatter-add: padded rows excluded
+				np.add.at(nvotes, idx[:num_real], 1)
 
 	assert (votes.sum(axis=1) > 0).all(), f"uncovered points in {room_pt}"
 	pred = votes.argmax(axis=1)
+	back = None
+	if len(points) != len(all_points):
+		# Voxels were scored; carry each prediction to the original points nearest it, so
+		# the confusion matrix still covers every labelled point in the room.
+		from scipy.spatial import cKDTree
+		back = cKDTree(points).query(all_points, k=1)[1]
+		pred = pred[back]
+	if save_probs:
+		mean = votes / nvotes[:, None]
+		if back is not None:
+			mean = mean[back]
+		np.save(save_probs, mean.astype(np.float16))
 	valid = (labels >= 0) & (labels < num_classes)
 	conf = np.bincount(labels[valid] * num_classes + pred[valid],
 					   minlength=num_classes * num_classes).reshape(num_classes, num_classes)
@@ -144,12 +180,29 @@ def metrics_from_confusion(conf):
 
 def main():
 	ap = argparse.ArgumentParser(description='Full-coverage (standard-protocol) S3DIS evaluation')
+	ap.add_argument('--domain', default=None, metavar='NAME|PATH',
+					help="Score a checkpoint on the geometry its domain trained it on "
+						 "(domains/NAME.json): block size, window/stride, voxel lattice and "
+						 "architecture are all read from the run's own recipe. Explicit flags "
+						 "still win. Without this they must be retyped by hand, which is how "
+						 "w6/w12 were once scored 3.9 mIoU low.")
+	ap.add_argument('--protocol', default=None,
+					choices=['single', 'overlap', 'mirror', 'overlap_mirror'],
+					help="Named inference protocol, applied after --domain: 'single' = one view, "
+						 "stride = window (coverage only); 'overlap' = stride window/2; "
+						 "'mirror' = 2 views (identity + mirrored); 'overlap_mirror' = both. "
+						 "Overrides --stride/--tta_flip; report which one was used.")
 	ap.add_argument('--config', default='model_params.json')
-	ap.add_argument('--model_weights', required=True)
+	ap.add_argument('--model_weights', default=None,
+					help='Checkpoint to score. Required unless --ensemble_config is given.')
 	ap.add_argument('--processed_data_path', default='./processed_s3dis')
 	ap.add_argument('--test_area', default='Area_5')
 	ap.add_argument('--block_size', type=int, default=8192,
 					help='MUST match the block_size the checkpoint was trained with')
+	ap.add_argument('--column_grid', type=float, default=0.0, metavar='M',
+					help='block mode: voxel size the checkpoint was TRAINED with (0 = full resolution).\n'
+						 'Scoring a voxel-trained model on the raw cloud measures a density it never\n'
+						 'saw; predictions are propagated back to every original point either way.')
 	ap.add_argument('--window', type=float, default=2.0,
 					help='MUST match the training column window')
 	ap.add_argument('--stride', type=float, default=2.0,
@@ -172,8 +225,16 @@ def main():
 	ap.add_argument('--room_grid', type=float, default=0.04, help='room mode: voxel size, MUST match training')
 	ap.add_argument('--room_max_points', type=int, default=200000,
 					help='room mode: voxels per forward pass; larger rooms are split into overlapping chunks')
-	ap.add_argument('--core_max', type=int, default=12288, help='chunk mode: KD-split target, MUST match training')
-	ap.add_argument('--halo', type=float, default=1.0, help='chunk mode: halo width in m, MUST match training')
+	ap.add_argument('--core_max', type=int, default=12288,
+					help='chunk mode: scored voxels per chunk. NOT required to match training: '
+						 'block_size - core_max is the halo budget, and giving the network more '
+						 'context than it saw in training measurably helps (12288 -> 8192 is '
+						 '+0.22 mIoU on Area 5; 6144 with --halo 1.5 is +0.40, at 1.5-2x the '
+						 'scoring time).')
+	ap.add_argument('--halo', type=float, default=1.0,
+					help='chunk mode: width (m) of the unscored context ring. 1.5 is the measured '
+						 'optimum for this data, but only once core_max leaves budget to retain it '
+						 '-- at the default core_max a wider ring is subsampled away and scores WORSE.')
 	ap.add_argument('--invariant_geo', action='store_true',
 					help='chunk mode: recompute linearity/planarity/verticality into the last 3 feature '
 						 'columns. MUST match how the training cache was built -- a mismatch silently feeds '
@@ -187,6 +248,14 @@ def main():
 					help='CHUNK mode TTA: grid-preserving D4 views (1=off, 4=rot90s, 8=rot90s x flip). '
 						 'Scale-TTA is wrong for stencil models (breaks the lattice); this is the safe family.')
 	ap.add_argument('--out', default=None, help='Output JSON (default: <model_dir>/test_full_summary.json)')
+	ap.add_argument('--overwrite', action='store_true',
+					help='Allow replacing an existing --out file. Refused by default: a scored run is \n'
+						 'the evidence for a comparison, and silently rewriting it loses the baseline \n'
+						 'you were comparing against.')
+	ap.add_argument('--save_probs', default=None, metavar='DIR',
+					help='Write each room\'s per-point mean softmax (float16 .npy, original points) '
+						 'under DIR for later point-wise fusion with fuse_votes.py.')
+	add_ensemble_arguments(ap)
 	ap.add_argument('--arch', type=str, default='edgeconv',
 					choices=['edgeconv', 'stencil', 'v1', 'v2'],
 					help="Architecture the checkpoint was trained with ('v1'/'v2' aliases accepted)")
@@ -201,6 +270,35 @@ def main():
 	ap.add_argument('--v2_directional', action='store_true', help='v2: anisotropic aggregation, MUST match training')
 	ap.add_argument('--v2_stencil_z', type=int, default=0, help='v2: vertical stencil reach, MUST match training')
 	args = ap.parse_args()
+	domain_applied = None
+	if args.domain:
+		from domain_config import load_domain, apply_domain_eval, describe
+		domain = load_domain(args.domain)
+		domain_applied = apply_domain_eval(args, domain, sys.argv[1:], ap)
+		print(describe(domain, domain_applied))
+	if args.protocol:
+		# Named protocols are resolved after the domain so they compose: the domain fixes the
+		# window, the protocol decides how densely it is swept and how many views are voted.
+		if '--stride' not in sys.argv:
+			args.stride = args.window / 2 if args.protocol in ('overlap', 'overlap_mirror') else args.window
+		if '--tta_flip' not in sys.argv:
+			args.tta_flip = args.protocol in ('mirror', 'overlap_mirror')
+		print(f"Protocol '{args.protocol}': stride {args.stride} (window {args.window}), "
+			  f"mirror TTA {'on' if args.tta_flip else 'off'}")
+	if not args.model_weights and not args.ensemble_config:
+		ap.error('give --model_weights (a checkpoint) or --ensemble_config (an ensemble spec)')
+	if args.ensemble and args.ensemble_config:
+		ap.error('--ensemble and --ensemble_config are alternatives: --ensemble lists checkpoints '
+				 'that share this command line\'s architecture, --ensemble_config lets each member '
+				 'declare its own')
+
+	# Resolve and guard the output BEFORE scoring: this run takes minutes, and discovering
+	# at the end that it would clobber a previous result wastes all of it.
+	default_near = args.model_weights or args.ensemble_config
+	out_path = args.out or os.path.join(os.path.dirname(default_near), 'test_full_summary.json')
+	if os.path.exists(out_path) and not args.overwrite:
+		ap.error(f"{out_path} already exists. That file is the evidence for an earlier "
+				 f"comparison; pass --overwrite to replace it, or --out with a new path.")
 
 	config = load_model_config(args.config)
 	if args.block_context:
@@ -208,34 +306,17 @@ def main():
 	spec = resolve_feature_config(config)
 	num_classes = int(config['num_classes'])
 	class_names = config['class_names']
-	feature_dims = (spec['geo_dim'], spec['rgb_dim'], spec['spatial_dim'], spec['context_dim'])
+	feature_dims = feature_dims_from_spec(spec)
 
 	device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-	enc = tuple(int(c) for c in args.enc_channels.split(',')) if args.enc_channels else None
-	if resolve_arch(args.arch) == 'stencil':
-		from models.stencil import PointEdgeSegNet as StencilSegNet
-		model = StencilSegNet(num_features=spec['num_features'], num_classes=num_classes,
-								  feature_dims=feature_dims, enc_channels=enc or (64, 192, 320, 448),
-								  bottleneck_dim=args.bottleneck_dim,
-								  knn=args.v2_knn, curves=args.v2_curves,
-								  neighbor_mode=args.v2_neighbors, stencil_radius=args.v2_stencil,
-								  feature_diff=args.v2_diff, base_grid=args.v2_base_grid,
-								  pool_grids=tuple(float(g) for g in args.v2_pool_grids.split(',')),
-								  directional=args.v2_directional,
-								  stencil_z=args.v2_stencil_z or None).to(device)
-	else:
-		model = PointEdgeSegNet(num_features=spec['num_features'], num_classes=num_classes,
-							feature_dims=feature_dims, context_mode=args.context_mode,
-							width_mult=args.width_mult, mid_transformer=args.mid_transformer,
-							sampler=args.sampler,
-							enc_channels=enc,
-							bottleneck_dim=args.bottleneck_dim).to(device)
-	state = torch.load(args.model_weights, map_location=device, weights_only=False)
-	if isinstance(state, dict) and 'model_state_dict' in state:
-		state = state['model_state_dict']
-	model.load_state_dict(state)
-	model.eval()
-	print(f"Model: {args.model_weights}  ({spec['num_features']}D, dims={feature_dims})")
+	model_spec = spec_from_args(args)
+	source = args.ensemble_config or args.model_weights
+	print(f"Model(s): {source}  ({spec['num_features']}D, dims={feature_dims})")
+	model, members = load_ensemble_members(model_spec, args.model_weights, args.ensemble,
+										   args.ensemble_config, spec['num_features'],
+										   num_classes, feature_dims, device)
+	if members is None:
+		print(f"  {describe_spec(model_spec)}")
 	views = tta_views(n_scale=args.tta, flip=args.tta_flip)
 	# Two independent TTA families live here: chunk mode votes over the grid-preserving D4
 	# set (--tta_d4), every other mode over the scale x mirror set (--tta/--tta_flip).
@@ -290,10 +371,15 @@ def main():
 			conf += c
 			total_blocks += nchunk
 	else:
+		if args.save_probs:
+			os.makedirs(args.save_probs, exist_ok=True)
 		for room_pt in tqdm(rooms, desc=f'[Full eval {args.test_area}]'):
+			probs_path = (os.path.join(args.save_probs, os.path.basename(room_pt)[:-3] + '.npy')
+						  if args.save_probs else None)
 			c, npts, nblk = evaluate_room(model, room_pt, spec, num_classes, device,
 										  args.block_size, args.window, args.stride, args.batch_size,
-										  views=views)
+										  views=views, column_grid=args.column_grid,
+										  save_probs=probs_path)
 			conf += c
 			total_blocks += nblk
 	elapsed = time.time() - t0
@@ -307,17 +393,20 @@ def main():
 		print(f"{name:10s} {m['per_class_acc'][i]*100:7.2f} {m['per_class_iou'][i]*100:7.2f} "
 			  f"{int(m['gt'][i]):>12,}")
 
-	out_path = args.out or os.path.join(os.path.dirname(args.model_weights), 'test_full_summary.json')
 	result = {
 		'protocol': f'full_coverage_voting_{args.mode}',
 		'test_area': args.test_area,
-		'model_path': args.model_weights,
+		'model_path': args.model_weights if members is None else args.ensemble_config,
+		'ensemble_members': members,
 		'eval_config': {'mode': args.mode, 'room_grid': args.room_grid,
+						'column_grid': args.column_grid,
 						'block_size': args.block_size, 'window': args.window, 'stride': args.stride,
 						'block_context': bool(args.block_context), 'num_blocks': total_blocks,
 						'num_rooms': len(rooms), 'tta_views': len(active_views),
 						'tta_family': tta_family, 'tta_d4': args.tta_d4,
-						'tta_view_list': [list(v) for v in active_views]},
+						'tta_view_list': [list(v) for v in active_views],
+						'domain': args.domain, 'protocol': args.protocol,
+						'domain_applied': domain_applied},
 		'overall_metrics': {'accuracy': m['accuracy'], 'mAcc': m['mAcc'], 'mIoU': m['mIoU'],
 							'total_points': int(conf.sum())},
 		'per_class_results': {

@@ -1,0 +1,134 @@
+{
+  "_comment": [
+    "Inference-side sweep for the released v2 checkpoint. No retraining, no code changes --",
+    "only flags evaluate_full.py already accepts, so nothing here can regress the model.",
+    "",
+    "What is being tested:",
+    "  halo      context ring (m) around each scored chunk. Wider = more context for boundary",
+    "            voxels. Only cores are scored, so coverage never changes.",
+    "  core_max  scored voxels per chunk. Larger = fewer chunk boundaries = fewer seams.",
+    "",
+    "Constraint: core + halo points must fit in --block_size (20480). Raising core_max eats",
+    "the halo budget, which is why the two are swept one at a time around the current values",
+    "rather than as a full cross product.",
+    "",
+    "Stage plan (screen cheap, confirm expensive):",
+    "  noise        baseline x3 at tta_d4 1 -- establishes how much a difference must beat",
+    "  screen_halo  halo sweep at tta_d4 1",
+    "  screen_core  core_max sweep at tta_d4 1",
+    "  confirm      best 3 overall, re-run at tta_d4 8 x2 -- the protocol the record uses",
+    "",
+    "Run:  python sweep_eval.py --config sweep_eval.json",
+    "      python sweep_eval.py --config sweep_eval.json --dry_run",
+    "",
+    "FOLLOW-UP (added after the first pass). The first pass showed the real variable is not",
+    "halo width but the halo BUDGET: chunk_with_halo() keeps only block_size - core_max halo",
+    "points and randomly discards the rest, so widening halo at a fixed core_max just spreads",
+    "the same budget thinner. mIoU was monotonic in the budget:",
+    "  core_max 14336 (budget 6144) 64.19 | 12288 (8192) 64.26 | 10240 (10240) 64.38 | 8192 (12288) 64.46",
+    "core_max 8192 confirmed at 8 views: 65.01 vs the 64.79 record, twice, spread 0.00.",
+    "So: push the budget further, and re-test halo width now that there is room to retain it."
+  ],
+  "out_dir": "logs/sweep_infer",
+  "base": {
+    "model_weights": "logs/20260818_003229/final_model.pth",
+    "config": "model_params_room.json",
+    "mode": "chunk",
+    "sampler": "grid",
+    "block_size": 20480,
+    "core_max": 12288,
+    "halo": 1.0,
+    "arch": "stencil",
+    "v2_neighbors": "stencil",
+    "v2_stencil": 2,
+    "v2_diff": true,
+    "v2_directional": true,
+    "enc_channels": "64,192,320,448",
+    "bottleneck_dim": 256
+  },
+  "stages": [
+    {
+      "name": "noise",
+      "grid": {
+        "halo": [
+          1.0
+        ],
+        "core_max": [
+          12288
+        ]
+      },
+      "overrides": {
+        "tta_d4": 1
+      },
+      "repeats": 3
+    },
+    {
+      "name": "screen_halo",
+      "grid": {
+        "halo": [
+          0.5,
+          1.5,
+          2.0,
+          2.5
+        ],
+        "core_max": [
+          12288
+        ]
+      },
+      "overrides": {
+        "tta_d4": 1
+      }
+    },
+    {
+      "name": "screen_core",
+      "grid": {
+        "halo": [
+          1.0
+        ],
+        "core_max": [
+          8192,
+          10240,
+          14336
+        ]
+      },
+      "overrides": {
+        "tta_d4": 1
+      }
+    },
+    {
+      "name": "confirm",
+      "from_top": 3,
+      "overrides": {
+        "tta_d4": 8
+      },
+      "repeats": 2
+    },
+    {
+      "name": "screen_combo",
+      "grid": {
+        "core_max": [
+          6144,
+          8192
+        ],
+        "halo": [
+          1.0,
+          1.5,
+          2.0
+        ]
+      },
+      "overrides": {
+        "tta_d4": 1
+      }
+    },
+    {
+      "name": "confirm_combo",
+      "from_top": 2,
+      "from_stages": [
+        "screen_combo"
+      ],
+      "overrides": {
+        "tta_d4": 8
+      }
+    }
+  ]
+}

@@ -6,7 +6,8 @@
 
 import torch, numpy as np, open3d as o3d, os, argparse, math
 from models import resolve_arch
-from models.edgeconv import PointEdgeSegNet
+from models.builder import (spec_from_args, load_ensemble_members,
+                            add_ensemble_arguments)
 from data_processing import (
     calculate_features_with_open3d,
     CLASS_NAMES,
@@ -17,7 +18,8 @@ from data_processing import (
     merge_block_votes,
     resolve_feature_config,
     make_block_context_extractor,
-    append_block_context
+    append_block_context,
+    feature_dims_from_spec,
 )
 from torch_geometric.data import Data, Batch
 from torch_geometric.loader import DataLoader
@@ -182,25 +184,23 @@ def create_inference_blocks_columns(point_cloud_path, block_output_dir, block_si
         block_files.append(fp)
     return block_files, coords, len(coords)
 
-def run_inference_with_voting(models, block_files, device, total_points, num_classes,
+def run_inference_with_voting(model, block_files, device, total_points, num_classes,
                               coords=None, tta_rotations=(0.0,)):
     """Run inference on column blocks and majority-vote per point.
 
-    Supports two multi-view boosts that cost no extra VRAM (blocks stay batch_size=1):
-      - Model ensemble: `models` may be a list; per block their softmax probabilities are
-        averaged before argmax (complementary models cancel each other's errors).
-      - Test-time augmentation (TTA): each block is additionally predicted under Z-axis
-        rotations in `tta_rotations` (degrees). Coordinates AND the normal channels (x[:,0:3])
-        are rotated together so geometry stays consistent; every rotated prediction casts a
-        vote. Labels are rotation-invariant, so votes accumulate correctly.
+    `model` may be an EnsembleModel, which averages its members internally and returns log
+    probabilities -- `softmax(log p) == p`, so this function needs no ensemble branch of its
+    own and the member weights from an --ensemble_config are honoured here too.
+
+    Test-time augmentation: each block is additionally predicted under the Z-axis rotations in
+    `tta_rotations` (degrees). Coordinates AND the normal channels (x[:,0:3]) are rotated
+    together so geometry stays consistent; every rotated prediction casts a vote. Labels are
+    rotation-invariant, so votes accumulate correctly.
 
     coords (full-cloud XYZ) is passed to merge_block_votes so any residual uncovered point is
     filled from its nearest voted neighbour rather than silently labelled class 0.
     """
-    if not isinstance(models, (list, tuple)):
-        models = [models]
-    for m in models:
-        m.eval()
+    model.eval()
     dataset = InferenceBlockDataset(block_files)
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
     per_block = []
@@ -222,11 +222,7 @@ def run_inference_with_voting(models, block_files, device, total_points, num_cla
                 else:
                     batch.pos = base_pos
                     batch.x[:, 0:3] = base_nrm
-                # Ensemble: average softmax over models
-                probs = None
-                for m in models:
-                    p = torch.softmax(m(batch), dim=-1)
-                    probs = p if probs is None else probs + p
+                probs = torch.softmax(model(batch), dim=-1)
                 preds = probs.argmax(dim=-1).cpu().numpy()
                 per_block.append((preds[:num_valid], idx))
     final_labels, vote_counts = merge_block_votes(total_points, num_classes, per_block, coords=coords)
@@ -308,8 +304,7 @@ def parse_arguments():
                        help='Column-mode stride (m). < window => overlap => more votes per point.')
     parser.add_argument('--tta', action='store_true',
                        help='Test-time augmentation: also predict under Z-rotations 90/180/270 and vote (no extra VRAM).')
-    parser.add_argument('--ensemble', nargs='*', default=None, metavar='WEIGHTS.pth',
-                       help='Extra model weight paths to ensemble (softmax-averaged) with --model_weights.')
+    add_ensemble_arguments(parser)
     # Block-context overrides. MUST match how --model_weights was trained (same
     # on/off, buffer, bins); normally leave unset and let the config decide.
     parser.add_argument('--block_context', dest='block_context', action='store_true', default=None,
@@ -349,7 +344,12 @@ def parse_arguments():
     parser.add_argument('--context_bins', type=int, default=None,
                        help='Block-context z-histogram bins; must match training.')
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.ensemble and args.ensemble_config:
+        parser.error("--ensemble and --ensemble_config are alternatives: --ensemble lists "
+                     "checkpoints that share this command line's architecture, "
+                     "--ensemble_config lets each member declare its own")
+    return args
 
 def save_segmented_las(output_path, coords, pred_labels, class_colors):
     """Save the segmented cloud as a LAS file for immediate viewing (CloudCompare, etc.).
@@ -401,7 +401,7 @@ def main():
     # Resolve the domain-agnostic feature spec (must match how the model was trained).
     spec = resolve_feature_config(config)
     num_features = spec['num_features']
-    feature_dims = (spec['geo_dim'], spec['rgb_dim'], spec['spatial_dim'], spec['context_dim'])
+    feature_dims = feature_dims_from_spec(spec)
 
     print(f"Dataset: {config.get('dataset_name', 'Custom')}")
     print(f"Number of classes: {NUM_CLASSES}")
@@ -420,49 +420,14 @@ def main():
     print(f"Using device: {device}")
     
     arch = resolve_arch(args.arch)
-    enc = tuple(int(c) for c in args.enc_channels.split(',')) if args.enc_channels else None
+    model_spec = spec_from_args(args)
     print(f"Architecture: {arch}" + (" (legacy v1)" if arch == 'edgeconv' else " (current v2)"))
 
-    def _build():
-        if arch == 'stencil':
-            from models.stencil import PointEdgeSegNet as StencilSegNet
-            return StencilSegNet(num_features=num_features, num_classes=NUM_CLASSES,
-                                 feature_dims=feature_dims, enc_channels=enc or (64, 192, 320, 448),
-                                 bottleneck_dim=args.bottleneck_dim,
-                                 knn=args.v2_knn, curves=args.v2_curves,
-                                 neighbor_mode=args.v2_neighbors, stencil_radius=args.v2_stencil,
-                                 feature_diff=args.v2_diff, base_grid=args.v2_base_grid,
-                                 pool_grids=tuple(float(g) for g in args.v2_pool_grids.split(',')),
-                                 directional=args.v2_directional,
-                                 stencil_z=args.v2_stencil_z or None)
-        return PointEdgeSegNet(num_features=num_features, num_classes=NUM_CLASSES, feature_dims=feature_dims,
-                               context_mode=args.context_mode, width_mult=args.width_mult,
-                               mid_transformer=args.mid_transformer,
-                               enc_channels=enc, bottleneck_dim=args.bottleneck_dim)
-
-    def _load(wpath):
-        m = _build()
-        state = torch.load(wpath, map_location=device, weights_only=False)
-        if isinstance(state, dict) and 'model_state_dict' in state:
-            state = state['model_state_dict']
-        try:
-            m.load_state_dict(state)
-        except RuntimeError as e:
-            hint = ("check --arch (a v2 checkpoint cannot load into the v1 model and vice versa), "
-                    "the --v2_* flags and --enc_channels/--bottleneck_dim"
-                    if arch == 'stencil' else
-                    "check --arch, --context_mode (input|bottleneck), --width_mult and --mid_transformer")
-            raise RuntimeError(
-                f"Checkpoint/architecture mismatch for '{wpath}'. The constructor flags must match "
-                f"training: {hint}. Original error: {e}") from e
-        return m.to(device).eval()
-
-    models = [_load(args.model_weights)]
-    for wpath in (args.ensemble or []):
-        models.append(_load(wpath))
-        print(f"Ensemble model added: {wpath}")
-    model = models[0]  # primary (used by the non-voting path)
-    print(f"Model(s) loaded successfully! ({len(models)} model{'s' if len(models) > 1 else ''})")
+    model, members = load_ensemble_members(model_spec, args.model_weights, args.ensemble,
+                                           args.ensemble_config, num_features, NUM_CLASSES,
+                                           feature_dims, device)
+    print(f"Model(s) loaded successfully! "
+          f"({len(members) if members else 1} model{'s' if members else ''})")
     tta_rotations = (0.0, 90.0, 180.0, 270.0) if args.tta else (0.0,)
     if args.tta:
         print("TTA enabled: Z-rotations 0/90/180/270")
@@ -475,7 +440,7 @@ def main():
             args.input_cloud, args.block_path, BLOCK_SIZE,
             window=args.column_window, stride=args.column_stride, feature_config=spec
         )
-        pred_labels = run_inference_with_voting(models, block_files, device, total_points, NUM_CLASSES,
+        pred_labels = run_inference_with_voting(model, block_files, device, total_points, NUM_CLASSES,
                                                 coords=original_coords, tta_rotations=tta_rotations)
     else:
         block_files, original_coords = create_inference_blocks(

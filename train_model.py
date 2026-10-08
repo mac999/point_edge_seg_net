@@ -4,7 +4,7 @@
 # Purpose: Trains and validates the PointEdgeSegNet model.
 # Dependencies: torch, torch_geometric, matplotlib, scikit-learn, tqdm
 
-import os, torch, torch.optim as optim, json, csv, argparse, time, numpy as np, random
+import os, sys, torch, torch.optim as optim, json, csv, argparse, time, numpy as np, random
 import torch.nn as nn, torch.nn.functional as F, matplotlib.pyplot as plt, gc
 from torch_geometric.loader import DataLoader
 from glob import glob
@@ -37,6 +37,7 @@ from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from datetime import datetime
 from diagnose_kpi_grad import monitor_kpi
+import structure_loss
 from data_processing import (
     apply_torch_color_augmentation,
     apply_torch_enhanced_color_augmentation,
@@ -44,14 +45,17 @@ from data_processing import (
     partition_columns,
     spatial_split_is_val,
     resolve_feature_config,
+    extract_global_position_features,
     make_block_context_extractor,
     append_block_context,
     CLASS_NAMES,
+    get_class_names,
     extract_features_from_room_data,
     load_model_config,
     get_model_config,
     get_class_colors,
-    get_class_weights
+    get_class_weights,
+    feature_dims_from_spec,
 )
 from torch.cuda.amp import autocast, GradScaler
 
@@ -150,6 +154,12 @@ COOLDOWN_SEC = 0.0
 # Focal Loss focusing parameter. Previously train used 1.5 while test used 2.5, which
 # made the reported test loss incomparable to the training/val loss. Now shared.
 FOCAL_GAMMA = 2.0
+# Structure-oriented loss (SOL): name of a preset in structure_presets.json, 'none' = off.
+# Spatial priors live in that file, never in this module -- see structure_loss.py.
+STRUCTURE_LOSS = 'none'
+STRUCTURE_WEIGHT = None        # override the preset's own weight when set
+STRUCTURE_PRESETS = 'structure_presets.json'
+STRUCTURE_SPEC = None          # resolved preset, set by build_dataloaders()
 
 # Probability of dropping (zeroing) RGB per training block. >0 trains a model that
 # still works when the input point cloud has no color (the configurable-feature goal).
@@ -174,21 +184,47 @@ AUG_TILT_STD = 0.0
 AUG_AUTOCONTRAST_PROB = 0.0
 AUG_SCALE_RANGE = (0.9, 1.1)
 
-def apply_aug_preset(preset):
-	"""Set the module-level augmentation globals for the chosen preset."""
-	global AUG_PRESET, AUG_FULL_ROTATE, AUG_ISOTROPIC_SCALE, AUG_FLIP_PROB
-	global AUG_TILT_STD, AUG_AUTOCONTRAST_PROB, AUG_SCALE_RANGE, RGB_DROPOUT_PROB
+AUG_PRESETS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'aug_presets.json')
+
+# Which module globals a preset may set, and the global each JSON key maps to. Anything
+# outside this map is a typo, and a typo that silently changes nothing is worse than a
+# crash -- it produces a run that looks like the one you asked for and is not.
+_AUG_KEYS = {
+	'full_rotate': 'AUG_FULL_ROTATE', 'isotropic_scale': 'AUG_ISOTROPIC_SCALE',
+	'scale_range': 'AUG_SCALE_RANGE', 'flip_prob': 'AUG_FLIP_PROB',
+	'tilt_std': 'AUG_TILT_STD', 'autocontrast_prob': 'AUG_AUTOCONTRAST_PROB',
+	'rgb_dropout_prob': 'RGB_DROPOUT_PROB',
+}
+
+
+def load_aug_presets(path=None):
+	with open(path or AUG_PRESETS_PATH, 'r', encoding='utf-8') as fh:
+		return {k: v for k, v in json.load(fh).items() if not k.startswith('_')}
+
+
+def apply_aug_preset(preset, path=None):
+	"""Set the module-level augmentation globals from aug_presets.json.
+
+	Presets were two hardcoded branches; a third recipe meant editing this file. They live
+	in JSON so a domain can name its own -- e.g. a bridge wants mirroring off, because an
+	abutment is defined by which end of the structure it sits at and a mirrored scene
+	teaches the opposite.
+	"""
+	global AUG_PRESET
+	presets = load_aug_presets(path)
+	if preset not in presets:
+		raise ValueError(f"unknown --aug_preset '{preset}'. Available: {sorted(presets)}")
+	spec = {k: v for k, v in presets[preset].items() if not k.startswith('_')}
+	unknown = sorted(set(spec) - set(_AUG_KEYS))
+	if unknown:
+		raise ValueError(f"aug preset '{preset}' has no-such-key {unknown}. "
+						 f"Valid keys: {sorted(_AUG_KEYS)}")
 	AUG_PRESET = preset
-	if preset == 'strong':
-		AUG_FULL_ROTATE = True             # DeLA: uniform(0, 2pi); Pointcept: [-1,1]*pi
-		AUG_ISOTROPIC_SCALE = True         # DeLA: single factor, preserves proportions
-		AUG_SCALE_RANGE = (0.8, 1.2)       # DeLA range (legacy was 0.9-1.1)
-		AUG_FLIP_PROB = 0.5                # Pointcept RandomFlip(p=0.5)
-		AUG_TILT_STD = np.pi / 64          # Pointcept x/y rotate +-pi/64
-		AUG_AUTOCONTRAST_PROB = 0.2        # Pointcept/DeLA/KPConvX p=0.2
-		if RGB_DROPOUT_PROB == 0.0:
-			RGB_DROPOUT_PROB = 0.2         # colour drop (DeLA/KPConvX p=0.2)
+	g = globals()
+	for key, value in spec.items():
+		g[_AUG_KEYS[key]] = tuple(value) if isinstance(value, list) else value
 	return preset
+
 
 # Rare-class block oversampling exponent (0 = off, uniform sampling as before).
 # Motivation (measured, logs/20260721_132243 analysis): sofa appears in only 61/1400
@@ -221,6 +257,7 @@ V2_STENCIL_Z = 0        # v2 only: taller vertical stencil reach (0 = same as ra
 INIT_WEIGHTS = ''       # optional checkpoint to warm-restart from (see run_training)
 RESUME = ''             # optional checkpoint.pth to resume the SAME schedule from
 LAST_VAL_MIOU = 0.0     # mIoU of the most recent validate() call (see validate)
+MAX_CONSECUTIVE_BATCH_FAILURES = 50   # abort rather than 'skip' a fault that hits every batch
 SELECT_METRIC = 'val_miou'  # 'val_miou' (default, evidence-based) or 'val_acc' (legacy)
 ENC_CHANNELS = None     # e.g. '128,256,320,384' -- overrides the (64,128,256,512) plan
 BOTTLENECK_DIM = None   # transformer width; defaults to the last encoder channel
@@ -242,12 +279,24 @@ ROOM_LOOP = 4             # repeats of the room list per epoch (only ~170 train 
 BLOCK_MODE = 'column'   # default: context-preserving columns (was 'grid'); override with --block_mode
 COLUMN_WINDOW = 2.0     # XY column side length (m)
 COLUMN_STRIDE = 2.0     # XY step between columns (m); == window => no overlap (block count ~ grid)
+PAD_BLOCKS = True       # pad short columns to block_size. Pure overhead (padded points are
+                        # masked from the loss but still run through the network); kept on by
+                        # default so existing caches reproduce. --pad_blocks false to disable.
+CORE_MAX = 12288        # chunk mode: max supervised points per chunk (KD-split leaf)
+HALO = 1.0              # chunk mode: context ring (m) around each core, never scored
+INVARIANT_GEO = False   # chunk mode: replace spatial channels with invariant geometry
+COLUMN_GRID = 0.0       # voxel size (m) applied before column partitioning; 0 = off
+                        # (historical). Set to the evaluator's --room_grid to make the
+                        # train and test point distributions match.
+COVER_COLUMNS = False   # tile columns denser than block_size instead of keeping one random
+                        # subsample and dropping the rest. Off by default (historical);
+                        # --cover_columns true uses every labelled point, at more compute.
 
 # Feature layout (geo, rgb, spatial, block-context), resolved from model_params.json in
 # main(). Default (4,3,3,0)=10D reproduces the original S3DIS model; other domains (or
 # --block_context) override it. context_dim > 0 appends a per-block buffered-context
 # descriptor (see data_processing.BlockContextExtractor) at block-build time.
-FEATURE_DIMS = (4, 3, 3, 0)
+FEATURE_DIMS = (4, 3, 3, 0, 0)   # geo, rgb, spatial, block-context, global-position
 NORMALS_PRESENT = True
 
 class FocalLoss(nn.Module):
@@ -310,20 +359,30 @@ class FocalLovaszLoss(nn.Module):
 	are complementary: loss = focal_weight*focal + lovasz_weight*lovasz. This targets mIoU,
 	not just OA, which is where the previous recall-only weighting left gains on the table.
 	"""
-	def __init__(self, class_weights=None, gamma=2.0, ignore_index=-1, focal_weight=1.0, lovasz_weight=1.0):
+	def __init__(self, class_weights=None, gamma=2.0, ignore_index=-1, focal_weight=1.0, lovasz_weight=1.0,
+				 structure=None):
 		super(FocalLovaszLoss, self).__init__()
 		self.focal = FocalLoss(class_weights=class_weights, gamma=gamma, ignore_index=ignore_index)
 		self.ignore_index = ignore_index
 		self.focal_weight = focal_weight
 		self.lovasz_weight = lovasz_weight
+		# Optional structure-oriented term (None = off, the default). It needs a per-point
+		# axis coordinate, so it stays inactive unless the caller also passes `axis`.
+		self.structure = structure
+		self.last_structure = 0.0
 
-	def forward(self, inputs, targets):
+	def forward(self, inputs, targets, axis=None):
 		loss = self.focal_weight * self.focal(inputs, targets)
 		valid = (targets != self.ignore_index)
+		self.last_structure = 0.0
 		if valid.any():
 			# Lovász needs probabilities in FP32 (sort/cumsum); cast for AMP safety.
 			probas = F.softmax(inputs[valid].float(), dim=1)
 			loss = loss + self.lovasz_weight * lovasz_softmax_flat(probas, targets[valid], inputs.size(1))
+			if self.structure is not None and axis is not None:
+				term = self.structure(probas, axis[valid].float())
+				self.last_structure = float(term.detach())
+				loss = loss + term
 		return loss
 
 def safe_gpu_operation():
@@ -370,11 +429,30 @@ def check_numerical_stability(tensor, name="tensor"):
 		return False
 	return True
 
-def setup_logging():
-	"""Log file setup and initialization"""
-	timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-	log_dir = os.path.join("logs", timestamp)
-	os.makedirs(log_dir, exist_ok=True)
+def setup_logging(log_root="logs", tag=None):
+	"""Create this run's log directory and start its CSV.
+
+	`log_root` is a setting rather than a constant so a second dataset keeps its runs beside
+	its own data (e.g. --log_root bridge/logs) instead of interleaving them with S3DIS runs.
+
+	The directory is <log_root>/<timestamp>[_<tag>], and the name is claimed exclusively.
+	A bare second-resolution timestamp is not unique: two runs launched together land in the
+	same directory and silently overwrite each other's checkpoints and CSV, which is exactly
+	what happened to a pair of parallel bridge experiments. `tag` (the domain name) separates
+	concurrent runs by intent, and the counter suffix is the backstop for anything else.
+	"""
+	stem = datetime.now().strftime("%Y%m%d_%H%M%S") + (f"_{tag}" if tag else "")
+	log_dir = os.path.join(log_root, stem)
+	for attempt in range(100):
+		candidate = log_dir if attempt == 0 else f"{log_dir}-{attempt + 1}"
+		try:
+			os.makedirs(candidate, exist_ok=False)     # exist_ok=False IS the lock
+			log_dir = candidate
+			break
+		except FileExistsError:
+			continue
+	else:
+		raise RuntimeError(f"could not claim a fresh log directory under {log_root}")
 	
 	# CSV log file path
 	csv_log_path = os.path.join(log_dir, "training_log.csv")
@@ -383,12 +461,20 @@ def setup_logging():
 	with open(csv_log_path, 'w', newline='') as f:
 		writer = csv.writer(f)
 		writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc',
-						'loss_diff', 'acc_diff', 'learning_rate', 'val_miou'])
+						'loss_diff', 'acc_diff', 'learning_rate', 'val_miou',
+						'vram_peak_gb', 'epoch_sec'])
 	
 	return log_dir, csv_log_path
 
-def log_epoch_metrics(csv_path, epoch, train_loss, train_acc, val_loss, val_acc, lr, val_miou=None):
-	"""Save epoch metrics to CSV file. val_miou is the metric to judge by -- see validate()."""
+def log_epoch_metrics(csv_path, epoch, train_loss, train_acc, val_loss, val_acc, lr, val_miou=None,
+					  vram_peak_gb=None, epoch_sec=None):
+	"""Save epoch metrics to CSV file. val_miou is the metric to judge by -- see validate().
+
+	Peak VRAM and wall time are recorded per epoch because neither can be recovered after
+	the fact: nvidia-smi keeps no history, and torch's peak counter is reset each epoch. A
+	run that has to be characterised afterwards (memory footprint, time per epoch) otherwise
+	needs an external sampler running for its whole duration.
+	"""
 	loss_diff = val_loss - train_loss
 	acc_diff = train_acc - val_acc
 
@@ -397,7 +483,9 @@ def log_epoch_metrics(csv_path, epoch, train_loss, train_acc, val_loss, val_acc,
 		writer.writerow([epoch, f"{train_loss:.6f}", f"{train_acc:.6f}",
 						f"{val_loss:.6f}", f"{val_acc:.6f}",
 						f"{loss_diff:.6f}", f"{acc_diff:.6f}", f"{lr:.8f}",
-						f"{(val_miou if val_miou is not None else 0.0):.6f}"])
+						f"{(val_miou if val_miou is not None else 0.0):.6f}",
+						'' if vram_peak_gb is None else f"{vram_peak_gb:.3f}",
+						'' if epoch_sec is None else f"{epoch_sec:.1f}"])
 
 def save_training_summary(log_dir, history, best_epoch, best_val_acc):
 	"""Save complete summary after training"""
@@ -659,15 +747,42 @@ def preprocess_dataset_columns():
 				points = data.pos.numpy()
 				features = data.x.numpy()
 				labels = data.y.numpy()
-				features = refresh_curvature_inplace(features, points)  # fix stale curvature channel
+				# Honour the config's feature width, as the chunk builder does via
+				# feature_dim. Without this a 10D processed room produced 10D blocks under a
+				# 7D config, and the stale-cache guard then rejected the cache the run had
+				# just built -- blaming a block_context mismatch that was not the cause.
+				if features.shape[1] > NUM_FEATURES:
+					features = features[:, :NUM_FEATURES]
+				if COLUMN_GRID > 0:
+					# Voxel-subsample before partitioning, through the SAME function the
+					# evaluator uses -- voxel_chunk's docstring is explicit that nothing else
+					# may compute chunk features, because a divergent copy once cost 2.47 mIoU.
+					# Full-resolution columns hold far more points than block_size (~191k in a
+					# 2 m S3DIS column), so the subsample kept ~11% of them and the rest never
+					# reached training; and a random subsample of a dense cloud has different
+					# per-voxel occupancy than the evaluator's one-point-per-voxel grid.
+					from voxel_chunk import voxelize_and_featurize
+					vidx, points, features = voxelize_and_featurize(
+						points, features, COLUMN_GRID, feature_dim=NUM_FEATURES)
+					labels = labels[vidx]
+				else:
+					features = refresh_curvature_inplace(features, points)  # fix stale curvature channel
+				if feat_spec.get('global_position_dim'):
+					# Computed HERE, not in compute_point_features: the processed rooms on disk
+					# were written with the old feature set, and regenerating them would both
+					# cost a second copy of the dataset and overwrite the input every other
+					# domain reads. The value only needs the room's own extent, which is in
+					# hand at this point, so the cache is the right place to add it.
+					features = np.concatenate(
+						[features, extract_global_position_features(points)], axis=1)
 				# Optional wide-area block-context descriptor (None when disabled in config)
 				ctx_extractor = make_block_context_extractor(points, features, feat_spec)
 				# sanitize room name for the filename (area token must stay last, after '__')
-				room = os.path.splitext(os.path.basename(pt_file))[0]
-				room = ''.join(c if (c.isalnum() or c in '-') else '-' for c in room)
+				room = sanitize_room_name(os.path.splitext(os.path.basename(pt_file))[0])
 
 				blocks = partition_columns(points, block_size=BLOCK_SIZE,
-										   window=COLUMN_WINDOW, stride=COLUMN_STRIDE, seed=block_counter)
+										   window=COLUMN_WINDOW, stride=COLUMN_STRIDE, seed=block_counter,
+										   pad=PAD_BLOCKS, cover=COVER_COLUMNS)
 				for idx, num_real in blocks:
 					block_feats = features[idx]
 					if ctx_extractor is not None:
@@ -675,8 +790,9 @@ def preprocess_dataset_columns():
 					block_x = torch.FloatTensor(block_feats)
 					block_pos = torch.FloatTensor(points[idx])
 					block_y = torch.LongTensor(labels[idx])
-					valid_mask = torch.ones(BLOCK_SIZE, dtype=torch.bool)
-					if num_real < BLOCK_SIZE:
+					# len(idx) == BLOCK_SIZE only when padding is on; unpadded columns are shorter.
+					valid_mask = torch.ones(len(idx), dtype=torch.bool)
+					if num_real < len(idx):
 						block_y[num_real:] = -1        # ignore padded points in the loss
 						valid_mask[num_real:] = False
 					# Deterministic spatial train/val tag (no room labels needed). Blocks in
@@ -694,7 +810,57 @@ def preprocess_dataset_columns():
 				print(f"Error processing file {pt_file}: {e}")
 				continue
 	print(f"Total column blocks created: {block_counter}")
+	write_cache_manifest(BLOCK_DATA_PATH)
 	return block_counter
+
+CACHE_MANIFEST = 'cache_manifest.json'
+
+
+def _cache_settings():
+	"""The build settings a cached block depends on but does not carry in itself.
+
+	A block records its own feature width, so that mismatch is detectable; the rest --
+	how the room was voxelized, how columns were split, whether padding was added -- is
+	invisible once written. Reusing a cache built with different values has silently
+	wasted whole runs twice, so the settings are written beside the blocks and compared.
+	"""
+	return {
+		'block_mode': BLOCK_MODE,
+		'block_size': BLOCK_SIZE,
+		'num_features': NUM_FEATURES,
+		'column_window': COLUMN_WINDOW,
+		'column_stride': COLUMN_STRIDE,
+		'column_grid': COLUMN_GRID,
+		'pad_blocks': bool(PAD_BLOCKS),
+		'cover_columns': bool(COVER_COLUMNS),
+		'room_grid': ROOM_GRID if BLOCK_MODE in ('chunk', 'room') else None,
+		'core_max': CORE_MAX if BLOCK_MODE == 'chunk' else None,
+		'halo': HALO if BLOCK_MODE == 'chunk' else None,
+		'invariant_geo': bool(INVARIANT_GEO) if BLOCK_MODE == 'chunk' else None,
+	}
+
+
+def write_cache_manifest(path):
+	with open(os.path.join(path, CACHE_MANIFEST), 'w', encoding='utf-8') as fh:
+		json.dump(_cache_settings(), fh, indent=2)
+
+
+def check_cache_manifest(path):
+	"""Raise if the cache on disk was built with settings this run would not reproduce."""
+	manifest_path = os.path.join(path, CACHE_MANIFEST)
+	if not os.path.exists(manifest_path):
+		print(f"  note: '{path}' predates cache manifests; only the feature width can be checked.")
+		return
+	with open(manifest_path, 'r', encoding='utf-8') as fh:
+		stored = json.load(fh)
+	current = _cache_settings()
+	diff = {k: (stored.get(k), v) for k, v in current.items() if stored.get(k) != v}
+	if diff:
+		lines = '\n'.join(f"    {k}: cache={was!r}, this run={now!r}" for k, (was, now) in diff.items())
+		raise ValueError(
+			f"Blocks in '{path}' were built with different settings:\n{lines}\n"
+			f"  Point --block_data_path to a fresh folder, or delete the stale blocks.")
+
 
 def validate_block_files(file_list):
 	"""Validate block files and remove corrupted ones"""
@@ -743,10 +909,30 @@ def get_augment_prob_and_strength(epoch, max_epochs):
 		return 0.2, 0.3  # Minimal augmentation
 	return 0.1, 0.2  # Almost no augmentation
 
+def sanitize_room_name(stem):
+	"""Room token as it appears in a block filename (area token must stay last, after '__').
+
+	Shared with structure_loss.build_axis_table so the axis table and the block filenames
+	can never key on different spellings of the same room."""
+	return ''.join(c if (c.isalnum() or c in '-') else '-' for c in stem)
+
+
+def room_token_of(block_path):
+	"""Inverse of the naming in the column builder: block_<counter>_<room>__<tag>__<area>.pt"""
+	stem = os.path.splitext(os.path.basename(block_path))[0]
+	body = stem.split('__')[0]            # drop the tag/area tokens
+	parts = body.split('_', 2)            # ['block', '<counter>', '<room>']
+	return parts[2] if len(parts) == 3 else None
+
+
 class BlockDataset(torch.utils.data.Dataset):
 	def __init__(self, file_list, augment=False, augment_prob=0.0, augment_strength=1.0, rgb_dropout_prob=0.0,
-				 feature_dims=(4, 3, 3), normals_present=True):
+				 feature_dims=(4, 3, 3), normals_present=True, axis_table=None):
 		self.file_list = file_list
+		# Per-room axis parameters for the structure-oriented loss (None = SOL off). The
+		# coordinate is computed from the ORIGINAL positions, before augmentation: it names
+		# where a point sits in the real structure, which rotating the view does not change.
+		self.axis_table = axis_table
 		self.augment = augment
 		self.augment_prob = augment_prob  # Probability of applying augmentation
 		self.augment_strength = augment_strength  # Strength of augmentation
@@ -764,6 +950,11 @@ class BlockDataset(torch.utils.data.Dataset):
 		for retry in range(max_retries):
 			try:
 				data = torch.load(self.file_list[idx], weights_only=False)
+				if self.axis_table is not None:
+					entry = self.axis_table.get(room_token_of(self.file_list[idx]))
+					if entry is not None:
+						data.saxis = torch.from_numpy(
+							structure_loss.axis_coords(data.pos.numpy()[:, :2], entry))
 				if hasattr(data, 'x') and hasattr(data, 'pos') and hasattr(data, 'y'):
 					# Format: geo(4) + RGB(3) + spatial(3) = 10D
 					# On-the-fly geometric + color augmentation (was previously a no-op).
@@ -945,7 +1136,20 @@ def build_dataloaders(rgb_dropout_prob=0.0):
 	# Run preprocessing if block data doesn't exist
 	if not os.path.exists(BLOCK_DATA_PATH) or len(glob(os.path.join(BLOCK_DATA_PATH, '*.pt'))) == 0:
 		print(f"Block data not found. Running preprocessing (mode={BLOCK_MODE})...")
-		if BLOCK_MODE == 'column':
+		if BLOCK_MODE == 'chunk':
+			# The path the released S3DIS record was trained on: voxelize each room at
+			# --room_grid, KD-split the voxels into cores of at most --core_max, and give
+			# every core a --halo ring of unsupervised context. This is the same function
+			# evaluate_full.py --mode chunk scores with, so train and test partition the
+			# cloud identically. It had no caller, which is why the documented command
+			# silently fell through to the column builder instead.
+			from voxel_chunk import prepare_chunk_cache
+			prepare_chunk_cache(PROCESSED_DATA_PATH, BLOCK_DATA_PATH, TRAIN_AREAS + [TEST_AREA],
+								TEST_AREA, grid=ROOM_GRID, core_max=CORE_MAX, halo=HALO,
+								block_size=BLOCK_SIZE, feature_dim=NUM_FEATURES,
+								invariant_geo=INVARIANT_GEO)
+			write_cache_manifest(BLOCK_DATA_PATH)
+		elif BLOCK_MODE == 'column':
 			preprocess_dataset_columns()
 		else:
 			preprocess_dataset()
@@ -957,12 +1161,22 @@ def build_dataloaders(rgb_dropout_prob=0.0):
 	# (or any feature group) without changing --block_data_path would silently train on
 	# mismatched features. Fail fast with an actionable message instead.
 	if all_block_files:
+		check_cache_manifest(BLOCK_DATA_PATH)
 		sample = torch.load(all_block_files[0], weights_only=False)
 		if sample.x.shape[1] != NUM_FEATURES:
 			raise ValueError(
 				f"Existing blocks in '{BLOCK_DATA_PATH}' carry {sample.x.shape[1]}D features but the "
 				f"current config expects {NUM_FEATURES}D (block_context on/off or feature toggle "
 				f"mismatch?). Point --block_data_path to a fresh folder or delete the stale blocks.")
+		# Same trap for --pad_blocks: a padded cache looks perfectly valid but reintroduces
+		# exactly the overhead the flag was set to remove, and the run would report the old
+		# epoch time with no hint why.
+		if BLOCK_MODE == 'column':
+			padded = int(sample.x.shape[0]) == BLOCK_SIZE and int(sample.valid_mask.sum()) < BLOCK_SIZE
+			if padded and not PAD_BLOCKS:
+				raise ValueError(
+					f"Blocks in '{BLOCK_DATA_PATH}' were built WITH padding but --pad_blocks is false. "
+					f"Point --block_data_path to a fresh folder or delete the stale blocks.")
 
 	train_block_files = []
 	test_block_files = []
@@ -978,6 +1192,25 @@ def build_dataloaders(rgb_dropout_prob=0.0):
 					train_block_files.append(block_file)
 					break
 
+	# Structure-oriented loss: resolve the preset and build the per-room axis table. The
+	# table is derived from the processed rooms (the block cache has no room-wide frame),
+	# cached next to the blocks, and used by the loss only -- no inference path reads it.
+	axis_table = None
+	structure_spec = structure_loss.load_preset(STRUCTURE_LOSS, get_class_names(),
+												path=STRUCTURE_PRESETS)
+	if structure_spec is not None:
+		if STRUCTURE_WEIGHT is not None:
+			structure_spec['weight'] = float(STRUCTURE_WEIGHT)
+		axis_path = os.path.join(BLOCK_DATA_PATH, structure_loss.AXIS_TABLE)
+		if os.path.exists(axis_path):
+			axis_table = structure_loss.load_axis_table(axis_path)
+		else:
+			dirs = [os.path.join(PROCESSED_DATA_PATH, a) for a in list(TRAIN_AREAS) + [TEST_AREA]]
+			axis_table = structure_loss.build_axis_table([d for d in dirs if os.path.isdir(d)],
+														 structure_spec, sanitize_room_name)
+			structure_loss.save_axis_table(axis_table, axis_path)
+		print(f"{structure_loss.describe(structure_spec)} | axis table: {len(axis_table)} rooms")
+
 	# Room-disjoint (preferred) or random 8:2 split
 	train_files, val_files = split_train_val(train_block_files, val_ratio=0.2, seed=42)
 
@@ -988,9 +1221,13 @@ def build_dataloaders(rgb_dropout_prob=0.0):
 
 	train_dataset = BlockDataset(train_files, augment=True, augment_prob=0.5, augment_strength=0.5,
 								 rgb_dropout_prob=rgb_dropout_prob,
-								 feature_dims=FEATURE_DIMS, normals_present=NORMALS_PRESENT)
+								 feature_dims=FEATURE_DIMS, normals_present=NORMALS_PRESENT,
+								 axis_table=axis_table)
 	val_dataset = BlockDataset(val_files, augment=False, augment_prob=0.0, augment_strength=0.0,
-								 feature_dims=FEATURE_DIMS, normals_present=NORMALS_PRESENT)
+								 feature_dims=FEATURE_DIMS, normals_present=NORMALS_PRESENT,
+								 axis_table=axis_table)
+	global STRUCTURE_SPEC
+	STRUCTURE_SPEC = structure_spec
 
 	# Rare-class block oversampling (see OVERSAMPLE_RARE). Weights are computed once from
 	# the block label content; epoch length stays len(train_files) so runtimes are unchanged.
@@ -1033,6 +1270,7 @@ def build_dataloaders(rgb_dropout_prob=0.0):
 def train(epoch):
 	global WANDB_STEP
 	model.train()
+	consecutive_failures = 0
 	
 	# Learning Rate Warm-up implementation (Linear warm-up for stability)
 	if epoch <= WARMUP_EPOCHS:
@@ -1050,6 +1288,7 @@ def train(epoch):
 	
 	pbar = tqdm(train_loader, desc=f'Epoch {epoch:02d}/{NUM_EPOCHS} [Training]')
 	total_loss, correct_nodes, total_nodes = 0, 0, 0
+	structure_sum, structure_batches = 0.0, 0
 	valid_batches = 0
 	
 	# Per-class accuracy tracking
@@ -1089,7 +1328,14 @@ def train(epoch):
 				valid_y = data.y[valid_mask]
 				
 				# Apply Focal Loss on all samples (OHEM removed for stability)
-				loss = criterion(valid_out, valid_y)
+				# `saxis` is present only when a structure preset is active (see BlockDataset).
+				loss = criterion(valid_out, valid_y,
+								 axis=getattr(data, 'saxis', None))
+			# Track the structure term separately: it must fall towards 0 as the predicted
+			# layout starts to obey the prior. A term stuck at its margin means the penalty
+			# is pure constant pressure and the constraint is not being learned.
+			structure_sum += criterion.last_structure
+			structure_batches += 1 if criterion.last_structure else 0
 		
 			if not check_numerical_stability(loss, "loss"):
 				print(f"Numerical instability at epoch {epoch}, batch {batch_idx}\n")
@@ -1152,6 +1398,7 @@ def train(epoch):
 					"batch/gate_rgb": gates[:, 1].mean().item(),
 					"batch/gate_spatial": gates[:, 2].mean().item(),
 					"batch/gate_context": gates[:, 3].mean().item(),  # 0 when block_context off
+					"batch/gate_globalpos": gates[:, 4].mean().item(),  # 0 when global position off
 					"batch/loss": loss.item(),
 					"batch/accuracy": current_batch_acc,
 				}, step=WANDB_STEP)
@@ -1163,9 +1410,18 @@ def train(epoch):
 				torch.cuda.empty_cache()
 			
 		except RuntimeError as e:
+			# Skipping a batch is for the occasional OOM. A fault that hits every batch -- a
+			# shape mismatch from a config the architecture does not support, say -- is not
+			# recoverable, and swallowing it silently burns hours on a run that never learns.
+			consecutive_failures += 1
 			print(f"Runtime error at epoch {epoch}, batch {batch_idx}: {str(e)}")
 			torch.cuda.empty_cache()
+			if consecutive_failures >= MAX_CONSECUTIVE_BATCH_FAILURES:
+				raise RuntimeError(
+					f"{consecutive_failures} consecutive training batches failed with the same "
+					f"kind of error; aborting instead of training on nothing. Last error: {e}") from e
 			continue
+		consecutive_failures = 0
 		
 		# More detailed progress bar information
 		current_acc = correct_nodes / total_nodes if total_nodes > 0 else 0
@@ -1181,16 +1437,22 @@ def train(epoch):
 	
 	# Handle case where no valid batches were processed
 	if valid_batches == 0:
-		print("Warning: No valid batches were processed in training!")
-		return 0.0, 0.0
+		raise RuntimeError(
+			f"epoch {epoch}: every training batch failed, so nothing was learned. Check the "
+			f"errors above -- a config/architecture mismatch reports itself here.")
 	
 	# Print per-class accuracy for monitoring
 	print(f"\n--- Per-Class Training Accuracy (Epoch {epoch}) ---")
+	names = get_class_names()
 	for cls in range(NUM_CLASSES):
 		if class_total[cls] > 0:
 			cls_acc = class_correct[cls] / class_total[cls]
-			cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f"Class_{cls}"
+			cls_name = names[cls] if cls < len(names) else f"Class_{cls}"
 			print(f"{cls_name:12s}: {cls_acc*100:5.1f}% ({int(class_correct[cls])}/{int(class_total[cls])})")
+	if structure_batches:
+		print(f"structure term: {structure_sum / structure_batches:.4f} mean over "
+			  f"{structure_batches}/{valid_batches} batches where it applied "
+			  f"(0 = the predicted layout obeys the prior)")
 	print("-" * 50)
 	
 	# Force memory cleanup at end of epoch
@@ -1256,7 +1518,7 @@ def validate(loader):
 						print(f"High padding ratio in {loader_name} batch {batch_idx}: {padding_ratio:.1%}")
 				
 				# Add validation loss calculation with numerical stability check
-				loss = criterion(valid_out, valid_y)
+				loss = criterion(valid_out, valid_y, axis=getattr(data, 'saxis', None))
 				if check_numerical_stability(loss, "validation_loss"):
 					total_loss += loss.item()
 					
@@ -1307,7 +1569,7 @@ def run_training(args=None):
 	multiprocessing.freeze_support()
 	
 	# Log setup
-	log_dir, csv_log_path = setup_logging()
+	log_dir, csv_log_path = setup_logging(args.log_root, tag=args.domain)
 	print(f"Logging to directory: {log_dir}")
 
 	# Build datasets/loaders now that main() has applied CLI args + config (deferred
@@ -1340,8 +1602,11 @@ def run_training(args=None):
 
 	# Load class weights from configuration
 	class_weights = get_class_weights(as_tensor=True, device=device)
-	criterion = FocalLovaszLoss(class_weights=class_weights, gamma=FOCAL_GAMMA, ignore_index=-1,
-								focal_weight=1.0, lovasz_weight=1.0)
+	criterion = FocalLovaszLoss(
+		class_weights=class_weights, gamma=FOCAL_GAMMA, ignore_index=-1,
+		focal_weight=1.0, lovasz_weight=1.0,
+		structure=(structure_loss.StructureOrderingLoss(STRUCTURE_SPEC).to(device)
+				   if STRUCTURE_SPEC is not None else None))
 
 	# Initialize GradScaler for mixed precision
 	scaler = GradScaler()
@@ -1423,9 +1688,17 @@ def run_training(args=None):
 			train_dataset.augment_prob = augment_prob
 			train_dataset.augment_strength = augment_strength
 			
+			# Peak VRAM is a per-epoch high-water mark, so reset it before the epoch runs.
+			if torch.cuda.is_available():
+				torch.cuda.reset_peak_memory_stats()
+			epoch_started = time.time()
+
 			train_loss, train_acc = train(epoch)
 
 			val_loss, val_acc = validate(val_loader)
+			epoch_sec = time.time() - epoch_started
+			vram_peak_gb = (torch.cuda.max_memory_allocated() / 1024 ** 3
+							if torch.cuda.is_available() else None)
 			
 			# KPI monitoring (if enabled)
 			if args.diagnose:
@@ -1446,7 +1719,8 @@ def run_training(args=None):
 				scheduler.step()  
 			new_lr = optimizer.param_groups[0]['lr']
 			log_epoch_metrics(csv_log_path, epoch, train_loss, train_acc, val_loss, val_acc, new_lr,
-							  val_miou=LAST_VAL_MIOU)
+							  val_miou=LAST_VAL_MIOU, vram_peak_gb=vram_peak_gb,
+							  epoch_sec=epoch_sec)
 			
 			# Detect learning rate changes and log output
 			if new_lr != old_lr:
@@ -1679,8 +1953,9 @@ def test_model(model_path):
 	# Prepare per-class results for JSON; collect present-class acc/IoU for the means.
 	per_class_results = {}
 	acc_list, iou_list = [], []
+	names = get_class_names()
 	for cls in range(NUM_CLASSES):
-		cls_name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else f"Class_{cls}"
+		cls_name = names[cls] if cls < len(names) else f"Class_{cls}"
 		if class_total[cls] > 0:
 			cls_acc = class_correct[cls] / class_total[cls]
 			cls_iou = class_correct[cls] / class_union[cls] if class_union[cls] > 0 else 0.0
@@ -1745,15 +2020,22 @@ def main():
 	global PROCESSED_DATA_PATH, BLOCK_DATA_PATH, TRAIN_AREAS, TEST_AREA
 	global NUM_EPOCHS, BATCH_SIZE, VAL_BATCH_SIZE, LEARNING_RATE, NUM_FEATURES, NUM_CLASSES, BLOCK_SIZE
 	global USE_WANDB, COOLDOWN_SEC, FOCAL_GAMMA, RGB_DROPOUT_PROB, BLOCK_MODE
-	global FEATURE_DIMS, NORMALS_PRESENT, COLUMN_WINDOW, COLUMN_STRIDE
+	global FEATURE_DIMS, NORMALS_PRESENT, COLUMN_WINDOW, COLUMN_STRIDE, PAD_BLOCKS, COVER_COLUMNS, COLUMN_GRID, CORE_MAX, HALO, INVARIANT_GEO, WARMUP_EPOCHS, LR_ETA_MIN, ACCUMULATION_STEPS, GRADIENT_CLIP_VALUE, MAX_GRADIENT_NORM, EARLY_STOP_LR_TOL, EARLY_STOP_REQUIRE_ANNEAL
 	global EARLY_STOP_PATIENCE, EARLY_STOP_REQUIRE_ANNEAL
 	global OVERSAMPLE_RARE, CONTEXT_MODE, WIDTH_MULT, MID_TRANSFORMER, SAMPLER
 	global ROOM_DATA_PATH, ROOM_GRID, ROOM_MAX_POINTS, ROOM_LOOP, INIT_WEIGHTS, RESUME, SELECT_METRIC
+	global STRUCTURE_LOSS, STRUCTURE_WEIGHT, STRUCTURE_PRESETS
 	global ENC_CHANNELS, BOTTLENECK_DIM, ARCH, V2_KNN, V2_CURVES, V2_NEIGHBORS, V2_STENCIL, V2_DIFF, V2_BASE_GRID, V2_POOL_GRIDS, V2_DIRECTIONAL, V2_STENCIL_Z
 
 	parser = argparse.ArgumentParser(description='PointEdgeSegNet Training')
+	parser.add_argument('--domain', type=str, default=None, metavar='NAME',
+						help="Application domain preset from domains/<NAME>.json (e.g. 'bridge', 'room'): "
+							 'data paths, block geometry, architecture flags and hyperparameters for one '
+							 'dataset family. Anything given explicitly on the command line wins over it.')
 	parser.add_argument('--config', type=str, default='model_params.json', help='Path to model configuration JSON file')
 	parser.add_argument('--processed_data_path', default=PROCESSED_DATA_PATH, help='Processed data path')
+	parser.add_argument('--log_root', default='logs',
+						help='Root for this run\'s output directory; the run lands in <log_root>/<timestamp>. Point a second dataset at its own tree (e.g. bridge/logs).')
 	parser.add_argument('--block_data_path', default=BLOCK_DATA_PATH, help='Block data storage path')
 	parser.add_argument('--train_areas', nargs='+', default=TRAIN_AREAS, help='Training areas')
 	parser.add_argument('--test_area', default=TEST_AREA, help='Test area')
@@ -1775,7 +2057,26 @@ def main():
 	parser.add_argument('--allow_early_stop_before_anneal', action='store_true',
 						help='Legacy behaviour: let patience stop training even while the LR is still high. Off by '
 							 'default because it silently truncates the cosine schedule when --num_epochs is raised.')
-	parser.add_argument('--aug_preset', type=str, default=AUG_PRESET, choices=['legacy', 'strong'],
+	parser.add_argument('--warmup_epochs', type=int, default=WARMUP_EPOCHS,
+						help='Linear LR warm-up epochs before the cosine schedule starts (default 3).')
+	parser.add_argument('--lr_eta_min', type=float, default=LR_ETA_MIN, metavar='LR',
+						help='Cosine floor (default 5e-4). Early stopping refuses to fire until the '
+							 'schedule reaches it, so this also sets how long a run can be held open.')
+	parser.add_argument('--accumulation_steps', type=int, default=ACCUMULATION_STEPS,
+						help='Gradient accumulation steps; effective batch is batch_size x this.')
+	parser.add_argument('--gradient_clip', type=float, default=GRADIENT_CLIP_VALUE,
+						help='Per-parameter gradient value clip (default 8.0).')
+	parser.add_argument('--max_grad_norm', type=float, default=MAX_GRADIENT_NORM,
+						help='Global gradient-norm clip (default 20.0).')
+	parser.add_argument('--early_stop_lr_tol', type=float, default=EARLY_STOP_LR_TOL,
+						help='Early stopping waits until LR <= tol x --lr_eta_min (default 1.25).')
+	parser.add_argument('--early_stop_require_anneal',
+						type=lambda v: str(v).lower() not in ('false', '0', 'no'),
+						default=EARLY_STOP_REQUIRE_ANNEAL, metavar='BOOL',
+						help='Require the cosine schedule to anneal before early stopping may fire.')
+	parser.add_argument('--aug_presets', type=str, default=None, metavar='PATH',
+						help='Augmentation preset file (default aug_presets.json next to this script).')
+	parser.add_argument('--aug_preset', type=str, default=AUG_PRESET,
 						help="Augmentation preset. 'strong' = constant full-strength + 360deg yaw, isotropic "
 							 "scale 0.8-1.2, mirroring, small tilts, colour drop 0.2, auto-contrast 0.2 (SOTA "
 							 "practice). 'legacy' = the original decaying schedule (mean prob*strength 0.046).")
@@ -1800,9 +2101,9 @@ def main():
 							 'S3DIS has ~170 train rooms, so loop=1 gives far too few optimizer steps.')
 	parser.add_argument('--enc_channels', type=str, default=None,
 						help='Comma-separated encoder channels, e.g. 128,256,320,384. Overrides the historical '
-							 '64,128,256,512. Use to move capacity to the full-resolution stages: 74.6% of the '
+							 '64,128,256,512. Use to move capacity to the full-resolution stages: 74.6%% of the '
 							 'parameters currently sit in a bottleneck that sees 215 points while the stage that '
-							 'sees all 8192 holds 0.4%.')
+							 'sees all 8192 holds 0.4%%.')
 	parser.add_argument('--bottleneck_dim', type=int, default=None,
 						help='Bottleneck transformer width (default: last encoder channel). Narrowing it is how '
 							 'capacity is freed for the earlier stages.')
@@ -1840,6 +2141,14 @@ def main():
 						help='v2 stencil radius: 1 -> K=27 (~9 surface nbrs), 2 -> K=125 (~25, ~= kNN-32)')
 	parser.add_argument('--v2_diff', action='store_true',
 						help='v2: add decomposed feature-difference term (EdgeConv gradient cue, k-x cheaper)')
+	parser.add_argument('--structure_loss', type=str, default=STRUCTURE_LOSS,
+						help="Structure-oriented loss preset from --structure_presets "
+							 "('none' = off, the default). Encodes where a component sits in "
+							 "the structure as a training penalty; no effect on inference.")
+	parser.add_argument('--structure_weight', type=float, default=STRUCTURE_WEIGHT,
+						help='Override the preset\'s own weight for the structure term')
+	parser.add_argument('--structure_presets', type=str, default=STRUCTURE_PRESETS,
+						help='Path to the structure-preset JSON')
 	parser.add_argument('--v2_base_grid', type=float, default=V2_BASE_GRID,
 						help='v2: input voxel size — MUST equal the cache voxel grid (0.04 default, 0.02 for fine)')
 	parser.add_argument('--v2_pool_grids', type=str, default=V2_POOL_GRIDS,
@@ -1851,7 +2160,43 @@ def main():
 						help='v2 stencil: vertical reach in voxels (0 = same as --v2_stencil). '
 							 'Columns/pipes span many z-levels; E10 tests a taller receptive field.')
 	parser.add_argument('--rgb_dropout', type=float, default=RGB_DROPOUT_PROB, help='Prob. of zeroing RGB per block for RGB-free robustness')
-	parser.add_argument('--block_mode', type=str, default=BLOCK_MODE, choices=['grid', 'column', 'room'], help="Block partitioning: 'grid' (legacy) or 'column' (overlapping full-height, preserves context)")
+	parser.add_argument('--block_mode', type=str, default=BLOCK_MODE,
+						choices=['grid', 'column', 'room', 'chunk'],
+						help="Block partitioning. 'chunk' voxelizes at --room_grid and emits KD-split "
+							 'cores with a --halo context ring -- the SAME partition evaluate_full.py '
+							 "--mode chunk scores with, and what the released S3DIS record used. "
+							 "'column' is overlapping full-height columns at full resolution; 'grid' is "
+							 "the legacy cubic-cell maker; 'room' trains on whole voxelized rooms.")
+	parser.add_argument('--core_max', type=int, default=CORE_MAX,
+						help='chunk mode: maximum supervised points per chunk (default 12288, the '
+							 'released recipe). Cores tile the voxel cloud exactly once.')
+	parser.add_argument('--halo', type=float, default=HALO,
+						help='chunk mode: context ring in metres around each core (default 1.0). Halo '
+							 'points are seen by the network but never supervised.')
+	parser.add_argument('--invariant_geo', action='store_true',
+						help='chunk mode: replace the spatial channels with rotation-invariant geometry '
+							 '(must match evaluate_full.py --invariant_geo).')
+	parser.add_argument('--column_grid', type=float, default=COLUMN_GRID, metavar='M',
+						help='Column mode only: voxel-subsample each room by this grid (m) before '
+							 'partitioning; 0 (default) keeps full resolution. Full-res rooms are far '
+							 'denser than block_size, so most of their points never reach training, and '
+							 'a random subsample has different per-voxel occupancy than the evaluator, '
+							 'which voxelizes at --room_grid (0.04). Set this to the SAME value. '
+							 'Needs a fresh --block_data_path.')
+	parser.add_argument('--cover_columns', type=lambda v: str(v).lower() not in ('false', '0', 'no'),
+						default=COVER_COLUMNS, metavar='BOOL',
+						help='Column mode only: tile a column holding more than --block_size points '
+							 'into several blocks (default false, which keeps ONE random subsample and '
+							 'never trains on the rest -- 42%% of labelled points on SemanticBridge, and '
+							 'unevenly by class). True uses every point at proportionally more compute. '
+							 'Needs a fresh --block_data_path.')
+	parser.add_argument('--pad_blocks', type=lambda v: str(v).lower() not in ('false', '0', 'no'),
+						default=PAD_BLOCKS, metavar='BOOL',
+						help='Column mode only: pad short columns up to --block_size (default true). '
+							 'Padded points are masked from the loss but still cost a full forward and '
+							 'backward pass, so on datasets of sparse columns this is significant '
+							 'overhead (38%% of all compute, measured on SemanticBridge). Set false to '
+							 'emit natural-size blocks; needs a fresh --block_data_path.')
 	parser.add_argument('--column_window', type=float, default=COLUMN_WINDOW, help='Column mode only: XY window side length (m). Larger => fewer blocks. VRAM is unaffected (blocks stay block_size points).')
 	parser.add_argument('--column_stride', type=float, default=COLUMN_STRIDE, help='Column mode only: XY step between columns (m). Set == column_window for no overlap (block count ~ grid); < window for overlap.')
 	parser.add_argument('--block_context', dest='block_context', action='store_true', default=None,
@@ -1864,6 +2209,16 @@ def main():
 						help='Block-context only: number of z-histogram bins in the descriptor (default from config: 4).')
 	args = parser.parse_args()
 
+	# Domain preset first: it may set --config and the data paths that everything below
+	# reads, and it must not overwrite anything the user typed explicitly.
+	domain_keys = set()
+	if args.domain:
+		from domain_config import load_domain, apply_domain, describe
+		domain = load_domain(args.domain)
+		applied = apply_domain(args, domain, sys.argv, parser)
+		domain_keys = {k for k, _ in applied}
+		print(describe(domain, applied))
+
 	# Resolve runtime toggles
 	USE_WANDB = _WANDB_AVAILABLE and (not args.no_wandb)
 	if args.no_wandb:
@@ -1873,8 +2228,21 @@ def main():
 	COOLDOWN_SEC = args.cooldown_sec
 	FOCAL_GAMMA = args.focal_gamma
 	RGB_DROPOUT_PROB = args.rgb_dropout
-	apply_aug_preset(args.aug_preset)   # may raise RGB_DROPOUT_PROB to 0.2 (colour drop)
+	apply_aug_preset(args.aug_preset, args.aug_presets)  # may raise RGB_DROPOUT_PROB (colour drop)
 	BLOCK_MODE = args.block_mode
+	PAD_BLOCKS = args.pad_blocks
+	WARMUP_EPOCHS = args.warmup_epochs
+	LR_ETA_MIN = args.lr_eta_min
+	ACCUMULATION_STEPS = args.accumulation_steps
+	GRADIENT_CLIP_VALUE = args.gradient_clip
+	MAX_GRADIENT_NORM = args.max_grad_norm
+	EARLY_STOP_LR_TOL = args.early_stop_lr_tol
+	EARLY_STOP_REQUIRE_ANNEAL = args.early_stop_require_anneal
+	COVER_COLUMNS = args.cover_columns
+	COLUMN_GRID = args.column_grid
+	CORE_MAX = args.core_max
+	HALO = args.halo
+	INVARIANT_GEO = args.invariant_geo
 	COLUMN_WINDOW = args.column_window
 	COLUMN_STRIDE = args.column_stride
 	EARLY_STOP_PATIENCE = args.early_stop_patience
@@ -1890,6 +2258,9 @@ def main():
 	V2_NEIGHBORS = args.v2_neighbors
 	V2_STENCIL = args.v2_stencil
 	V2_DIFF = args.v2_diff
+	STRUCTURE_LOSS = args.structure_loss
+	STRUCTURE_WEIGHT = args.structure_weight
+	STRUCTURE_PRESETS = args.structure_presets
 	V2_BASE_GRID = args.v2_base_grid
 	V2_POOL_GRIDS = args.v2_pool_grids
 	V2_DIRECTIONAL = args.v2_directional
@@ -1909,14 +2280,17 @@ def main():
 		print(f"Loading model configuration from: {args.config}")
 		config = load_model_config(args.config)
 		
-		# Override with config file values if not explicitly provided via command line
-		# Check if user provided explicit command line values
-		import sys
-		if '--num_classes' not in sys.argv and 'num_classes' in config:
+		# Fill in from the config only what neither the command line nor the domain preset
+		# already set. A domain value must count as explicit here: a preset that says
+		# block_size 20480 while the config says 8192 would otherwise be silently overruled,
+		# and the cache would be built at the wrong size with nothing in the log to show it.
+		def _from_config(key):
+			return f'--{key}' not in sys.argv and key not in domain_keys and key in config
+		if _from_config('num_classes'):
 			args.num_classes = config['num_classes']
-		if '--num_features' not in sys.argv and 'num_features' in config:
+		if _from_config('num_features'):
 			args.num_features = config['num_features']
-		if '--block_size' not in sys.argv and 'block_size' in config:
+		if _from_config('block_size'):
 			args.block_size = config['block_size']
 			
 		print(f"Dataset: {config.get('dataset_name', 'Custom')}")
@@ -1957,7 +2331,7 @@ def main():
 	# from the enabled feature groups so it always matches what the pipeline produces.
 	try:
 		spec = resolve_feature_config(get_model_config())
-		FEATURE_DIMS = (spec['geo_dim'], spec['rgb_dim'], spec['spatial_dim'], spec['context_dim'])
+		FEATURE_DIMS = feature_dims_from_spec(spec)
 		NORMALS_PRESENT = spec['use_normals']
 		NUM_FEATURES = spec['num_features']
 		print(f"  Feature layout: {FEATURE_DIMS} (normals={spec['use_normals']}, curv={spec['use_curvature']}, "
@@ -1967,7 +2341,6 @@ def main():
 			  + ")")
 		# Keep context and non-context block caches separate so A/B runs never mix: when
 		# block context is on and the user did not pick a custom path, suffix the default.
-		import sys
 		if spec['use_block_context'] and '--block_data_path' not in sys.argv:
 			BLOCK_DATA_PATH = BLOCK_DATA_PATH.rstrip('/\\') + '_ctx'
 			print(f"  block_context on -> block cache path: {BLOCK_DATA_PATH}")

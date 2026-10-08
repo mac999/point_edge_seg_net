@@ -175,9 +175,10 @@ class PointEdgeSegNet(nn.Module):
 				 curves=1, neighbor_mode='serial', stencil_radius=1, feature_diff=False,
 				 directional=False, stencil_z=None):
 		super().__init__()
-		dims = tuple(feature_dims) + (0,) * (4 - len(feature_dims))
-		geo_dim, rgb_dim, spatial_dim, context_dim = dims
-		assert sum(dims) == num_features
+		# (geo, rgb, spatial, block-context, global-position); older callers pass four.
+		dims = tuple(feature_dims) + (0,) * (5 - len(feature_dims))
+		geo_dim, rgb_dim, spatial_dim, context_dim, global_position_dim = dims
+		assert sum(dims) == num_features, f"feature_dims {dims} sum to {sum(dims)}, not {num_features}"
 		assert context_dim == 0, "v2 does not carry the (twice-failed) block-context path"
 		self.k = knn
 		self.curves = curves        # Morton curves unioned per stage (independent seams)
@@ -192,7 +193,8 @@ class PointEdgeSegNet(nn.Module):
 		self.point_in_dim = num_features
 
 		self.feature_gate = FeatureGate(geo_dim=geo_dim, rgb_dim=rgb_dim,
-										spatial_dim=spatial_dim, context_dim=0)
+										spatial_dim=spatial_dim, context_dim=0,
+										global_position_dim=global_position_dim)
 
 		# Encoder: two meta blocks per stage (mirrors v1's conv_n/conv_n_2 depth)
 		self.directional = directional and neighbor_mode == 'stencil'
@@ -210,7 +212,12 @@ class PointEdgeSegNet(nn.Module):
 		self.bottleneck_unproj = nn.Linear(bdim, c4) if bdim != c4 else nn.Identity()
 		self.bottleneck_transformer = LightweightTransformer(
 			dim=bdim, num_heads=max(1, bdim // 128), dropout=0.1,
-			spatial_dim=spatial_dim, num_layers=transformer_layers)
+			# The bottleneck sees XYZ only: forward() passes None for the spatial channels
+			# (they enter through the feature gate instead). Declaring spatial_dim here would
+			# size the position encoder for 3 + spatial_dim inputs and then be fed 3 -- a
+			# mismatch that stays invisible while spatial_dim is 0 and breaks every batch the
+			# moment a dataset carries spatial features.
+			spatial_dim=0, num_layers=transformer_layers)
 
 		# Decoder: unpool (free index_select) + skip concat + point MLP, as in v1
 		def dec_mlp(cin, cout):
