@@ -18,7 +18,7 @@
 #    overlap_mirror  both                          +0.8 mIoU over single on w6
 # ============================================================
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."          # repo root: the entry points live there
 
 DOMAIN="${1:-}"
 CKPT="${2:-}"

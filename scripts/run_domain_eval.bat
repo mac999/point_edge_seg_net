@@ -18,7 +18,7 @@ rem    mirror          2 views (identity + mirrored)
 rem    overlap_mirror  both                         +0.8 mIoU over single on w6
 rem ============================================================
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 if "%~2"=="" (
     echo usage: %~nx0 ^<domain^> ^<checkpoint.pth^> [protocol] [out.json]

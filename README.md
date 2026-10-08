@@ -176,7 +176,7 @@ python train_model.py --config model_params.json --block_mode column --column_wi
 python train_model.py --config model_params.json --block_mode column --column_window 2.0 --column_stride 2.0 --num_epochs 60 --batch_size 10 --block_context
 ```
 
-On Windows, **`run_train_global.bat`** runs variant (b) — activate your conda/python environment first, then run it from the repo root. No re-run of `data_preparation.py` is needed to switch variants: the context descriptor is computed at block-build time from the same `.pt` files, and the two block caches (`block_s3dis/` vs `block_s3dis_ctx/`) stay separate so A/B runs never mix. To force block regeneration (e.g. after changing block/feature settings), delete the corresponding block cache first.
+On Windows, **`scripts/run_train_global.bat`** runs variant (b) — activate your conda/python environment first, then run it from the repo root. No re-run of `data_preparation.py` is needed to switch variants: the context descriptor is computed at block-build time from the same `.pt` files, and the two block caches (`block_s3dis/` vs `block_s3dis_ctx/`) stay separate so A/B runs never mix. To force block regeneration (e.g. after changing block/feature settings), delete the corresponding block cache first.
 
 **Step 3 — Inference on a new point cloud** (`inference.py`)
 
@@ -198,7 +198,7 @@ python inference.py --tta                 # extra accuracy via rotation voting
 python inference.py --block_context -m logs/<timestamp>/best_model.pth -i ./my_scan.txt
 ```
 
-On Windows, **`run_infer_global.bat <model.pth> [input.txt]`** wraps the context (18D) inference — pair it with models produced by `run_train_global.bat`.
+On Windows, **`scripts/run_infer_global.bat <model.pth> [input.txt]`** wraps the context (18D) inference — pair it with models produced by `scripts/run_train_global.bat`.
 
 > The architecture and feature settings must match how the model was trained (`--arch` plus the `--v2_*` flags, same config / `--block_context` state); a mismatch fails fast with a checkpoint/architecture error rather than loading silently.
 
@@ -331,7 +331,7 @@ python evaluate_full.py --domain bridge_w6 --protocol single \
     --model_weights logs/20260929_150153_bridge_w6/final_model.pth --out score.json
 
 # or through the wrapper (sets PYTORCH_CUDA_ALLOC_CONF and pins one GPU)
-./run_domain_eval.sh bridge_w6 logs/20260929_150153_bridge_w6/final_model.pth single
+./scripts/run_domain_eval.sh bridge_w6 logs/20260929_150153_bridge_w6/final_model.pth single
 ```
 
 `--protocol` names the inference protocol so a reported number says how it was produced:
@@ -481,7 +481,7 @@ like valid config rather than a disabled feature. This measures the real distrib
 the cached blocks and writes weights back:
 
 ```bash
-python compute_class_weights.py --blocks bridge/chunks_nopad \
+python tools/compute_class_weights.py --blocks bridge/chunks_nopad \
     --config model_params_semanticbridge.json --write
 ```
 
@@ -683,50 +683,48 @@ python inference.py \
 - `--ensemble WEIGHTS.pth [...]`: extra checkpoints to softmax-average with `--model_weights`. Every member is built from the architecture flags on the command line, so they must share one architecture
 - `--ensemble_config SPEC.json`: ensemble whose members each declare their own architecture (see `ensemble_example.json`). Use this to mix checkpoints trained with different `--v2_*` flags. Mutually exclusive with `--ensemble`
 - `--column_window`, `--column_stride`: column size / step (m); output is always a colored `_segmented.las` + `_segmented.txt`
-- `--block_context` / `--no_block_context`: must match how the model was trained (context-trained models need `--block_context`; see `run_infer_global.bat`)
+- `--block_context` / `--no_block_context`: must match how the model was trained (context-trained models need `--block_context`; see `scripts/run_infer_global.bat`)
 - `--block_context` / `--no_block_context`, `--context_buffer`, `--context_bins`: block-context descriptor — must match how the model was trained
 
 ## File Structure
 
 ```
 point_edge_seg_net/
+├── train_model.py          # training entry point        (pesn-train)
+├── inference.py            # inference entry point       (pesn-infer)
+├── evaluate_full.py        # full-coverage scoring       (pesn-eval)
+├── data_preparation.py     # S3DIS -> processed .pt      (pesn-prepare)
+├── convert_dataset.py      # any public dataset -> .pt   (pesn-convert)
+│
+├── data_processing.py      # features, blocking, config loading (imported by the above)
+├── domain_config.py        # loads domains/*.json onto the CLI (explicit flags win)
+├── room_pipeline.py        # whole-room inference path
+├── voxel_chunk.py          # voxel-chunk blocking + D4 TTA views
+├── structure_loss.py       # optional structure-oriented loss (--structure_loss)
+├── diagnose_kpi_grad.py    # gradient/KPI monitoring (--diagnose)
 ├── models/                 # architecture registry (--arch)
 │   ├── __init__.py         #   name -> class, 'v1'/'v2' aliases
 │   ├── stencil.py          #   v2, current: voxel-stencil aggregation
 │   ├── edgeconv.py         #   v1, legacy: kNN EdgeConv
-│   ├── common.py           #   feature gate, attention, bottleneck Transformer
-│   └── builder.py          #   flags/JSON -> network, checkpoint loading, ensembles
-├── train_model.py          # training (block/column pipeline, losses, schedules)
-├── inference.py            # segment a new cloud -> colored LAS + TXT
-├── evaluate_full.py        # full-coverage scoring of a held-out area (OA/mAcc/mIoU)
-├── sweep_eval.py           # grid-search evaluate_full scoring knobs (see sweep_eval.json)
-├── compute_class_weights.py # measure a block cache -> class_weights for its config
-├── data_preparation.py     # raw S3DIS rooms -> per-room feature tensors
-├── data_processing.py      # features, blocking, augmentation, voting, config resolution
-├── room_pipeline.py        # whole-room ("room" mode) data path
-├── voxel_chunk.py          # large-cloud chunking used by evaluate_full --mode chunk
-├── convert_dataset.py      # any X Y Z [R G B ...] dataset -> training format
-├── dataset_profiles.json   # per-dataset extension/labels/split; --profiles overrides it
-├── convert_ifc_to_las.py   # IFC model -> labelled LAS (class map in config.json)
-├── data_analysis.py        # class-distribution plots of a block cache
-├── diagnose_kpi_grad.py    # gradient/KPI monitoring used by train_model.py --diagnose
-├── test_improvements.py    # standalone smoke tests (no training, no torch_geometric)
-├── view_points_block.py    # quick Open3D viewer for cached blocks
-├── domains/                # per-domain run recipes (--domain bridge | room)
-├── domain_config.py        # loads domains/*.json onto the CLI (explicit flags win)
-├── model_params*.json      # dataset/class/feature configs (-c / --config)
-├── pyproject.toml          # packaging: pip install . and the pesn-* commands
-├── scripts/get_bridge_data.sh|bat  # fetch + convert the SemanticBridge scans
-├── run_domain_train.sh|bat # train any domains/*.json recipe (per-model flags live there)
-├── run_domain_eval.sh|bat  # score a checkpoint on its own training geometry
-├── run_bridge_reproduce.sh # regenerate the reported SemanticBridge figures
-├── run_train_*.sh|bat      # reproduction scripts (baseline / block-context)
-├── run_infer_global.sh|bat # inference wrapper for block-context models
-├── logs/<timestamp>[_<domain>]/    # runs: weights, metrics, curves (released ones are tracked)
-├── building_example.md     # worked example: S3DIS buildings
-├── bridge_example.md       # worked example: SemanticBridge bridges
+│   ├── common.py           #   feature gate, attention, bottleneck transformer
+│   └── builder.py          #   one spec -> model, shared by eval and inference
+│
+├── configs/                # dataset/class/feature configs (-c / --config, by bare name too)
+│   ├── model_params*.json  #   one per dataset
+│   ├── dataset_profiles.json  # per-dataset extension/labels/split for convert_dataset.py
+│   ├── aug_presets.json    #   named augmentation recipes (--aug_preset)
+│   └── structure_presets.json # spatial priors for --structure_loss
+├── domains/                # per-domain run recipes (--domain bridge | bridge_w6 | room)
+├── scripts/                # runnable wrappers (train, score, reproduce, fetch data)
+├── tools/                  # standalone utilities, not imported by the pipeline
+├── tests/                  # smoke tests (no training, no torch_geometric)
+├── docs/                   # worked examples and version history
+│
+├── logs/<timestamp>[_<domain>]/   # runs: weights, metrics, curves (released ones tracked)
+├── imgs/                   # figures used by the docs
 ├── sample/                 # example cloud for a first inference run
-└── imgs/, data_analysis/   # figures used by this README
+├── pyproject.toml          # packaging: pip install . and the pesn-* commands
+└── requirements.txt        # pinned torch / PyG stack
 ```
 
 ## Troubleshooting
@@ -763,7 +761,7 @@ point_edge_seg_net/
 - 1.1: 2026/7/15. AMP training bug fix & retrain — S3DIS Area 5: **OA 86.60% / mAcc 69.73% / mIoU 59.99%** ([logs](./logs/20260715_204942)):
   - **Fixed a GradScaler state-corruption bug**: the "very large gradient → skip batch" branch called `scaler.unscale_()` without a matching `scaler.update()`, so from the first skipped batch onward every optimizer step silently failed (`unscale_() has already been called…`), permanently freezing the weights. The skip branch now resets the scaler state, restoring correct AMP training.
   - Retrained the v1.0 configuration (column mode, 60 epochs, batch 10, effective batch 60) with the fix — all metrics improved over the 20260707 baseline (OA +0.44, mAcc +0.68, mIoU +0.42); best validation accuracy 93.59%.
-  - Added `run_train_global.bat` to reproduce the training run.
+  - Added `scripts/run_train_global.bat` to reproduce the training run.
 - 2.0: 2026/8/21. **Architecture rework (v2) — S3DIS Area 5: OA 87.8% / mAcc 72.6% / mIoU 64.8%** (full-coverage protocol, +4.8 mIoU over v1.1 re-scored identically). Checkpoints are **not** compatible with v1.
   - **New backbone `models/stencil.py`**: per-layer kNN graph search is removed entirely. Neighbours are looked up on the voxel lattice with a fixed stencil (sorted keys + binary search), local aggregation is a point-wise MLP with a relative-position encoding and a feature-difference term, and down/upsampling use grid pooling with an exact inverse map. U-Net layout, feature gate and bottleneck Transformer are kept.
   - **Speed / memory**: ~7x faster training epochs and ~3x lower training memory than v1 at equal settings; single-view inference runs in about 4 GB; measured training memory ~12-20 GB steady (see Training below).
@@ -772,7 +770,7 @@ point_edge_seg_net/
 
 - 2.1: 2026/10/7. **SemanticBridge support — a bridge segmentation pipeline on the public TLS/MLS benchmark.** The v2 backbone is unchanged; this release adds the data path, the run tooling and the released checkpoint.
   - **Released run** `logs/20260929_150153_bridge_w6/` (3.06 M parameters, 11.8 MiB checkpoint) — bridge runs land in the same `logs/` tree as every other domain, the directory name carrying the recipe. On the official 15/5 split, over all 84,153,822 test points: **mIoU 69.81 / OA 91.61** single-view. Published baselines on the same split are UNet3D 70.7, KPConv 70.5, PTv2 63.5, at roughly 4.6x the parameters.
-  - **Reproduction**: `scripts/get_bridge_data.sh|bat` fetches and converts the scans; `run_domain_eval.sh|bat` scores a checkpoint on the geometry its recipe trained it on. See [bridge_example.md](./bridge_example.md) for the full procedure and the numbers to check against.
+  - **Reproduction**: `scripts/get_bridge_data.sh|bat` fetches and converts the scans; `scripts/run_domain_eval.sh|bat` scores a checkpoint on the geometry its recipe trained it on. See [bridge_example.md](./bridge_example.md) for the full procedure and the numbers to check against.
   - **Run recipes as data**: per-model settings live in `domains/*.json` (`--domain`, unknown keys are a hard error) rather than in shell strings, so training and scoring read the same recipe. Augmentation presets move to `aug_presets.json`, class weights are computed by `compute_class_weights.py`.
   - **Named inference protocols** (`--protocol single | overlap | mirror | overlap_mirror`) so a reported number states how densely the window was swept and how many views were voted.
   - A study of the context/resolution trade-off, the coverage and scoring defects found along the way, and the ablations behind the shipped recipe are being written up separately; this README states the released configuration only.

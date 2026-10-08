@@ -14,7 +14,7 @@ rem  NOTE: inference for the resulting model must also pass
 rem        --block_context (python inference.py --block_context -m <model>).
 rem ============================================================
 
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 python train_model.py ^
     --config model_params.json ^

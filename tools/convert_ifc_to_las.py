@@ -158,7 +158,7 @@ if __name__ == "__main__":
     
     parser.add_argument("--input", "-i", type=str, default="./input", help="Input folder containing IFC files (default: ./input)")
     parser.add_argument("--output", "-o", type=str, default="./output", help="Output folder for LAS files (default: ./output)")
-    parser.add_argument("--config", "-c", type=str, default="./config.json", help="Path to category mapping config file (default: ./config.json)")
+    parser.add_argument("--config", "-c", type=str, default="configs/config.json", help="Path to category mapping config file (default: configs/config.json)")
     parser.add_argument("--spacing", "-s", type=float, default=0.03, help="Point sampling spacing in meters (default: 0.03)")
     parser.add_argument("--tolerance", "-t", type=float, default=0.001, help="Mesh deflection tolerance in meters (default: 0.001)")
     

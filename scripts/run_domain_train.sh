@@ -23,7 +23,7 @@
 #  run is never overwritten.
 # ============================================================
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."          # repo root: the entry points live there
 
 DOMAIN="${1:-}"
 if [ -z "$DOMAIN" ]; then

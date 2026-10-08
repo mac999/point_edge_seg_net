@@ -18,10 +18,13 @@ Two properties the scoring pipeline forces on any honest sweep:
   the survivors at full cost (`tta_d4: 8`) via a stage with `"from_top"`.
 
 Usage:
-    python sweep_eval.py --config sweep_eval.json
-    python sweep_eval.py --config sweep_eval.json --dry_run    # print the commands only
+    python tools/sweep_eval.py --config configs/sweep_eval.json
+    python tools/sweep_eval.py --config configs/sweep_eval.json --dry_run    # print the commands only
 """
 
+import os as _os, sys as _sys
+# runnable from anywhere: the modules it imports live at the repository root
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import argparse
 import itertools
 import json

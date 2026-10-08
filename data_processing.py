@@ -27,34 +27,46 @@ _DEFAULT_CLASS_NAMES = [
 _MODEL_CONFIG = None
 CLASS_NAMES = _DEFAULT_CLASS_NAMES.copy()
 
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+CONFIG_DIR = os.path.join(REPO_ROOT, 'configs')
+
+
+def resolve_config(name: str) -> str:
+    """Locate a config file by path or by bare name.
+
+    Config JSONs live in `configs/`, but a bare `model_params.json` has been the documented
+    argument for a long time and appears in saved command lines. Both are accepted: an
+    existing path wins, then `configs/<name>`, then the repository root.
+    """
+    if os.path.exists(name):
+        return name
+    for base in (CONFIG_DIR, REPO_ROOT):
+        cand = os.path.join(base, os.path.basename(name))
+        if os.path.exists(cand):
+            return cand
+    return name
+
+
 def load_model_config(config_path: str = 'model_params.json') -> Dict:
     """
     Load model configuration from JSON file.
-    
+
     Args:
-        config_path: Path to model_params.json file
-        
+        config_path: Path to a config JSON, or its bare name (resolved against configs/)
+
     Returns:
         config: Dictionary containing model parameters
     """
     global _MODEL_CONFIG, CLASS_NAMES
-    
+
+    config_path = resolve_config(config_path)
     if not os.path.exists(config_path):
-        print(f"Warning: Config file '{config_path}' not found. Using default S3DIS configuration.")
-        _MODEL_CONFIG = {
-            'dataset_name': 'S3DIS',
-            'num_classes': 13,
-            'class_names': _DEFAULT_CLASS_NAMES,
-            'class_colors': [[233, 229, 107], [95, 156, 196], [179, 116, 81], [241, 149, 131],
-                           [81, 163, 163], [223, 160, 168], [142, 86, 114], [153, 223, 138],
-                           [149, 149, 241], [107, 229, 233], [233, 107, 229], [107, 233, 107],
-                           [160, 160, 160]],  # standard S3DIS palette (kept in sync with model_params.json)
-            'num_features': 10,
-            'block_size': 8192
-        }
-        CLASS_NAMES = _MODEL_CONFIG['class_names']
-        return _MODEL_CONFIG
-    
+        # Falling through to the S3DIS defaults here used to be a warning. On a mistyped or
+        # moved path that silently trains the wrong class set, which is far worse than
+        # stopping -- so an explicitly named config that cannot be found is now an error.
+        raise FileNotFoundError(
+            f"config file '{config_path}' not found (looked in configs/ and the repository "
+            f"root as well). Pass --config with a path that exists.")
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
             _MODEL_CONFIG = json.load(f)

@@ -62,17 +62,18 @@ pesn-convert = "convert_dataset:main"
 # Flat layout: the pipeline modules are importable at top level, matching the documented
 # `python train_model.py ...` usage from a clone.
 packages = ["models"]
+# Root-level modules only: the entry points and the libraries they import. Standalone
+# utilities moved to tools/ and are run from a checkout, not from an install.
 py-modules = [
     "train_model",
     "inference",
     "evaluate_full",
     "data_preparation",
     "data_processing",
+    "convert_dataset",
+    "domain_config",
+    "structure_loss",
     "room_pipeline",
     "voxel_chunk",
-    "convert_dataset",
-    "convert_ifc_to_las",
-    "data_analysis",
     "diagnose_kpi_grad",
-    "view_points_block",
 ]

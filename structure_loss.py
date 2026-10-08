@@ -22,7 +22,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-PRESETS_PATH = 'structure_presets.json'
+PRESETS_PATH = 'structure_presets.json'      # resolved through configs/, see resolve_config
 AXIS_TABLE = 'structure_axis.json'
 
 
@@ -37,6 +37,8 @@ def load_preset(name, class_names, path=PRESETS_PATH):
 	"""
 	if not name or name == 'none':
 		return None
+	from data_processing import resolve_config
+	path = resolve_config(path)
 	if not os.path.exists(path):
 		raise FileNotFoundError(f'structure preset file not found: {path}')
 	with open(path) as f:

@@ -8,7 +8,7 @@ rem  Reuses the existing 10D block cache in block_s3dis/.
 rem  Context counterpart: run_train_global.bat (18D, block_s3dis_ctx).
 rem ============================================================
 
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 python train_model.py ^
     --config model_params.json ^

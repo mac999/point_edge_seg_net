@@ -15,7 +15,7 @@ rem  Output: <input>_segmented.las (colored, class in 'classification')
 rem          and <input>_segmented.txt, next to the input file.
 rem ============================================================
 
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 if "%~1"=="" (
     echo [ERROR] Model path required.

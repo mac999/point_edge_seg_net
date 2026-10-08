@@ -24,7 +24,7 @@
 #     python inference.py --block_context --context_mode bottleneck -m <model>
 # ============================================================
 
-cd "$(dirname "$0")" || exit 1
+cd "$(dirname "$0")/.." || exit 1   # repo root: the entry points live there
 
 PYTHON="${PYTHON:-python}"
 

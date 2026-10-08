@@ -72,7 +72,7 @@ validation set used during training is carved spatially out of the 15 training b
 ## 3. Score the released model
 
 ```bash
-./run_domain_eval.sh bridge_w6 logs/20260929_150153_bridge_w6/final_model.pth single
+./scripts/run_domain_eval.sh bridge_w6 logs/20260929_150153_bridge_w6/final_model.pth single
 ```
 
 `--domain bridge_w6` reads the block geometry, voxel lattice and architecture out of
@@ -103,7 +103,7 @@ python evaluate_full.py --domain bridge_w6 --protocol single \
 All four protocols plus the cross-sensor pair in one go:
 
 ```bash
-./run_bridge_reproduce.sh logs/20260929_150153_bridge_w6/final_model.pth
+./scripts/run_bridge_reproduce.sh logs/20260929_150153_bridge_w6/final_model.pth
 ```
 
 ### What counts as a match
@@ -121,7 +121,7 @@ curves and the scores they produced.
 ## 4. Retrain, if you want to
 
 ```bash
-./run_domain_train.sh bridge_w6         # ~38 h on one GPU, peak ~34 GB
+./scripts/run_domain_train.sh bridge_w6         # ~38 h on one GPU, peak ~34 GB
 ```
 
 The first run builds a block cache under `bridge/chunks_w6/` (about 4 GB, 4,097 blocks) and
@@ -135,7 +135,7 @@ published baselines report single runs. Logs go to a fresh `logs/<timestamp>_<do
 directory; an existing run is never overwritten.
 
 Two recipes ship: `bridge_w6`, the released configuration, and `bridge`, the plain 2 m
-baseline it is compared against. `./run_domain_train.sh` with no argument lists whatever is
+baseline it is compared against. `./scripts/run_domain_train.sh` with no argument lists whatever is
 present. The recipes used for the ablations are released with the write-up.
 
 ## 5. If a number does not match

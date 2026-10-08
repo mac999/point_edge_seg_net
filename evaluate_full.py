@@ -82,7 +82,7 @@ def evaluate_room(model, room_pt, spec, num_classes, device, block_size, window,
 
 	`save_probs`: optional path; the per-point mean softmax (over views and overlapping
 	blocks), carried back to every ORIGINAL point, is written there as float16 so models
-	scored on different voxel grids can be fused point-for-point afterwards (fuse_votes.py).
+	scored on different voxel grids can be fused point-for-point afterwards (tools/fuse_votes.py).
 	"""
 	d = torch.load(room_pt, weights_only=False)
 	all_points = d.pos.numpy().astype(np.float32)
@@ -254,7 +254,7 @@ def main():
 						 'you were comparing against.')
 	ap.add_argument('--save_probs', default=None, metavar='DIR',
 					help='Write each room\'s per-point mean softmax (float16 .npy, original points) '
-						 'under DIR for later point-wise fusion with fuse_votes.py.')
+						 'under DIR for later point-wise fusion with tools/fuse_votes.py.')
 	add_ensemble_arguments(ap)
 	ap.add_argument('--arch', type=str, default='edgeconv',
 					choices=['edgeconv', 'stencil', 'v1', 'v2'],

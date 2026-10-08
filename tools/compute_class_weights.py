@@ -18,6 +18,9 @@ Weights are (1/frequency)**power, rescaled to mean 1 and clipped. `--power 0.5`
 weights; 1.0 is full inverse frequency and is usually too aggressive.
 """
 
+import os as _os, sys as _sys
+# runnable from anywhere: the modules it imports live at the repository root
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import argparse
 import glob
 import json

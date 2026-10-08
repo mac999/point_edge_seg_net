@@ -11,6 +11,9 @@
 # Weights default to equal. Keep it that way for a reported number unless they were fixed
 # before the test set was scored -- tuning them on the test set is test-set training.
 
+import os as _os, sys as _sys
+# runnable from anywhere: the modules it imports live at the repository root
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import os, json, glob, argparse
 import numpy as np
 import torch

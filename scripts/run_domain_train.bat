@@ -20,7 +20,7 @@ rem  Indoor:
 rem    room            S3DIS chunk recipe
 rem ============================================================
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 if "%~1"=="" (
     echo usage: %~nx0 ^<domain^> [extra flags...]

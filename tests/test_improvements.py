@@ -5,9 +5,9 @@
 #   2. augment_training_block      (aug + normal-rotation consistency + RGB dropout)
 #   3. partition_columns           (full coverage, exact block size, overlap)
 #   4. merge_block_votes           (majority-voting correctness)
-# Run:  conda run -n venv_lmm python test_improvements.py
+# Run:  python tests/test_improvements.py   (from anywhere; the repo root is added below)
 import os, sys, shutil
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import torch
 import data_processing as dp

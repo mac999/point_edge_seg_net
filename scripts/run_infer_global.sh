@@ -15,7 +15,7 @@
 #          and <input>_segmented.txt, next to the input file.
 # ============================================================
 
-cd "$(dirname "$0")" || exit 1
+cd "$(dirname "$0")/.." || exit 1   # repo root: the entry points live there
 
 if [ -z "${1:-}" ]; then
     echo "[ERROR] Model path required."

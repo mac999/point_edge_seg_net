@@ -13,7 +13,7 @@
 #  Usage:  ./run_bridge_reproduce.sh [checkpoint.pth]
 # ============================================================
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."          # repo root: the entry points live there
 
 CKPT="${1:-logs/20260929_150153_bridge_w6/final_model.pth}"
 [ -f "$CKPT" ] || { echo "[ERROR] no such checkpoint: $CKPT" >&2; exit 1; }

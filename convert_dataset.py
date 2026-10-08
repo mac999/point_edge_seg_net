@@ -42,7 +42,7 @@ import numpy as np
 # test_stems: filename stems routed to the test/ folder; others go to train/. If a
 #             dataset ships its own train/ and test/ folders, use --split to force one.
 DEFAULT_PROFILES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     "dataset_profiles.json")
+                                     "configs", "dataset_profiles.json")
 
 
 def load_profiles(path=None):
