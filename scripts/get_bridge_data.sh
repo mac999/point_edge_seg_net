@@ -49,4 +49,4 @@ if [ -d "$RAW/mls/val" ]; then
 fi
 
 echo
-echo "done. Next:  ./run_domain_eval.sh bridge_w6 weights/bridge_w6_final_model.pth single"
+echo "done. Next:  ./run_domain_eval.sh bridge_w6 logs/20260929_150153_bridge_w6/final_model.pth single"

@@ -18,7 +18,7 @@ scripts below fetch it from the authors' Zenodo record.
 
 ## Result
 
-`weights/bridge_w6_final_model.pth`, 3.06 M parameters (11.8 MiB), one GPU, 37.9 h of
+`logs/20260929_150153_bridge_w6/final_model.pth`, 3.06 M parameters (11.8 MiB), one GPU, 37.9 h of
 training. Scored over **all 84,153,822 labelled test points** of the official split:
 
 | | mIoU | OA |
@@ -72,7 +72,7 @@ validation set used during training is carved spatially out of the 15 training b
 ## 3. Score the released model
 
 ```bash
-./run_domain_eval.sh bridge_w6 weights/bridge_w6_final_model.pth single
+./run_domain_eval.sh bridge_w6 logs/20260929_150153_bridge_w6/final_model.pth single
 ```
 
 `--domain bridge_w6` reads the block geometry, voxel lattice and architecture out of
@@ -93,17 +93,17 @@ Cross-sensor, on the three bridges captured with both scanners:
 ```bash
 # the wrapper is for the plain case; point the scorer at another tree directly
 python evaluate_full.py --domain bridge_w6 --protocol single \
-    --model_weights weights/bridge_w6_final_model.pth \
+    --model_weights logs/20260929_150153_bridge_w6/final_model.pth \
     --processed_data_path bridge/processed_tls3 --out tls3.json   # expect mIoU 74.82
 python evaluate_full.py --domain bridge_w6 --protocol single \
-    --model_weights weights/bridge_w6_final_model.pth \
+    --model_weights logs/20260929_150153_bridge_w6/final_model.pth \
     --processed_data_path bridge/processed_mls  --out mls3.json   # expect mIoU 61.97
 ```
 
 All four protocols plus the cross-sensor pair in one go:
 
 ```bash
-./run_bridge_reproduce.sh weights/bridge_w6_final_model.pth
+./run_bridge_reproduce.sh logs/20260929_150153_bridge_w6/final_model.pth
 ```
 
 ### What counts as a match
@@ -115,7 +115,8 @@ size** moves the result by more than that — about 0.08 mIoU — which is why `
 the batch width from the recipe too. Treat anything under ~0.05 mIoU as noise; a different
 GPU or driver may land anywhere in that band.
 
-The checkpoint's SHA-256 is in `weights/SHA256SUMS`; check it first if a figure is far off.
+Released runs keep the same layout as every other run in `logs/`: weights, the epoch log, the
+curves and the scores they produced.
 
 ## 4. Retrain, if you want to
 
@@ -130,7 +131,7 @@ tree reproduces the same 4,097 blocks with identical contents and the same 2,357
 
 Training itself is **not** bit-reproducible — data order, augmentation sampling and CUDA
 accumulation all vary — and no multi-seed study was run, in line with how this benchmark's
-published baselines report single runs. Logs go to a fresh `bridge/logs/<timestamp>_<domain>`
+published baselines report single runs. Logs go to a fresh `logs/<timestamp>_<domain>`
 directory; an existing run is never overwritten.
 
 Two recipes ship: `bridge_w6`, the released configuration, and `bridge`, the plain 2 m

@@ -43,7 +43,7 @@ data path and the numbers to check a reproduction against.
 | OA | 87.8 | 91.6 |
 | parameters | 3.07 M | 3.06 M |
 | training | ~20 h, one GPU | ~38 h, one GPU |
-| released weights | `logs/20260818_003229/` | `weights/bridge_w6_final_model.pth` |
+| released run | `logs/20260818_003229/` | `logs/20260929_150153_bridge_w6/` |
 
 <p align="center">
 <img src="./imgs/v2_training.png" width="760"
@@ -328,10 +328,10 @@ own recipe instead of having it retyped; explicit flags still win.
 
 ```bash
 python evaluate_full.py --domain bridge_w6 --protocol single \
-    --model_weights weights/bridge_w6_final_model.pth --out score.json
+    --model_weights logs/20260929_150153_bridge_w6/final_model.pth --out score.json
 
 # or through the wrapper (sets PYTORCH_CUDA_ALLOC_CONF and pins one GPU)
-./run_domain_eval.sh bridge_w6 weights/bridge_w6_final_model.pth single
+./run_domain_eval.sh bridge_w6 logs/20260929_150153_bridge_w6/final_model.pth single
 ```
 
 `--protocol` names the inference protocol so a reported number says how it was produced:
@@ -717,13 +717,12 @@ point_edge_seg_net/
 ├── model_params*.json      # dataset/class/feature configs (-c / --config)
 ├── pyproject.toml          # packaging: pip install . and the pesn-* commands
 ├── scripts/get_bridge_data.sh|bat  # fetch + convert the SemanticBridge scans
-├── weights/                # released checkpoint (+ SHA256SUMS)
 ├── run_domain_train.sh|bat # train any domains/*.json recipe (per-model flags live there)
 ├── run_domain_eval.sh|bat  # score a checkpoint on its own training geometry
 ├── run_bridge_reproduce.sh # regenerate the reported SemanticBridge figures
 ├── run_train_*.sh|bat      # reproduction scripts (baseline / block-context)
 ├── run_infer_global.sh|bat # inference wrapper for block-context models
-├── logs/<timestamp>/       # released S3DIS runs: weights, metrics, curves
+├── logs/<timestamp>[_<domain>]/    # runs: weights, metrics, curves (released ones are tracked)
 ├── building_example.md     # worked example: S3DIS buildings
 ├── bridge_example.md       # worked example: SemanticBridge bridges
 ├── sample/                 # example cloud for a first inference run
@@ -772,7 +771,7 @@ point_edge_seg_net/
   - Architectures are registered by name in `models/` (`edgeconv` = legacy v1, `stencil` = current); select with `--arch` in `train_model.py` and `evaluate_full.py`. Checkpoints are not interchangeable between the two.
 
 - 2.1: 2026/10/7. **SemanticBridge support — a bridge segmentation pipeline on the public TLS/MLS benchmark.** The v2 backbone is unchanged; this release adds the data path, the run tooling and the released checkpoint.
-  - **Released model** `weights/bridge_w6_final_model.pth` (3.06 M parameters, 11.8 MiB). On the official 15/5 split, over all 84,153,822 test points: **mIoU 69.81 / OA 91.61** single-view. Published baselines on the same split are UNet3D 70.7, KPConv 70.5, PTv2 63.5, at roughly 4.6x the parameters.
+  - **Released run** `logs/20260929_150153_bridge_w6/` (3.06 M parameters, 11.8 MiB checkpoint) — bridge runs land in the same `logs/` tree as every other domain, the directory name carrying the recipe. On the official 15/5 split, over all 84,153,822 test points: **mIoU 69.81 / OA 91.61** single-view. Published baselines on the same split are UNet3D 70.7, KPConv 70.5, PTv2 63.5, at roughly 4.6x the parameters.
   - **Reproduction**: `scripts/get_bridge_data.sh|bat` fetches and converts the scans; `run_domain_eval.sh|bat` scores a checkpoint on the geometry its recipe trained it on. See [bridge_example.md](./bridge_example.md) for the full procedure and the numbers to check against.
   - **Run recipes as data**: per-model settings live in `domains/*.json` (`--domain`, unknown keys are a hard error) rather than in shell strings, so training and scoring read the same recipe. Augmentation presets move to `aug_presets.json`, class weights are computed by `compute_class_weights.py`.
   - **Named inference protocols** (`--protocol single | overlap | mirror | overlap_mirror`) so a reported number states how densely the window was swept and how many views were voted.

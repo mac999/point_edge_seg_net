@@ -28,7 +28,7 @@
   "train_args": {
     "processed_data_path": "bridge/processed",
     "block_data_path": "bridge/chunks_cover",
-    "log_root": "bridge/logs",
+    "log_root": "logs",
     "train_areas": "train",
     "test_area": "test",
     "block_size": 20480,

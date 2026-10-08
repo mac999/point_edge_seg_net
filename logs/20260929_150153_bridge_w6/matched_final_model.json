@@ -1,0 +1,212 @@
+{
+  "protocol": "full_coverage_voting_block",
+  "test_area": "test",
+  "model_path": "bridge/logs/20260929_150153_bridge_w6/final_model.pth",
+  "ensemble_members": null,
+  "eval_config": {
+    "mode": "block",
+    "room_grid": 0.04,
+    "column_grid": 0.04,
+    "block_size": 20480,
+    "window": 6.0,
+    "stride": 6.0,
+    "block_context": false,
+    "num_blocks": 1159,
+    "num_rooms": 5,
+    "tta_views": 1,
+    "tta_family": "scale_flip",
+    "tta_d4": 1,
+    "tta_view_list": [
+      [
+        1.0,
+        false
+      ]
+    ]
+  },
+  "overall_metrics": {
+    "accuracy": 0.9160907391704681,
+    "mAcc": 0.7848537864758093,
+    "mIoU": 0.6980774116913839,
+    "total_points": 84153822
+  },
+  "per_class_results": {
+    "unlabeled": {
+      "accuracy": 0.9083920697706273,
+      "iou": 0.8103248143541558,
+      "gt_points": 1912782,
+      "predicted_points": 1969045,
+      "correct": 1737556
+    },
+    "ground": {
+      "accuracy": 0.9552676123137235,
+      "iou": 0.8852204324212127,
+      "gt_points": 33314050,
+      "predicted_points": 34459962,
+      "correct": 31823833
+    },
+    "high_vegetation": {
+      "accuracy": 0.9144405966590298,
+      "iou": 0.8531971026173062,
+      "gt_points": 21055979,
+      "predicted_points": 20765865,
+      "correct": 19254442
+    },
+    "abutment": {
+      "accuracy": 0.5491466537154327,
+      "iou": 0.537280820540479,
+      "gt_points": 4208608,
+      "predicted_points": 2404090,
+      "correct": 2311143
+    },
+    "superstructure": {
+      "accuracy": 0.9768573412902428,
+      "iou": 0.9208808328805361,
+      "gt_points": 11563451,
+      "predicted_points": 11998736,
+      "correct": 11295842
+    },
+    "top_surface": {
+      "accuracy": 0.9396272786606943,
+      "iou": 0.8809766430787069,
+      "gt_points": 6352306,
+      "predicted_points": 6391702,
+      "correct": 5968800
+    },
+    "railing": {
+      "accuracy": 0.870354453028344,
+      "iou": 0.8153676764142088,
+      "gt_points": 3876508,
+      "predicted_points": 3635360,
+      "correct": 3373936
+    },
+    "traffic_sign": {
+      "accuracy": 0.22384718698701686,
+      "iou": 0.1378324569911685,
+      "gt_points": 60309,
+      "predicted_points": 51136,
+      "correct": 13500
+    },
+    "pillar": {
+      "accuracy": 0.7257508858571722,
+      "iou": 0.4416159259246807,
+      "gt_points": 1809829,
+      "predicted_points": 2477926,
+      "correct": 1313485
+    }
+  },
+  "confusion_matrix": {
+    "row_is_ground_truth": true,
+    "class_order": [
+      "unlabeled",
+      "ground",
+      "high_vegetation",
+      "abutment",
+      "superstructure",
+      "top_surface",
+      "railing",
+      "traffic_sign",
+      "pillar"
+    ],
+    "counts": [
+      [
+        1737556,
+        27373,
+        38999,
+        3205,
+        4194,
+        1789,
+        40679,
+        32142,
+        26845
+      ],
+      [
+        18881,
+        31823833,
+        1060985,
+        64503,
+        44494,
+        264764,
+        34653,
+        11,
+        1926
+      ],
+      [
+        40091,
+        1671988,
+        19254442,
+        3125,
+        2397,
+        1172,
+        79190,
+        2673,
+        901
+      ],
+      [
+        81278,
+        474776,
+        103738,
+        2311143,
+        109745,
+        115,
+        15157,
+        2499,
+        1110157
+      ],
+      [
+        14372,
+        63967,
+        1681,
+        21234,
+        11295842,
+        125019,
+        23079,
+        24,
+        18233
+      ],
+      [
+        2073,
+        50812,
+        1334,
+        34,
+        261581,
+        5968800,
+        67672,
+        0,
+        0
+      ],
+      [
+        26156,
+        135812,
+        296488,
+        53,
+        9566,
+        27831,
+        3373936,
+        287,
+        6379
+      ],
+      [
+        45589,
+        1192,
+        28,
+        0,
+        0,
+        0,
+        0,
+        13500,
+        0
+      ],
+      [
+        3049,
+        210209,
+        8170,
+        793,
+        270917,
+        2212,
+        994,
+        0,
+        1313485
+      ]
+    ]
+  }
+}

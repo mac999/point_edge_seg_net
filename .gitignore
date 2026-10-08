@@ -25,8 +25,6 @@ dist/
 
 # --- model weights (belong to logs/, but guard against strays) ---
 *.pth
-# the released checkpoint is small enough to ship; the datasets are not
-!weights/*.pth
 *.ckpt
 chunk_s3dis_2cm/
 
