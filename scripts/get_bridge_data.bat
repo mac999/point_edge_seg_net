@@ -34,7 +34,7 @@ tar -xf "%RAW%\mls_data.zip" -C "%RAW%\mls"
 
 echo == converting TLS scans -^> bridge\processed
 "%PYTHON%" convert_dataset.py --dataset semanticbridge ^
-    --input_dir "%RAW%\tls" --output_dir bridge\processed
+    --input_dir "%RAW%\tls" --output_dir bridge\processed --recursive
 
 if exist "%RAW%\mls\val" (
     echo == converting MLS scans -^> bridge\processed_mls

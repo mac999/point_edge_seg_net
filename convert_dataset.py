@@ -321,10 +321,16 @@ def load_one(path, profile, label_field, has_rgb, label_col):
     raise ValueError(f"Unsupported ext {ext}")
 
 
-def list_scenes(input_dir, profile):
-    if profile["ext"] == ".npy_pair":
-        return sorted(glob.glob(os.path.join(input_dir, "*" + profile["points_suffix"])))
-    return sorted(glob.glob(os.path.join(input_dir, "*" + profile["ext"])))
+def list_scenes(input_dir, profile, recursive=False):
+    pat = "*" + (profile["points_suffix"] if profile["ext"] == ".npy_pair" else profile["ext"])
+    hits = sorted(glob.glob(os.path.join(input_dir, pat)))
+    if hits or not recursive:
+        return hits
+    # Several releases ship their scenes inside per-split subfolders rather than loose in one
+    # directory, and pointing the converter at the parent then silently finds nothing.
+    # Descending one level picks them up; the split still comes from the profile's test_stems
+    # (or --split), never from the folder a file happens to sit in.
+    return sorted(glob.glob(os.path.join(input_dir, "*", pat)))
 
 
 def main():
@@ -336,6 +342,9 @@ def main():
                          "this script). Point it at your own file to convert a dataset that is "
                          "not in the repo, without touching any code.")
     ap.add_argument("--input_dir", required=True, help="Folder with the dataset scene files")
+    ap.add_argument("--recursive", action="store_true",
+                    help="If the folder holds no scene files, look one level down "
+                         "(releases that ship train/ and val/ subfolders)")
     ap.add_argument("--output_dir", default=None, help="Output processed dir (default: ./processed_<dataset>)")
     ap.add_argument("--split", choices=["auto", "train", "test"], default="auto",
                     help="Force all scenes to train/ or test/ (auto uses profile test_stems)")
@@ -367,11 +376,12 @@ def main():
     if args.emit_config:
         emit_model_params(args.dataset, profile, spec, f"model_params_{args.dataset}.json")
 
-    scenes = list_scenes(args.input_dir, profile)
+    scenes = list_scenes(args.input_dir, profile, recursive=args.recursive)
     if args.limit:
         scenes = scenes[: args.limit]
     if not scenes:
-        print(f"No scene files found in {args.input_dir} (ext {profile['ext']}).")
+        print(f"No scene files found in {args.input_dir} (ext {profile['ext']})."
+              + ("" if args.recursive else " Pass --recursive if they sit in subfolders."))
         return
     print(f"Found {len(scenes)} scene(s).")
 

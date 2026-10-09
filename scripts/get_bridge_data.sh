@@ -32,7 +32,7 @@ done
 PYTHON="${PYTHON:-python}"
 echo "== converting TLS scans -> bridge/processed (train/ and test/ by the official split)"
 "$PYTHON" convert_dataset.py --dataset semanticbridge \
-    --input_dir "$RAW/tls" --output_dir bridge/processed
+    --input_dir "$RAW/tls" --output_dir bridge/processed --recursive
 
 # The three MLS scans of test bridges are the cross-sensor set; they are scored, never
 # trained on, so they go to their own tree and are all routed to test/.
