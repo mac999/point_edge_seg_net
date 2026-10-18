@@ -70,7 +70,7 @@ def apply_domain(args, domain, argv, parser=None):
 	# it off the parser keeps a domain file from having to know which is which.
 	takes_list = {}
 	if parser is not None:
-		takes_list = {a.dest: (a.nargs in ('+', '*') or isinstance(a.nargs, int))
+		takes_list = {a.dest: (a.nargs in ('+', '*') or (isinstance(a.nargs, int) and a.nargs > 0))
 					  for a in parser._actions}
 
 	explicit = {a.lstrip('-').replace('-', '_') for a in argv if a.startswith('--')}
@@ -114,7 +114,7 @@ EVAL_IGNORED = {
 	'lr_eta_min', 'accumulation_steps', 'gradient_clip', 'max_grad_norm',
 	'early_stop_lr_tol', 'early_stop_require_anneal', 'allow_early_stop_before_anneal',
 	'structure_loss', 'structure_weight', 'structure_presets', 'init_weights',
-	'no_wandb', 'diagnose', 'resume',
+	'no_wandb', 'diagnose', 'resume', 'val_in_train',
 }
 
 
@@ -138,7 +138,7 @@ def apply_domain_eval(args, domain, argv, parser=None):
 
 	takes_list = {}
 	if parser is not None:
-		takes_list = {a.dest: (a.nargs in ('+', '*') or isinstance(a.nargs, int))
+		takes_list = {a.dest: (a.nargs in ('+', '*') or (isinstance(a.nargs, int) and a.nargs > 0))
 					  for a in parser._actions}
 
 	explicit = {a.lstrip('-').replace('-', '_') for a in argv if a.startswith('--')}

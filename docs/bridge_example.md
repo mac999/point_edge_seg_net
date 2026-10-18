@@ -106,6 +106,23 @@ All four protocols plus the cross-sensor pair in one go:
 ./scripts/run_bridge_reproduce.sh logs/20260929_150153_bridge_w6/final_model.pth
 ```
 
+### The 12 m checkpoint and the two-scale fusion
+
+A second released checkpoint, `logs/20261001_050040_bridge_w12/final_model.pth`, was trained
+with the `bridge_w12` recipe (12 m window at 8 cm voxels, same architecture, 68.80 mIoU
+single view). Averaging its per-point probabilities with the 6 m model's, equal weights, gives
+**70.49 mIoU single view** at two forward passes per point. The reproduce script runs this
+fusion automatically when the second checkpoint is present (pass another path as its second
+argument to use a different one):
+
+```bash
+python evaluate_full.py --domain bridge_w12 --protocol single \
+    --model_weights logs/20261001_050040_bridge_w12/final_model.pth \
+    --out w12.json --save_probs probs_w12
+python tools/fuse_votes.py --probs probs_w6 probs_w12 --processed_data_path bridge/processed \
+    --test_area test --config configs/model_params_semanticbridge.json --out fused.json
+```
+
 ### What counts as a match
 
 Scoring is not bit-exact across runs. Measured here over four repeats at identical settings,

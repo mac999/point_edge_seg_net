@@ -56,8 +56,8 @@ TODO.md
 
 # --- ablation recipes and the structure-prior machinery: these carry the analysis behind
 #     the released configuration and ship with the paper, not before ---
-domains/bridge_w12.json
 domains/bridge_w24.json
+domains/bridge_w6_all.json
 domains/bridge_w6_gpos.json
 domains/bridge_w6_sol.json
 model_params_semanticbridge_gpos.json
