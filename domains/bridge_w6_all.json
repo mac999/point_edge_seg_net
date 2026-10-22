@@ -1,0 +1,52 @@
+{
+  "_comment": [
+    "Released 6 m / 4 cm recipe retrained on every labelled block of the 15 training bridges.",
+    "",
+    "bridge_w6 holds out 20% of the blocks for validation and early stopping; the benchmark",
+    "baselines were trained without a validation set. This recipe folds the held-out blocks back",
+    "into training (--val_in_train), fixes the epoch count so nothing depends on the in-sample",
+    "validation numbers, and keeps every other setting of bridge_w6. Use final_model.pth.",
+    "",
+    "Run:  ./scripts/run_domain_train.sh bridge_w6_all"
+  ],
+  "name": "bridge_w6_all",
+  "description": "6 m window at 4 cm voxels, trained on all labelled blocks",
+  "config": "model_params_semanticbridge.json",
+  "train_args": {
+    "processed_data_path": "bridge/processed",
+    "block_data_path": "bridge/chunks_w6",
+    "log_root": "logs",
+    "train_areas": "train",
+    "test_area": "test",
+    "block_size": 20480,
+    "block_mode": "column",
+    "sampler": "grid",
+    "arch": "stencil",
+    "v2_neighbors": "stencil",
+    "v2_stencil": 2,
+    "v2_diff": true,
+    "v2_directional": true,
+    "enc_channels": [
+      64,
+      192,
+      320,
+      448
+    ],
+    "bottleneck_dim": 256,
+    "num_epochs": 400,
+    "batch_size": 4,
+    "val_batch_size": 4,
+    "learning_rate": 0.003,
+    "focal_gamma": 2.0,
+    "oversample_rare": 1.0,
+    "aug_preset": "strong",
+    "cooldown_sec": 0,
+    "pad_blocks": false,
+    "cover_columns": true,
+    "column_window": 6.0,
+    "column_stride": 6.0,
+    "column_grid": 0.04,
+    "val_in_train": true,
+    "early_stop_patience": 100000
+  }
+}

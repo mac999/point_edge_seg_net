@@ -1,0 +1,276 @@
+{
+  "protocol": "full_coverage_voting_block",
+  "test_area": "test",
+  "model_path": "logs/20261018_163423_bridge_w6_all/final_model.pth",
+  "ensemble_members": null,
+  "eval_config": {
+    "mode": "block",
+    "room_grid": 0.04,
+    "column_grid": 0.04,
+    "block_size": 20480,
+    "window": 6.0,
+    "stride": 6.0,
+    "block_context": false,
+    "num_blocks": 670,
+    "num_rooms": 3,
+    "tta_views": 1,
+    "tta_family": "scale_flip",
+    "tta_d4": 1,
+    "tta_view_list": [
+      [
+        1.0,
+        false
+      ]
+    ],
+    "domain": "bridge_w6",
+    "protocol": "single",
+    "domain_applied": [
+      [
+        "config",
+        "model_params_semanticbridge.json"
+      ],
+      [
+        "test_area",
+        "test"
+      ],
+      [
+        "block_size",
+        20480
+      ],
+      [
+        "sampler",
+        "grid"
+      ],
+      [
+        "arch",
+        "stencil"
+      ],
+      [
+        "v2_neighbors",
+        "stencil"
+      ],
+      [
+        "v2_stencil",
+        2
+      ],
+      [
+        "v2_diff",
+        true
+      ],
+      [
+        "v2_directional",
+        true
+      ],
+      [
+        "enc_channels",
+        "64,192,320,448"
+      ],
+      [
+        "bottleneck_dim",
+        256
+      ],
+      [
+        "batch_size",
+        4
+      ],
+      [
+        "window",
+        6.0
+      ],
+      [
+        "stride",
+        6.0
+      ],
+      [
+        "column_grid",
+        0.04
+      ]
+    ]
+  },
+  "overall_metrics": {
+    "accuracy": 0.8893304968347148,
+    "mAcc": 0.7077358929480906,
+    "mIoU": 0.6288434776947921,
+    "total_points": 29485178
+  },
+  "per_class_results": {
+    "unlabeled": {
+      "accuracy": 0.7105094546436571,
+      "iou": 0.5578832045469192,
+      "gt_points": 377698,
+      "predicted_points": 371689,
+      "correct": 268358
+    },
+    "ground": {
+      "accuracy": 0.9410353956438775,
+      "iou": 0.8289114151072107,
+      "gt_points": 11634200,
+      "predicted_points": 12521912,
+      "correct": 10948194
+    },
+    "high_vegetation": {
+      "accuracy": 0.9286694989829792,
+      "iou": 0.8576464849113847,
+      "gt_points": 9651229,
+      "predicted_points": 9762035,
+      "correct": 8962802
+    },
+    "abutment": {
+      "accuracy": 0.7378831670984309,
+      "iou": 0.6829637672276413,
+      "gt_points": 1321323,
+      "predicted_points": 1081234,
+      "correct": 974982
+    },
+    "superstructure": {
+      "accuracy": 0.8899849926957805,
+      "iou": 0.8231817713673473,
+      "gt_points": 3008535,
+      "predicted_points": 2921701,
+      "correct": 2677551
+    },
+    "top_surface": {
+      "accuracy": 0.6085378640966983,
+      "iou": 0.5826434929648532,
+      "gt_points": 1836806,
+      "predicted_points": 1199399,
+      "correct": 1117766
+    },
+    "railing": {
+      "accuracy": 0.8386191964175873,
+      "iou": 0.673320622453958,
+      "gt_points": 1341219,
+      "predicted_points": 1454038,
+      "correct": 1124772
+    },
+    "traffic_sign": {
+      "accuracy": 0.18593339421159544,
+      "iou": 0.1338224642540977,
+      "gt_points": 53659,
+      "predicted_points": 30872,
+      "correct": 9977
+    },
+    "pillar": {
+      "accuracy": 0.5284500727422086,
+      "iou": 0.5192180764197163,
+      "gt_points": 260509,
+      "predicted_points": 142298,
+      "correct": 137666
+    }
+  },
+  "confusion_matrix": {
+    "row_is_ground_truth": true,
+    "class_order": [
+      "unlabeled",
+      "ground",
+      "high_vegetation",
+      "abutment",
+      "superstructure",
+      "top_surface",
+      "railing",
+      "traffic_sign",
+      "pillar"
+    ],
+    "counts": [
+      [
+        268358,
+        32473,
+        37335,
+        351,
+        1092,
+        1508,
+        18408,
+        18138,
+        35
+      ],
+      [
+        24922,
+        10948194,
+        492976,
+        48576,
+        15617,
+        21852,
+        81662,
+        397,
+        4
+      ],
+      [
+        16852,
+        581241,
+        8962802,
+        17474,
+        2728,
+        3,
+        69198,
+        885,
+        46
+      ],
+      [
+        1,
+        244541,
+        1850,
+        974982,
+        80856,
+        7,
+        14680,
+        0,
+        4406
+      ],
+      [
+        186,
+        134972,
+        101288,
+        21475,
+        2677551,
+        56055,
+        16869,
+        1,
+        138
+      ],
+      [
+        401,
+        409653,
+        38390,
+        149,
+        142124,
+        1117766,
+        128323,
+        0,
+        0
+      ],
+      [
+        22006,
+        70168,
+        120404,
+        0,
+        216,
+        2186,
+        1124772,
+        1464,
+        3
+      ],
+      [
+        36669,
+        74,
+        6939,
+        0,
+        0,
+        0,
+        0,
+        9977,
+        0
+      ],
+      [
+        2294,
+        100596,
+        51,
+        18227,
+        1517,
+        22,
+        126,
+        10,
+        137666
+      ]
+    ]
+  }
+}

@@ -46,8 +46,11 @@ PROGRESS.md
 # --- SemanticBridge dataset (separate from the S3DIS tree; GBs, downloadable) ---
 bridge/
 
-# Scoring output of run_bridge_reproduce.sh (regenerable from the released weights)
+# Scoring output of run_bridge_reproduce.sh and run_bridge_w6_all.sh (regenerable from the
+# released weights; the result JSONs the paper reads are kept under logs/ instead, and the
+# per-point probability dumps are gigabytes)
 reproduce/
+reproduce_w6_all/
 
 # --- manuscript working directory (figures/tables are the paper's contribution;
 #     released only on publication) ---
@@ -57,7 +60,6 @@ TODO.md
 # --- ablation recipes and the structure-prior machinery: these carry the analysis behind
 #     the released configuration and ship with the paper, not before ---
 domains/bridge_w24.json
-domains/bridge_w6_all.json
 domains/bridge_w6_gpos.json
 domains/bridge_w6_sol.json
 model_params_semanticbridge_gpos.json

@@ -18,18 +18,31 @@ scripts below fetch it from the authors' Zenodo record.
 
 ## Result
 
-`logs/20260929_150153_bridge_w6/final_model.pth`, 3.06 M parameters (11.8 MiB), one GPU, 37.9 h of
-training. Scored over **all 84,153,822 labelled test points** of the official split:
+Two released checkpoints, both 3.06 M parameters (11.8 MiB), one GPU. Scored over
+**all 84,153,822 labelled test points** of the official split:
 
 | | mIoU | OA |
 |---|---|---|
-| **This model**, single view | **69.81** | 91.61 |
+| **This model** (`bridge_w6_all`), voted | **70.74** | 91.82 |
+| **This model** (`bridge_w6_all`), single view | 70.04 | 91.22 |
+| This model (`bridge_w6`, validation held out), single view | 69.81 | 91.61 |
 | UNet3D | 70.7 | — |
 | KPConv | 70.5 | — |
 | PointTransformer v2 | 63.5 | — |
 
-Baselines are as published by the dataset authors, at roughly 4.6x the parameters. All four
-are single-view; see [protocols](#3-score-the-released-model) for the voted figures.
+Baselines are as published by the dataset authors, at roughly 4.6x the parameters.
+
+Two things to read carefully before quoting a number:
+
+- The baselines are **single-view** and were trained **without a validation set**. The
+  row that matches both conventions is `bridge_w6_all` single view, 70.04 — still a little
+  under the two strongest baselines. The 70.74 adds overlapping-window voting, which the
+  baselines do not do, so it is a protocol gain and is kept in its own row here and in the
+  paper.
+- `bridge_w6` holds out a fifth of the blocks for validation and early stopping, which is
+  the better practice but not what the baselines did; it is released as the conservative
+  counterpart. `bridge_w6_all` folds those blocks back in at a fixed 400 epochs
+  (see [the all-blocks recipe](#the-all-blocks-recipe-and-the-headline-number)).
 
 <p align="center">
 <img src="./imgs/bridge_segmentation_example.png" width="820"
@@ -106,14 +119,77 @@ All four protocols plus the cross-sensor pair in one go:
 ./scripts/run_bridge_reproduce.sh logs/20260929_150153_bridge_w6/final_model.pth
 ```
 
+### The all-blocks recipe and the headline number
+
+`bridge_w6` holds out 20% of the training blocks for validation and early stopping. The
+published baselines were trained without a validation set, so that held-out fifth is a
+protocol difference rather than a property of the model. `domains/bridge_w6_all.json` removes
+it: `--val_in_train` puts every labelled block into training (2954 instead of 2357), the
+epoch count is fixed at 400 in advance, and early stopping is disabled. The per-epoch
+validation numbers it prints are **in-sample** and cannot be used to pick a checkpoint, so
+`final_model.pth` is the reported one and `best_model.pth` is not released for that run.
+
+Its own script trains and scores it, on either platform:
+
+```bash
+./scripts/run_bridge_w6_all.sh                 # score the released checkpoint
+./scripts/run_bridge_w6_all.sh --train         # train from scratch first (~54 h on one card)
+./scripts/run_bridge_w6_all.sh --fusion        # also score the 12 m partner and fuse
+```
+```bat
+scripts\run_bridge_w6_all.bat
+scripts\run_bridge_w6_all.bat --train
+scripts\run_bridge_w6_all.bat --fusion
+```
+
+Measured: **70.04 single view, 70.74 voted** (`overlap_mirror`), against 69.81 single view
+for the validation-holding `bridge_w6` run. The extra quarter point from the returned blocks
+is concentrated in two classes — unlabeled +5.18 and pillar +2.39 IoU — while the large
+classes each give up half a point to a point, and abutment loses 3.04.
+
+Running the script end to end from the released checkpoint reproduces both figures; the
+single-view pass has come out at 70.04 and at 70.05 on separate runs, which is the usual
+0.01 spread described under [What counts as a match](#what-counts-as-a-match) rather than a
+different result. The paper quotes the lower of the two.
+
+The four inference protocols on this checkpoint separate cleanly, and the separation is the
+point: the voting gain is the overlapping sweep, not the mirroring.
+
+| Protocol | Stride | Views | mIoU | OA |
+| --- | --- | --- | --- | --- |
+| `single` | window | 1 | 70.04 | 91.22 |
+| `mirror` | window | 2 | 69.97 | 91.26 |
+| `overlap` | window/2 | 1 | 70.70 | 91.79 |
+| `overlap_mirror` | window/2 | 2 | **70.74** | 91.82 |
+
+A mirrored window sees the same context as the original, so it adds nothing; a half-stride
+sweep classifies each point from several window positions and averages away the context
+each one is missing.
+
+Cross-sensor on this checkpoint, the three bridges captured with both scanners:
+
+```bash
+CKPT=logs/20261018_163423_bridge_w6_all/final_model.pth
+python evaluate_full.py --domain bridge_w6 --protocol single --model_weights $CKPT \
+    --processed_data_path bridge/processed_tls3 --out tls3.json   # expect mIoU 74.83
+python evaluate_full.py --domain bridge_w6 --protocol single --model_weights $CKPT \
+    --processed_data_path bridge/processed_mls  --out mls3.json   # expect mIoU 62.88
+```
+
 ### The 12 m checkpoint and the two-scale fusion
 
 A second released checkpoint, `logs/20261001_050040_bridge_w12/final_model.pth`, was trained
 with the `bridge_w12` recipe (12 m window at 8 cm voxels, same architecture, 68.80 mIoU
-single view). Averaging its per-point probabilities with the 6 m model's, equal weights, gives
-**70.49 mIoU single view** at two forward passes per point. The reproduce script runs this
-fusion automatically when the second checkpoint is present (pass another path as its second
-argument to use a different one):
+single view, 69.24 voted). Averaging its per-point probabilities with the 6 m model's, equal
+weights, **helps the `bridge_w6` checkpoint and does not help the stronger one**: it lifts
+`bridge_w6` from 69.81 to **70.49** single view, but fusing it with the voted `bridge_w6_all`
+checkpoint gives 70.50, below that checkpoint's own 70.74. Matching the members' protocols
+does not rescue it — the 12 m model is a point and a half weaker and only wins on abutment
+(55.38 against 51.14 IoU), so an equal-weight average costs more elsewhere than it gains
+there. Fusion is worth the second forward pass on the weaker checkpoint only.
+
+The reproduce script runs the single-view fusion automatically when the second checkpoint is
+present (pass another path as its second argument to use a different one):
 
 ```bash
 python evaluate_full.py --domain bridge_w12 --protocol single \
@@ -139,6 +215,7 @@ curves and the scores they produced.
 
 ```bash
 ./scripts/run_domain_train.sh bridge_w6         # ~38 h on one GPU, peak ~34 GB
+./scripts/run_domain_train.sh bridge_w6_all     # the headline run, ~54 h, same peak
 ```
 
 The first run builds a block cache under `bridge/chunks_w6/` (about 4 GB, 4,097 blocks) and
@@ -151,9 +228,14 @@ accumulation all vary — and no multi-seed study was run, in line with how this
 published baselines report single runs. Logs go to a fresh `logs/<timestamp>_<domain>`
 directory; an existing run is never overwritten.
 
-Two recipes ship: `bridge_w6`, the released configuration, and `bridge`, the plain 2 m
-baseline it is compared against. `./scripts/run_domain_train.sh` with no argument lists whatever is
-present. The recipes used for the ablations are released with the write-up.
+Four recipes ship: `bridge_w6_all`, the headline configuration; `bridge_w6`, the same
+geometry with a held-out validation split; `bridge_w12`, the 12 m fusion partner; and
+`bridge`, the plain 2 m baseline they are compared against.
+`./scripts/run_domain_train.sh` with no argument lists whatever is present. The recipes used
+for the ablations are released with the write-up.
+
+`bridge_w6_all` takes 400 fixed epochs rather than stopping early, which is why it is the
+longer of the two runs at the same geometry.
 
 ## 5. If a number does not match
 

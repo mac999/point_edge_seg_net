@@ -50,11 +50,11 @@ data path and the numbers to check a reproduction against.
 |---|---|---|
 | scene | indoor interiors, 13 classes | outdoor structures, 9 classes |
 | held out | Area 5 (78.4 M points) | 5 bridges (84.2 M points) |
-| **mIoU** | **64.8** (8-view) / 64.2 single | **69.81** single view |
-| OA | 87.8 | 91.6 |
+| **mIoU** | **64.8** (8-view) / 64.2 single | **70.74** voted / 70.04 single view |
+| OA | 87.8 | 91.8 |
 | parameters | 3.07 M | 3.06 M |
-| training | ~20 h, one GPU | ~38 h, one GPU |
-| released run | `logs/20260818_003229/` | `logs/20260929_150153_bridge_w6/` |
+| training | ~20 h, one GPU | ~54 h, one GPU |
+| released run | `logs/20260818_003229/` | `logs/20261018_163423_bridge_w6_all/` |
 
 <p align="center">
 <img src="./imgs/v2_training.png" width="760"
@@ -785,6 +785,12 @@ point_edge_seg_net/
   - **Run recipes as data**: per-model settings live in `domains/*.json` (`--domain`, unknown keys are a hard error) rather than in shell strings, so training and scoring read the same recipe. Augmentation presets move to `aug_presets.json`, class weights are computed by `compute_class_weights.py`.
   - **Named inference protocols** (`--protocol single | overlap | mirror | overlap_mirror`) so a reported number states how densely the window was swept and how many views were voted.
   - A study of the context/resolution trade-off, the coverage and scoring defects found along the way, and the ablations behind the shipped recipe are being written up separately; this README states the released configuration only.
+
+- 2.2: 2026/10/22. **SemanticBridge, trained on every labelled block.** The backbone, the block geometry and the voxel lattice are unchanged; what changes is which blocks reach the optimizer.
+  - **New released run** `logs/20261018_163423_bridge_w6_all/` — the 6 m / 4 cm recipe with the held-out validation blocks folded back into training (2954 blocks instead of 2357), at a fixed 400 epochs with early stopping disabled. Over all 84,153,822 test points: **mIoU 70.74 / OA 91.82** voted (`overlap_mirror`), **70.04 / 91.22** single view, against 69.81 single view for the validation-holding run, which stays released as the conservative counterpart.
+  - **Why the two runs differ**: the published baselines were trained without a validation set, so holding a fifth of the blocks back was a protocol difference rather than a property of the model. The per-epoch validation numbers of the new run are in-sample and cannot select a checkpoint, so `final_model.pth` is the reported one and `best_model.pth` is not released for it.
+  - **Its own recipe and scripts**: `domains/bridge_w6_all.json`, `scripts/run_bridge_w6_all.sh|bat` (`--train` to train from scratch, `--fusion` to add the 12 m partner). `--val_in_train` is the one new training flag.
+  - **The two-scale fusion is now a negative result** on the stronger checkpoint: it lifts the validation-holding run from 69.81 to 70.49, but fusing it with the voted all-blocks checkpoint gives 70.50, below that checkpoint's own 70.74. The 12 m model only wins on abutment, so an equal-weight average costs more elsewhere than it gains there.
 
 Optimization strategy under a fixed per-block memory budget (boundary artifacts, class imbalance, generalization):
 * **Overlapping context-preserving blocks:** `column` mode builds overlapping full-height columns instead of context-losing cubic grid cells, preserving the topology of objects (e.g., columns/doors) bisected by grid boundaries.
