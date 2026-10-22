@@ -83,9 +83,22 @@ try:
 except ImportError:
     pass
 
-random.seed(42)
-np.random.seed(42)
-torch.manual_seed(42)
+SEED = 42  # --seed: initialisation, augmentation sampling and batch order
+
+
+def set_seed(seed):
+	"""Seed the generators the run draws from.
+
+	The train/validation split is seeded separately and deliberately not touched here: a
+	repeat is meant to vary initialisation and sampling, not which blocks are held out.
+	"""
+	random.seed(seed)
+	np.random.seed(seed)
+	torch.manual_seed(seed)
+	torch.cuda.manual_seed_all(seed)
+
+
+set_seed(SEED)
 
 # GPU optimization settings (optional)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -2033,7 +2046,7 @@ def main():
 	global FEATURE_DIMS, NORMALS_PRESENT, COLUMN_WINDOW, COLUMN_STRIDE, PAD_BLOCKS, COVER_COLUMNS, COLUMN_GRID, CORE_MAX, HALO, INVARIANT_GEO, WARMUP_EPOCHS, LR_ETA_MIN, ACCUMULATION_STEPS, GRADIENT_CLIP_VALUE, MAX_GRADIENT_NORM, EARLY_STOP_LR_TOL, EARLY_STOP_REQUIRE_ANNEAL
 	global EARLY_STOP_PATIENCE, EARLY_STOP_REQUIRE_ANNEAL
 	global OVERSAMPLE_RARE, CONTEXT_MODE, WIDTH_MULT, MID_TRANSFORMER, SAMPLER
-	global ROOM_DATA_PATH, ROOM_GRID, ROOM_MAX_POINTS, ROOM_LOOP, INIT_WEIGHTS, RESUME, SELECT_METRIC, VAL_IN_TRAIN
+	global ROOM_DATA_PATH, ROOM_GRID, ROOM_MAX_POINTS, ROOM_LOOP, INIT_WEIGHTS, RESUME, SELECT_METRIC, VAL_IN_TRAIN, SEED
 	global STRUCTURE_LOSS, STRUCTURE_WEIGHT, STRUCTURE_PRESETS
 	global ENC_CHANNELS, BOTTLENECK_DIM, ARCH, V2_KNN, V2_CURVES, V2_NEIGHBORS, V2_STENCIL, V2_DIFF, V2_BASE_GRID, V2_POOL_GRIDS, V2_DIRECTIONAL, V2_STENCIL_Z
 
@@ -2117,6 +2130,10 @@ def main():
 	parser.add_argument('--bottleneck_dim', type=int, default=None,
 						help='Bottleneck transformer width (default: last encoder channel). Narrowing it is how '
 							 'capacity is freed for the earlier stages.')
+	parser.add_argument('--seed', type=int, default=SEED,
+						help='Seed for initialisation, augmentation and batch order. The train/validation '
+							 'split is seeded independently, so repeats vary the run and not the split. '
+							 'Each seed writes its own logs/<timestamp>_<domain> directory.')
 	parser.add_argument('--val_in_train', action='store_true',
 						help='Train on the validation blocks as well (every labelled block). The held-out '
 							 'tag still drives the per-epoch validation numbers, which are then in-sample: '
@@ -2283,6 +2300,10 @@ def main():
 	RESUME = args.resume
 	SELECT_METRIC = args.select_metric
 	VAL_IN_TRAIN = args.val_in_train
+	SEED = args.seed
+	if SEED != 42:
+		print(f"--seed {SEED}: reseeding initialisation, augmentation and batch order")
+	set_seed(SEED)
 	ENC_CHANNELS = tuple(int(c) for c in args.enc_channels.split(',')) if args.enc_channels else None
 	BOTTLENECK_DIM = args.bottleneck_dim
 	ROOM_DATA_PATH = args.room_data_path

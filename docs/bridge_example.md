@@ -39,6 +39,11 @@ Two things to read carefully before quoting a number:
   under the two strongest baselines. The 70.74 adds overlapping-window voting, which the
   baselines do not do, so it is a protocol gain and is kept in its own row here and in the
   paper.
+- Even taking the 70.74, it is **not** above UNet3D. That baseline is published as 70.7,
+  to one decimal, so it spans 70.65 to 70.75 and the two figures cannot be ordered from
+  what is on the page. The 70.74 does clear KPConv's 70.5 by more than the scoring noise.
+  What this checkpoint supports is parity with the strongest reference at a fraction of the
+  parameters — not a new best.
 - `bridge_w6` holds out a fifth of the blocks for validation and early stopping, which is
   the better practice but not what the baselines did; it is released as the conservative
   counterpart. `bridge_w6_all` folds those blocks back in at a fixed 400 epochs
