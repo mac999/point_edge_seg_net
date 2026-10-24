@@ -171,3 +171,13 @@ HPEIN(61.9)과 동급 = **2019-2020 point-based 중위 티어**. 하루 만에 P
 2. `logs/`, 데이터/캐시, `*.pth`는 git 밖 (.gitignore). 수치는 이 파일에 기록.
 3. 아키텍처 인자(enc_channels, bottleneck_dim, sampler, block 파라미터)는
    체크포인트와 1:1 — 평가 시 학습과 동일 인자 필수.
+
+---
+
+## 아카이브 안내 (2026-10-24)
+
+이 문서가 언급하는 임시 큐 스크립트(`run_v08_queue.sh`, `run_v2_variants.sh`,
+`run_v2_score_variants.sh` 등)와 그 콘솔 로그는 저장소 루트에서
+`logs/_console_archive/`(로그)와 `logs/_console_archive/launchers/`(스크립트)로 옮겼다.
+용량이 커서 추적하지 않으며, 위 명령을 다시 쓸 때는 그 경로에서 실행한다.
+현재 유지되는 진입점은 `scripts/` 아래의 것들이다.
