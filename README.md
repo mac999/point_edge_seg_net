@@ -23,7 +23,7 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
 
 - **Measured, modest memory footprint.** With the published v2 recipe, training sits at ~12-20 GB steady and inference at about 4 GB regardless of cloud size; `--batch_size 2` brings training down to roughly 8-10 GB. These are measurements from the runs in `logs/`, not a hardware requirement — smaller budgets have not been benchmarked. Large clouds are handled by chunking rather than by down-voxelizing or hundreds of sliding windows.
 - **Scales to arbitrarily large clouds.** Space is split into fixed-size blocks (constant memory per block, linear scaling), so a 100M-point LAS scan is handled like a single room — every point is covered at full density, not coarse-voxelized.
-- **Lightweight yet competitive.** ~3.0M parameters (about 1/5 of KPConv) reaching S3DIS Area-5 **OA 87.8% / mIoU 64.8%** — past RandLA-Net and within 0.6 of MinkowskiNet, at a fraction of the compute and with no compiled extensions.
+- **Lightweight yet competitive.** ~3.0M parameters (about 1/5 of KPConv) reaching S3DIS Area-5 **OA 87.8% / mIoU 64.8%** — past RandLA-Net and within 0.6 of MinkowskiNet — and on SemanticBridge **70.80 mIoU** single view, level with the benchmark's strongest reference models, at a fraction of the compute and with no compiled extensions. See [How it compares](#how-it-compares).
 - **Practical & self-contained.** Any `X Y Z [R G B ...]` cloud, custom classes via one JSON, standard deps (PyTorch/PyG/Open3D), and colored **LAS** output for direct viewing (CloudCompare, etc.).
 - **Honest evaluation.** Reports OA / mAcc / **mIoU** on a truly held-out area with leakage-controlled spatial train/val splits, plus multi-view voting, TTA and model-ensemble inference.
 
@@ -46,7 +46,7 @@ PointEdgeSegNet supports large-scale point cloud training, custom dataset and se
 Two worked examples run on the same code; each has its own page with the full recipe, the
 data path and the numbers to check a reproduction against.
 
-| | [Buildings — S3DIS](./building_example.md) | [Bridges — SemanticBridge](./bridge_example.md) |
+| | [Buildings — S3DIS](./docs/building_example.md) | [Bridges — SemanticBridge](./docs/bridge_example.md) |
 |---|---|---|
 | scene | indoor interiors, 13 classes | outdoor structures, 9 classes |
 | held out | Area 5 (78.4 M points) | 5 bridges (84.2 M points) |
@@ -55,6 +55,44 @@ data path and the numbers to check a reproduction against.
 | parameters | 3.07 M | 3.06 M |
 | training | ~20 h, one GPU | ~4 days, one GPU |
 | released run | `logs/20260818_003229/` | `logs/20261111_215452_bridge_w12_v4_all/` |
+
+### How it compares
+
+Single-view mIoU on each benchmark's held-out test set, against published figures.
+
+| Bridges — SemanticBridge, 9 classes, 5 held-out bridges, every point | params | mIoU |
+|---|---|---|
+| **This model** (released checkpoint) | **3.06 M** | **70.80** (71.87 voted) |
+| Sparse 3D U-Net (benchmark reference) | n/a | 70.7 |
+| KPConv (benchmark reference) | 14.1 M | 70.5 |
+| Point Transformer v2 (benchmark reference) | 12.8 M | 63.5 |
+| Later sparse CNN by the dataset authors, benchmark data only | n/a | 71.2 |
+| same, plus synthetic training bridges and a kNN post-filter | n/a | 74.6 |
+
+| Buildings — S3DIS Area 5, 13 classes | params | mIoU |
+|---|---|---|
+| Point Transformer V3 | ~46 M | 73.4 |
+| KPConv | ~15 M | 67.1 |
+| MinkowskiNet | ~38 M | 65.4 |
+| **This model** | **3.07 M** | **64.8** (64.2 single view) |
+| RandLA-Net | ~1.2 M | ~62.5 |
+
+What this supports: on bridges, parity with the strongest reference models at a fifth of
+KPConv's parameters, with one GPU and no compiled extensions; on buildings, mid-table, a
+few points below the largest models at a fifth to a fifteenth of their size. It is not a new state
+of the art on either. Training on bridges is not fully reproducible to the decimal: a second
+seed of the released recipe gives 68.83, so the parity belongs to the released checkpoint.
+
+**Why the bridge figure is a strict one.** Published bridge segmentation results span
+roughly 39 to 97 mIoU, and most of that range is evaluation protocol rather than method.
+The high figures typically average fewer classes, remove vegetation, ground or clutter
+before scoring, split one bridge's blocks between training and test, or report no
+separate test set at all. The figure above uses none of these: all 9 classes, raw scans
+with nothing removed, five whole bridges never seen in training, and all 84.2 M test points
+scored. Single-view and voted results are reported separately, the reported checkpoint and
+epoch budget were fixed before any test score existed, and the spread between training
+seeds is reported alongside. Figures obtained under looser protocols are not comparable to
+it, in either direction.
 
 <p align="center">
 <img src="./imgs/v2_training.png" width="760"
@@ -388,8 +426,8 @@ block geometry differ.
 
 | | what it covers |
 |---|---|
-| [building_example.md](./building_example.md) | S3DIS: the 13 classes and their characteristics, the published Area-5 numbers and how this model sits against other architectures, the scoring-knob sweep, checkpoint ensembling |
-| [bridge_example.md](./bridge_example.md) | SemanticBridge: fetching and converting the public TLS/MLS scans, scoring the released checkpoint, the figure to expect per protocol, and what counts as a reproduction |
+| [building_example.md](./docs/building_example.md) | S3DIS: the 13 classes and their characteristics, the published Area-5 numbers and how this model sits against other architectures, the scoring-knob sweep, checkpoint ensembling |
+| [bridge_example.md](./docs/bridge_example.md) | SemanticBridge: fetching and converting the public TLS/MLS scans, scoring the released checkpoint, the figure to expect per protocol, and what counts as a reproduction |
 
 ## Dataset Preparation
 
