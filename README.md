@@ -246,7 +246,15 @@ python inference.py --tta                 # extra accuracy via rotation voting
 
 # --block_context-trained (18D with the shipped config) model:
 python inference.py --block_context -m logs/<timestamp>/best_model.pth -i ./my_scan.txt
+
+# bridges: the released SemanticBridge checkpoint on your own scan (.las/.laz/.ply/.txt).
+# --domain sets the block geometry, voxel and architecture the checkpoint was trained with.
+python inference.py --domain bridge_w12_v4 \
+    -m logs/20261111_215452_bridge_w12_v4_all/final_model.pth -i ./my_bridge.las --no_vis
 ```
+
+For bridges, see [Segment your own scan](./docs/bridge_example.md#4-segment-your-own-scan)
+for memory, speed and the limits of the released model.
 
 On Windows, **`scripts/run_infer_global.bat <model.pth> [input.txt]`** wraps the context (18D) inference — pair it with models produced by `scripts/run_train_global.bat`.
 
@@ -842,6 +850,7 @@ point_edge_seg_net/
   - **How it compares.** Single view, this checkpoint is level with UNet3D's 70.7 (published to one decimal) and above KPConv's 70.5 at about a fifth of KPConv's parameters. That is the checkpoint's standing, not the recipe's: the second seed is below both, and the two-seed mean (69.82) is below the 6 m mean (70.24). Returning the validation fifth to training moved the figure by -0.02 here and +0.23 on the 6 m recipe, both inside the seed spread.
   - **Cost.** A 12 m epoch takes about 2.2x a 6 m one; training peaks at about 44 GB.
   - **Scripts**: `scripts/run_bridge_w12_v4_all.sh|bat` (`--train` to train from scratch). The 6 m release and its scripts stay in place.
+  - **Own scans**: `inference.py --domain bridge_w12_v4 -m <checkpoint> -i scan.las` predicts an unlabelled `.las/.laz/.ply/.txt` through the same feature, voxel and blocking code as `evaluate_full.py` (shared `predict_cloud`), and writes `<scan>_segmented.las`. On test bridge 19 it matches the benchmark predictions on 99.96% of points.
 Optimization strategy under a fixed per-block memory budget (boundary artifacts, class imbalance, generalization):
 * **Overlapping context-preserving blocks:** `column` mode builds overlapping full-height columns instead of context-losing cubic grid cells, preserving the topology of objects (e.g., columns/doors) bisected by grid boundaries.
 * **Coordinate normalization:** per-block coordinate centering (translation invariance) inside the model, applied identically at train and inference — improves generalization to unseen areas.

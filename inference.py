@@ -291,6 +291,21 @@ def parse_arguments():
                        help='Directory for inference blocks')
     parser.add_argument('--no_visualization', '--no_vis', action='store_true',
                        help='Skip visualization')
+    # Domain path: predict a new scan on the geometry a domain recipe trained on (block size,
+    # window, voxel lattice, architecture), through the same code that produced the
+    # benchmark scores. Required for the bridge checkpoints; the flags below then do not apply.
+    parser.add_argument('--domain', default=None, metavar='NAME|PATH',
+                       help="Use a domain recipe (domains/NAME.json), e.g. bridge_w12_v4. Reads "
+                            ".las/.laz/.ply/.txt and writes <input>_segmented.las.")
+    parser.add_argument('--protocol', default='single',
+                       choices=['single', 'overlap', 'mirror', 'overlap_mirror'],
+                       help="--domain only: 'single' (fastest) or the voted protocols; "
+                            "'overlap_mirror' is the voted figure, about 4x the time.")
+    parser.add_argument('--batch_size', type=int, default=None,
+                       help='--domain only: blocks per forward pass (default from the domain). '
+                            '1 lowers peak GPU memory to about a quarter.')
+    parser.add_argument('--output', '-o', default=None,
+                       help='--domain only: output LAS path (default <input>_segmented.las)')
     # Voting is ON by default: the shipped model is trained with --block_mode column, so
     # overlapping full-height column blocks + majority voting match the training-time point
     # distribution. --no_voting falls back to legacy sequential chunks (not recommended).
@@ -377,10 +392,110 @@ def save_segmented_las(output_path, coords, pred_labels, class_colors):
     las.write(output_path)
     return output_path
 
+def read_cloud(path):
+    """Read xyz (float64) and rgb (N,3 float, or None) from .las/.laz/.ply/.txt/.csv.
+
+    Labels in the file, if any, are ignored. Text files are x y z [r g b ...].
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext in ('.las', '.laz'):
+        import laspy
+        las = laspy.read(path)
+        xyz = np.stack([np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)], axis=1)
+        rgb = None
+        if hasattr(las, 'red'):
+            rgb = np.stack([np.asarray(las.red), np.asarray(las.green), np.asarray(las.blue)], axis=1).astype(np.float64)
+            if rgb.max() > 255:
+                rgb = rgb / 256.0   # 16-bit LAS colour
+        return xyz.astype(np.float64), rgb
+    if ext == '.ply':
+        from plyfile import PlyData
+        from convert_dataset import _ply_columns, _first_present
+        cols = _ply_columns(PlyData.read(path), path)
+        xyz = np.stack([cols['x'], cols['y'], cols['z']], axis=1).astype(np.float64)
+        rgbc = [_first_present(cols, [c, c[0], c.capitalize(), 'diffuse_' + c]) for c in ('red', 'green', 'blue')]
+        rgb = np.stack(rgbc, axis=1).astype(np.float64) if all(c is not None for c in rgbc) else None
+        return xyz, rgb
+    arr = np.loadtxt(path, delimiter=',' if ext == '.csv' else None)
+    arr = arr.reshape(1, -1) if arr.ndim == 1 else arr
+    return arr[:, 0:3].astype(np.float64), (arr[:, 3:6].astype(np.float64) if arr.shape[1] >= 6 else None)
+
+
+def run_domain_inference(args):
+    """Predict one scan with a domain recipe, e.g. the released bridge checkpoint.
+
+    Features, voxelisation, blocking and voting are the ones evaluate_full.py scores the
+    benchmark with (convert_dataset.build_arrays + evaluate_full.predict_cloud), so a new
+    scan is predicted exactly as the reported test bridges were.
+    """
+    import sys, time
+    import evaluate_full as ef
+    from convert_dataset import build_arrays
+    from domain_config import load_domain, apply_domain_eval
+
+    # Resolve the scoring settings from the domain the same way evaluate_full.py does.
+    eparser = ef.build_parser()
+    eargs = eparser.parse_args([])
+    domain = load_domain(args.domain)
+    apply_domain_eval(eargs, domain, [], eparser)
+    eargs.stride = eargs.window / 2 if args.protocol in ('overlap', 'overlap_mirror') else eargs.window
+    flip = args.protocol in ('mirror', 'overlap_mirror')
+    if args.batch_size:
+        eargs.batch_size = args.batch_size
+    if '--model_weights' in sys.argv or '-m' in sys.argv:
+        eargs.model_weights = args.model_weights
+    if not eargs.model_weights:
+        raise SystemExit(f"give the checkpoint with -m (e.g. logs/<run>_{domain['name']}/final_model.pth)")
+
+    config = load_model_config(eargs.config)
+    spec = resolve_feature_config(config)
+    num_classes = int(config['num_classes'])
+    names = config['class_names']
+    print(f"Domain '{domain['name']}': window {eargs.window} m, voxel {eargs.column_grid} m, "
+          f"block {eargs.block_size}, protocol '{args.protocol}', batch {eargs.batch_size}")
+
+    xyz, rgb = read_cloud(args.input_cloud)
+    if spec['use_rgb'] and rgb is None:
+        print("Warning: the model was trained with colour but the input has none; using zeros. "
+              "Expect lower accuracy.")
+        rgb = np.zeros_like(xyz)
+    print(f"Input: {args.input_cloud} ({len(xyz):,} points)")
+    t0 = time.time()
+    feats, pos, _ = build_arrays(xyz, rgb, np.zeros(len(xyz), np.int64), spec)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model, _ = load_ensemble_members(spec_from_args(eargs), eargs.model_weights, None, None,
+                                     spec['num_features'], num_classes,
+                                     feature_dims_from_spec(spec), device)
+    model.eval()
+    mean, nblocks = ef.predict_cloud(model, pos, feats, spec, num_classes, device,
+                                     eargs.block_size, eargs.window, eargs.stride, eargs.batch_size,
+                                     views=ef.tta_views(n_scale=1, flip=flip),
+                                     column_grid=eargs.column_grid)
+    pred = mean.argmax(axis=1)
+    print(f"Predicted {len(pred):,} points in {nblocks} blocks, {(time.time() - t0) / 60:.1f} min")
+    counts = np.bincount(pred, minlength=num_classes)
+    for i, n in enumerate(names):
+        print(f"  {n:16s} {counts[i]:>12,}  {100 * counts[i] / len(pred):5.1f}%")
+
+    out = args.output or os.path.splitext(args.input_cloud)[0] + '_segmented.las'
+    colors = np.asarray(config['class_colors'], dtype=np.float64) / 255.0
+    save_segmented_las(out, xyz, pred, colors)
+    print(f"Saved: {out}  (class id in the LAS classification field, colour = class)")
+    if not args.no_visualization:
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(xyz)
+        pcd.colors = o3d.utility.Vector3dVector(colors[pred])
+        o3d.visualization.draw_geometries([pcd], window_name="Predicted Segmentation (Press Q to close)")
+
+
 def main():
     """Main inference function"""
     # Parse command line arguments
     args = parse_arguments()
+    if args.domain:
+        run_domain_inference(args)
+        return
     
     # Load model configuration
     print(f"Loading configuration from: {args.config}")

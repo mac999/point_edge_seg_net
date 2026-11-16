@@ -72,22 +72,18 @@ def tta_views(n_scale=5, flip=True):
 	views.sort(key=lambda v: (abs(v[0] - 1.0) + (1.0 if v[1] else 0.0)))  # identity first
 	return views
 
-def evaluate_room(model, room_pt, spec, num_classes, device, block_size, window, stride,
-				  batch_size, use_amp=False, views=((1.0, False),), column_grid=0.0,
-				  save_probs=None):
-	"""Return (13x13 confusion-matrix counts, points scored, blocks used) for one room.
+def predict_cloud(model, all_points, features, spec, num_classes, device, block_size, window,
+				  stride, batch_size, views=((1.0, False),), column_grid=0.0):
+	"""Per-point mean softmax for one cloud, on the geometry the checkpoint was trained on.
+
+	`all_points` (N, 3) and `features` (N, F) are the cloud as the converter writes it. Both
+	the evaluator and inference.py --domain call this, so a scan without labels is predicted
+	exactly as the benchmark scores were. Returns (mean_probs (N, num_classes), blocks used).
 
 	`views` is a list of (scale, flip_x) TTA transforms; per-point softmax is summed over
-	all of them (and over overlapping blocks when stride < window) before the argmax.
-
-	`save_probs`: optional path; the per-point mean softmax (over views and overlapping
-	blocks), carried back to every ORIGINAL point, is written there as float16 so models
-	scored on different voxel grids can be fused point-for-point afterwards (tools/fuse_votes.py).
+	all of them (and over overlapping blocks when stride < window) before averaging.
 	"""
-	d = torch.load(room_pt, weights_only=False)
-	all_points = d.pos.numpy().astype(np.float32)
-	features = d.x.numpy().astype(np.float32).copy()
-	labels = d.y.numpy()
+	features = features.copy()
 
 	# Score where the model was trained. A checkpoint trained on a voxelised cloud sees a
 	# different point density than the raw room, and scoring it raw measures the wrong
@@ -143,24 +139,38 @@ def evaluate_room(model, room_pt, spec, num_classes, device, block_size, window,
 				np.add.at(votes, idx[:num_real], p)  # scatter-add: padded rows excluded
 				np.add.at(nvotes, idx[:num_real], 1)
 
-	assert (votes.sum(axis=1) > 0).all(), f"uncovered points in {room_pt}"
-	pred = votes.argmax(axis=1)
-	back = None
+	assert (nvotes > 0).all(), "uncovered points"
+	mean = votes / nvotes[:, None]
 	if len(points) != len(all_points):
 		# Voxels were scored; carry each prediction to the original points nearest it, so
-		# the confusion matrix still covers every labelled point in the room.
+		# every original point gets a label.
 		from scipy.spatial import cKDTree
-		back = cKDTree(points).query(all_points, k=1)[1]
-		pred = pred[back]
+		mean = mean[cKDTree(points).query(all_points, k=1)[1]]
+	return mean, len(blocks)
+
+def evaluate_room(model, room_pt, spec, num_classes, device, block_size, window, stride,
+				  batch_size, use_amp=False, views=((1.0, False),), column_grid=0.0,
+				  save_probs=None):
+	"""Return (confusion-matrix counts, points scored, blocks used) for one room.
+
+	`save_probs`: optional path; the per-point mean softmax (over views and overlapping
+	blocks), carried back to every ORIGINAL point, is written there as float16 so models
+	scored on different voxel grids can be fused point-for-point afterwards (tools/fuse_votes.py).
+	"""
+	d = torch.load(room_pt, weights_only=False)
+	all_points = d.pos.numpy().astype(np.float32)
+	features = d.x.numpy().astype(np.float32)
+	labels = d.y.numpy()
+	mean, nblocks = predict_cloud(model, all_points, features, spec, num_classes, device,
+								  block_size, window, stride, batch_size, views=views,
+								  column_grid=column_grid)
+	pred = mean.argmax(axis=1)
 	if save_probs:
-		mean = votes / nvotes[:, None]
-		if back is not None:
-			mean = mean[back]
 		np.save(save_probs, mean.astype(np.float16))
 	valid = (labels >= 0) & (labels < num_classes)
 	conf = np.bincount(labels[valid] * num_classes + pred[valid],
 					   minlength=num_classes * num_classes).reshape(num_classes, num_classes)
-	return conf, int(valid.sum()), len(blocks)
+	return conf, int(valid.sum()), nblocks
 
 def metrics_from_confusion(conf):
 	tp = np.diag(conf).astype(np.float64)
@@ -178,7 +188,7 @@ def metrics_from_confusion(conf):
 		'gt': gt, 'pred': pr, 'tp': tp,
 	}
 
-def main():
+def build_parser():
 	ap = argparse.ArgumentParser(description='Full-coverage (standard-protocol) S3DIS evaluation')
 	ap.add_argument('--domain', default=None, metavar='NAME|PATH',
 					help="Score a checkpoint on the geometry its domain trained it on "
@@ -269,6 +279,10 @@ def main():
 	ap.add_argument('--v2_pool_grids', type=str, default='0.08,0.16,0.32', help='v2: pool grids, MUST match training')
 	ap.add_argument('--v2_directional', action='store_true', help='v2: anisotropic aggregation, MUST match training')
 	ap.add_argument('--v2_stencil_z', type=int, default=0, help='v2: vertical stencil reach, MUST match training')
+	return ap
+
+def main():
+	ap = build_parser()
 	args = ap.parse_args()
 	domain_applied = None
 	if args.domain:

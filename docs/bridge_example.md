@@ -242,7 +242,37 @@ GPU or driver may land anywhere in that band.
 Released runs keep the same layout as every other run in `logs/`: weights, the epoch log, the
 curves and the scores they produced.
 
-## 4. Retrain, if you want to
+## 4. Segment your own scan
+
+`inference.py --domain` runs the released checkpoint on a new, unlabelled scan through the
+same feature, voxel, blocking and voting code that produced the scores above. On a test
+bridge it reproduces the benchmark predictions for 99.96% of points (76.87 against 76.81
+mIoU on bridge 19).
+
+```bash
+python inference.py --domain bridge_w12_v4 \
+    -m logs/20261111_215452_bridge_w12_v4_all/final_model.pth \
+    -i my_bridge.las --no_vis
+# -> my_bridge_segmented.las: class id in the LAS classification field, colour = class
+```
+
+- Input: `.las/.laz`, `.ply` or `.txt` (`x y z [r g b]`). Coordinates may be in any
+  projected system; the cloud is shifted to a local origin internally and written back in
+  its original coordinates.
+- `--protocol single` (default) is the fast path, about 3.4 min for a 33 M point bridge.
+  `--protocol overlap_mirror` is the voted figure (+1 mIoU on the benchmark) at about four
+  times the time.
+- Memory: about 39 GB of GPU memory at the default batch of 4 blocks; `--batch_size 1`
+  brings it to about 10 GB at some cost in time.
+- The model was trained on coloured terrestrial scans. A scan without colour runs with the
+  colour channels zeroed and will score lower; mobile scans scored about 12 mIoU lower on
+  the benchmark's cross-sensor subset. Abutments that look unlike the training bridges
+  (large retaining walls) are often labelled pillar. For production use, check the output
+  and, if possible, fine-tune on a few labelled scans of your own.
+- The class ids follow the dataset: 0 unlabeled, 1 ground, 2 high_vegetation, 3 abutment,
+  4 superstructure, 5 top_surface (deck), 6 railing, 7 traffic_sign, 8 pillar.
+
+## 5. Retrain, if you want to
 
 ```bash
 ./scripts/run_domain_train.sh bridge_w6         # ~38 h on one GPU, peak ~34 GB
@@ -269,7 +299,7 @@ for the ablations are released with the write-up.
 `bridge_w6_all` takes 400 fixed epochs rather than stopping early, which is why it is the
 longer of the two runs at the same geometry.
 
-## 5. If a number does not match
+## 6. If a number does not match
 
 | symptom | likely cause |
 |---|---|
