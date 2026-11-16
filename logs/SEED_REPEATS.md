@@ -37,3 +37,20 @@ The paper interprets differences of 0.23 mIoU (returning the withheld blocks) an
 A seed standard deviation above roughly 0.2 mIoU would mean the 0.23 cannot be read as an
 effect from single runs, and the all-blocks claim would have to be restated as consistent
 with but not demonstrated by the data. That outcome gets reported.
+
+## Result (2026-10-25, scored after both runs finished)
+
+Each run scored once, `final_model.pth`, protocol `single`, `--domain bridge_w6`, as fixed above.
+
+| seed | run                                   | mIoU  | OA    | abut. | pillar |
+|------|---------------------------------------|-------|-------|-------|--------|
+| 42   | logs/20261018_163423_bridge_w6_all    | 70.04 | 91.22 | 50.7  | 46.6   |
+| 1    | logs/20261022_230024_bridge_w6_all    | 70.29 | 91.62 | 56.7  | 46.9   |
+| 2    | logs/20261022_230024_bridge_w6_all-2  | 70.39 | 91.46 | 54.1  | 46.8   |
+
+mean 70.24, sd 0.18, range 0.35. Score files: `matched_single_final.json` in each run folder.
+
+Reading, under rule 3: the sd sits just under the 0.2 threshold, but the range exceeds the
+0.23 the paper reads as the all-blocks effect, so that effect is restated as consistent with
+the data rather than demonstrated by it. The one-mIoU steps of the context sweep are not
+affected. Released checkpoint unchanged (seed 42), per rule 2.

@@ -1,0 +1,280 @@
+{
+  "protocol": "full_coverage_voting_block",
+  "test_area": "test",
+  "model_path": "logs/20261111_215452_bridge_w12_v4_all/final_model.pth",
+  "ensemble_members": null,
+  "eval_config": {
+    "mode": "block",
+    "room_grid": 0.04,
+    "column_grid": 0.04,
+    "block_size": 20480,
+    "window": 12.0,
+    "stride": 12.0,
+    "block_context": false,
+    "num_blocks": 1112,
+    "num_rooms": 5,
+    "tta_views": 1,
+    "tta_family": "scale_flip",
+    "tta_d4": 1,
+    "tta_view_list": [
+      [
+        1.0,
+        false
+      ]
+    ],
+    "domain": "bridge_w12_v4",
+    "protocol": "single",
+    "domain_applied": [
+      [
+        "config",
+        "model_params_semanticbridge.json"
+      ],
+      [
+        "processed_data_path",
+        "bridge/processed"
+      ],
+      [
+        "test_area",
+        "test"
+      ],
+      [
+        "block_size",
+        20480
+      ],
+      [
+        "sampler",
+        "grid"
+      ],
+      [
+        "arch",
+        "stencil"
+      ],
+      [
+        "v2_neighbors",
+        "stencil"
+      ],
+      [
+        "v2_stencil",
+        2
+      ],
+      [
+        "v2_diff",
+        true
+      ],
+      [
+        "v2_directional",
+        true
+      ],
+      [
+        "enc_channels",
+        "64,192,320,448"
+      ],
+      [
+        "bottleneck_dim",
+        256
+      ],
+      [
+        "batch_size",
+        4
+      ],
+      [
+        "window",
+        12.0
+      ],
+      [
+        "stride",
+        12.0
+      ],
+      [
+        "column_grid",
+        0.04
+      ]
+    ]
+  },
+  "overall_metrics": {
+    "accuracy": 0.9243896848796719,
+    "mAcc": 0.7827370919927201,
+    "mIoU": 0.7080047928320098,
+    "total_points": 84153822
+  },
+  "per_class_results": {
+    "unlabeled": {
+      "accuracy": 0.8518142684320534,
+      "iou": 0.7909051502143839,
+      "gt_points": 1912782,
+      "predicted_points": 1776642,
+      "correct": 1629335
+    },
+    "ground": {
+      "accuracy": 0.960486971713136,
+      "iou": 0.8988042800750893,
+      "gt_points": 33314050,
+      "predicted_points": 34283971,
+      "correct": 31997711
+    },
+    "high_vegetation": {
+      "accuracy": 0.9211659548102703,
+      "iou": 0.8599453867837613,
+      "gt_points": 21055979,
+      "predicted_points": 20895052,
+      "correct": 19396051
+    },
+    "abutment": {
+      "accuracy": 0.6278724461864825,
+      "iou": 0.6136478746169736,
+      "gt_points": 4208608,
+      "predicted_points": 2740026,
+      "correct": 2642469
+    },
+    "superstructure": {
+      "accuracy": 0.9813469179745735,
+      "iou": 0.9359619404717768,
+      "gt_points": 11563451,
+      "predicted_points": 11908471,
+      "correct": 11347757
+    },
+    "top_surface": {
+      "accuracy": 0.9587584414226896,
+      "iou": 0.9039474557174872,
+      "gt_points": 6352306,
+      "predicted_points": 6475500,
+      "correct": 6090327
+    },
+    "railing": {
+      "accuracy": 0.8679644153965373,
+      "iou": 0.8051819542157251,
+      "gt_points": 3876508,
+      "predicted_points": 3666934,
+      "correct": 3364671
+    },
+    "traffic_sign": {
+      "accuracy": 0.1494138519955562,
+      "iou": 0.10589839113419751,
+      "gt_points": 60309,
+      "predicted_points": 33793,
+      "correct": 9011
+    },
+    "pillar": {
+      "accuracy": 0.7258105600031827,
+      "iou": 0.4577507022586926,
+      "gt_points": 1809829,
+      "predicted_points": 2373433,
+      "correct": 1313593
+    }
+  },
+  "confusion_matrix": {
+    "row_is_ground_truth": true,
+    "class_order": [
+      "unlabeled",
+      "ground",
+      "high_vegetation",
+      "abutment",
+      "superstructure",
+      "top_surface",
+      "railing",
+      "traffic_sign",
+      "pillar"
+    ],
+    "counts": [
+      [
+        1629335,
+        26354,
+        149160,
+        3327,
+        3088,
+        2313,
+        73319,
+        22358,
+        3528
+      ],
+      [
+        10785,
+        31997711,
+        913367,
+        74716,
+        30618,
+        249844,
+        35148,
+        26,
+        1835
+      ],
+      [
+        16764,
+        1546471,
+        19396051,
+        4710,
+        4566,
+        1225,
+        81086,
+        1694,
+        3412
+      ],
+      [
+        888,
+        231942,
+        171657,
+        2642469,
+        102081,
+        104,
+        38602,
+        207,
+        1020658
+      ],
+      [
+        6518,
+        51346,
+        2266,
+        12470,
+        11347757,
+        106275,
+        14032,
+        71,
+        22716
+      ],
+      [
+        353,
+        66275,
+        1858,
+        3,
+        134941,
+        6090327,
+        58549,
+        0,
+        0
+      ],
+      [
+        46473,
+        159295,
+        256601,
+        224,
+        15715,
+        25412,
+        3364671,
+        426,
+        7691
+      ],
+      [
+        45963,
+        1040,
+        4011,
+        0,
+        0,
+        0,
+        284,
+        9011,
+        0
+      ],
+      [
+        19563,
+        203537,
+        81,
+        2107,
+        269705,
+        0,
+        1243,
+        0,
+        1313593
+      ]
+    ]
+  }
+}

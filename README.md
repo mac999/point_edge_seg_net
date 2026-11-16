@@ -50,11 +50,11 @@ data path and the numbers to check a reproduction against.
 |---|---|---|
 | scene | indoor interiors, 13 classes | outdoor structures, 9 classes |
 | held out | Area 5 (78.4 M points) | 5 bridges (84.2 M points) |
-| **mIoU** | **64.8** (8-view) / 64.2 single | **70.74** voted / 70.04 single view |
-| OA | 87.8 | 91.8 |
+| **mIoU** | **64.8** (8-view) / 64.2 single | **71.87** voted / 70.80 single view |
+| OA | 87.8 | 92.8 |
 | parameters | 3.07 M | 3.06 M |
-| training | ~20 h, one GPU | ~54 h, one GPU |
-| released run | `logs/20260818_003229/` | `logs/20261018_163423_bridge_w6_all/` |
+| training | ~20 h, one GPU | ~4 days, one GPU |
+| released run | `logs/20260818_003229/` | `logs/20261111_215452_bridge_w12_v4_all/` |
 
 <p align="center">
 <img src="./imgs/v2_training.png" width="760"
@@ -99,6 +99,7 @@ the two disagree.</sub>
 - Python 3.8 or higher
 - NVIDIA GPU with CUDA support (recommended)
 - GPU memory: ~12-20 GB for training with the published v2 recipe, ~8-10 GB at `--batch_size 2`, ~4 GB for inference
+  (indoor 2 m recipe). The bridge recipe is heavier: scoring the released 12 m recipe peaks at ~39 GB allocated at the default batch width of 4 blocks and ~10 GB at `--batch_size 1`; training peaked at ~44 GB.
 
 ### Step 1: Install PyTorch, PyTorch Geometric and Open3D
 
@@ -796,6 +797,13 @@ point_edge_seg_net/
   - **Cross-sensor, remeasured on this checkpoint**: TLS 74.83, MLS 62.88, a gap of 11.94 mIoU. Highest on each sensor of the four compared models, and still the largest relative drop --- though the margin over KPConv's 11.4 is only 0.54, so no ordering is claimed against it.
   - **Reproduction.** An end-to-end run of `scripts/run_bridge_w6_all.sh` from the released checkpoint reproduced both headline figures. The single-view pass came out at 70.0474 against the reported 70.0438, inside the documented 0.01 repeat spread; the lower value is the one reported. The result JSONs every paper table reads are tracked under `logs/`, so the tables regenerate from a checkout without rescoring.
 
+
+- 2.3: 2026/11/16. **SemanticBridge, 12 m window at the 4 cm voxel.** The backbone is unchanged; the released recipe moves from a 6 m to a 12 m column at the same 4 cm voxel.
+  - **Why.** The context sweep scaled the voxel with the window (6 m / 4 cm, 12 m / 8 cm, 24 m / 16 cm) and peaked at 6 m. Two controls that change one variable at a time, `domains/bridge_w6_v8.json` and `domains/bridge_w12_v4.json`, show that the fall after 6 m is the coarser voxel's. Single view, validation fifth held out: 6 m / 4 cm 69.81, 6 m / 8 cm 68.65, 12 m / 8 cm 68.80, **12 m / 4 cm 70.82**. The +1.01 at 4 cm is inside the 12 m seed spread (below), so it is not read as a mean gain; what repeats across seeds is a shift between classes, towards abutment, ground and vegetation and away from pillar and unlabelled.
+  - **New released run** `logs/20261111_215452_bridge_w12_v4_all/` — `domains/bridge_w12_v4_all.json`, every labelled block, 400 epochs fixed in advance, early stopping disabled, seed 42. Over all 84,153,822 test points: **mIoU 70.80 / OA 92.44** single view, **71.87 / 92.75** voted (`overlap_mirror`). Cross-sensor: TLS 75.23, MLS 63.51. The rule for what gets reported was written before either seed started (`logs/W12_V4_ALL.md`). A second seed (`logs/20261112_083228_bridge_w12_v4_all/`) gives 68.83 / 91.79 single view and 70.49 voted: the 12 m recipe spreads 1.97 mIoU over two seeds, against 0.35 over three for the 6 m recipe.
+  - **How it compares.** Single view, this checkpoint is level with UNet3D's 70.7 (published to one decimal) and above KPConv's 70.5 at about a fifth of KPConv's parameters. That is the checkpoint's standing, not the recipe's: the second seed is below both, and the two-seed mean (69.82) is below the 6 m mean (70.24). Returning the validation fifth to training moved the figure by -0.02 here and +0.23 on the 6 m recipe, both inside the seed spread.
+  - **Cost.** A 12 m epoch takes about 2.2x a 6 m one; training peaks at about 44 GB.
+  - **Scripts**: `scripts/run_bridge_w12_v4_all.sh|bat` (`--train` to train from scratch). The 6 m release and its scripts stay in place.
 Optimization strategy under a fixed per-block memory budget (boundary artifacts, class imbalance, generalization):
 * **Overlapping context-preserving blocks:** `column` mode builds overlapping full-height columns instead of context-losing cubic grid cells, preserving the topology of objects (e.g., columns/doors) bisected by grid boundaries.
 * **Coordinate normalization:** per-block coordinate centering (translation invariance) inside the model, applied identically at train and inference — improves generalization to unseen areas.

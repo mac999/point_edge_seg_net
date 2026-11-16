@@ -18,14 +18,17 @@ scripts below fetch it from the authors' Zenodo record.
 
 ## Result
 
-Two released checkpoints, both 3.06 M parameters (11.8 MiB), one GPU. Scored over
+Released checkpoints, all 3.06 M parameters (11.8 MiB), one GPU. Scored over
 **all 84,153,822 labelled test points** of the official split:
 
 | | mIoU | OA |
 |---|---|---|
-| **This model** (`bridge_w6_all`), voted | **70.74** | 91.82 |
-| **This model** (`bridge_w6_all`), single view | 70.04 | 91.22 |
-| This model (`bridge_w6`, validation held out), single view | 69.81 | 91.61 |
+| **This model** (`bridge_w12_v4_all`, 12 m / 4 cm), single view | **70.80** | 92.44 |
+| **This model** (`bridge_w12_v4_all`, 12 m / 4 cm), voted | **71.87** | 92.75 |
+| Same recipe, second seed, single view / voted | 68.83 / 70.49 | 91.79 / 92.22 |
+| This model (`bridge_w12_v4`, validation held out), single view | 70.82 | 91.64 |
+| Earlier release (`bridge_w6_all`, 6 m / 4 cm), single view / voted | 70.04 / 70.74 | 91.22 / 91.82 |
+| Earlier release (`bridge_w6`, validation held out), single view | 69.81 | 91.61 |
 | UNet3D | 70.7 | — |
 | KPConv | 70.5 | — |
 | PointTransformer v2 | 63.5 | — |
@@ -35,15 +38,20 @@ Baselines are as published by the dataset authors, at roughly 4.6x the parameter
 Two things to read carefully before quoting a number:
 
 - The baselines are **single-view** and were trained **without a validation set**. The
-  row that matches both conventions is `bridge_w6_all` single view, 70.04 — still a little
-  under the two strongest baselines. The 70.74 adds overlapping-window voting, which the
-  baselines do not do, so it is a protocol gain and is kept in its own row here and in the
-  paper.
-- Even taking the 70.74, it is **not** above UNet3D. That baseline is published as 70.7,
-  to one decimal, so it spans 70.65 to 70.75 and the two figures cannot be ordered from
-  what is on the page. The 70.74 does clear KPConv's 70.5 by more than the scoring noise.
-  What this checkpoint supports is parity with the strongest reference at a fraction of the
-  parameters — not a new best.
+  row that matches both conventions is `bridge_w12_v4_all` single view, 70.80. The 71.87
+  adds overlapping-window voting, which the baselines do not do, so it is a protocol gain
+  and is kept in its own row here and in the paper.
+- 70.80 is level with UNet3D, not above it. That baseline is published as 70.7, to one
+  decimal, so it spans 70.65 to 70.75, and the margin is smaller than the seed spread. It
+  clears KPConv's 70.5. What this checkpoint supports is parity with the strongest
+  reference at a fraction of the parameters — not a new best. A second seed of the same
+  recipe gives 68.83, below both, so the parity belongs to the released checkpoint.
+- Why 12 m: the context sweep scaled the voxel with the window and peaked at 6 m. Holding
+  the voxel at 4 cm, the 12 m window scores 70.82 against 69.81 (validation held out for
+  both); at 8 cm the same widening is worth 0.15. The fall after 6 m was the coarser
+  voxel's. The +1.01 is inside the 12 m recipe's seed spread (70.80 and 68.83), so the
+  wider window is not better on the mean; it moves accuracy towards abutment, ground and
+  vegetation and away from pillar, consistently over seeds.
 - `bridge_w6` holds out a fifth of the blocks for validation and early stopping, which is
   the better practice but not what the baselines did; it is released as the conservative
   counterpart. `bridge_w6_all` folds those blocks back in at a fixed 400 epochs
@@ -123,6 +131,24 @@ All four protocols plus the cross-sensor pair in one go:
 ```bash
 ./scripts/run_bridge_reproduce.sh logs/20260929_150153_bridge_w6/final_model.pth
 ```
+
+### The released 12 m / 4 cm recipe
+
+`domains/bridge_w12_v4_all.json` is the all-blocks recipe below with a 12 m column at the
+same 4 cm voxel. It trains for 400 fixed epochs (about four days on one card, peak about
+44 GB) and reports `final_model.pth`; the rule was written down before training started
+(`logs/W12_V4_ALL.md`).
+
+```bash
+./scripts/run_bridge_w12_v4_all.sh             # score the released checkpoint
+./scripts/run_bridge_w12_v4_all.sh --train     # train from scratch first
+```
+```bat
+scripts\run_bridge_w12_v4_all.bat
+scripts\run_bridge_w12_v4_all.bat --train
+```
+
+Measured: **70.80 single view, 71.87 voted**; cross-sensor TLS 75.23, MLS 63.51.
 
 ### The all-blocks recipe and the headline number
 
@@ -229,8 +255,9 @@ tree reproduces the same 4,097 blocks with identical contents and the same 2,357
 1,143 train / val / test split, so a fresh machine trains on the same inputs.
 
 Training itself is **not** bit-reproducible — data order, augmentation sampling and CUDA
-accumulation all vary — and no multi-seed study was run, in line with how this benchmark's
-published baselines report single runs. Logs go to a fresh `logs/<timestamp>_<domain>`
+accumulation all vary. Seed repeats were run for the two all-blocks recipes only: three
+seeds of `bridge_w6_all` span 0.35 mIoU and two of `bridge_w12_v4_all` span 1.97
+(`logs/SEED_REPEATS.md`, `logs/W12_V4_ALL.md`). Logs go to a fresh `logs/<timestamp>_<domain>`
 directory; an existing run is never overwritten.
 
 Four recipes ship: `bridge_w6_all`, the headline configuration; `bridge_w6`, the same

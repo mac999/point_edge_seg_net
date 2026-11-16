@@ -1,0 +1,45 @@
+{
+  "_comment": [
+    "Control for the context/resolution sweep: the 6 m window of bridge_w6 with the 8 cm voxel of bridge_w12. Together with bridge_w12_v4 it separates the effect of the window from the effect of the voxel, which the density-preserving sweep changes together.",
+    "",
+    "Run:  python train_model.py --domain bridge_w6_v8"
+  ],
+  "name": "bridge_w6_v8",
+  "description": "6 m window at 8 cm voxels (control: window of w6, voxel of w12)",
+  "config": "model_params_semanticbridge.json",
+  "train_args": {
+    "processed_data_path": "bridge/processed",
+    "block_data_path": "bridge/chunks_w6_v8",
+    "log_root": "logs",
+    "train_areas": "train",
+    "test_area": "test",
+    "block_size": 20480,
+    "block_mode": "column",
+    "sampler": "grid",
+    "arch": "stencil",
+    "v2_neighbors": "stencil",
+    "v2_stencil": 2,
+    "v2_diff": true,
+    "v2_directional": true,
+    "enc_channels": [
+      64,
+      192,
+      320,
+      448
+    ],
+    "bottleneck_dim": 256,
+    "num_epochs": 400,
+    "batch_size": 4,
+    "val_batch_size": 4,
+    "learning_rate": 0.003,
+    "focal_gamma": 2.0,
+    "oversample_rare": 1.0,
+    "aug_preset": "strong",
+    "cooldown_sec": 0,
+    "pad_blocks": false,
+    "cover_columns": true,
+    "column_window": 6.0,
+    "column_stride": 6.0,
+    "column_grid": 0.08
+  }
+}
