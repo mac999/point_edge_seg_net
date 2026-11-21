@@ -703,7 +703,7 @@ python inference.py --model_weights ./logs/20251004_221236/best_model.pth --inpu
 # Inference without visualization (for batch processing)
 python inference.py --no_visualization
 
-# Full custom inference example  
+# Full custom inference example
 python inference.py \
     --model_weights ./custom_logs/best_model.pth \
     --input_cloud ./data/large_scene.txt \
