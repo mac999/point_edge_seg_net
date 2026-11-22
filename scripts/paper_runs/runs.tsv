@@ -1,0 +1,14 @@
+key	train_domain	score_domain	seed	extra_flags	orig_dir	epochs	single_miou	role
+w2	bridge	bridge	42	--learning_rate 0.0015	logs/20260928_100245_bridge	144/150	65.23	sweep: 2 m window, full resolution
+w6	bridge_w6	bridge_w6	42		logs/20260929_150153_bridge_w6	346/400	69.81	sweep: 6 m / 4 cm, reference for the additions and the fusion rows
+w12	bridge_w12	bridge_w12	42		logs/20261001_050040_bridge_w12	346/400	68.80	sweep: 12 m / 8 cm, fusion partner
+w24	bridge_w24	bridge_w24	42		logs/20261004_214040_bridge_w24	800/800	66.62	sweep: 24 m / 16 cm, fusion partner
+w6_gpos	bridge_w6_gpos	bridge_w6_gpos	42		logs/20261002_060713_bridge_w6_gpos	346/400	67.75	addition: global-position channels (13 features)
+w6_sol	bridge_w6_sol	bridge_w6_sol	42		logs/20261005_123150_bridge_w6_sol	346/400	68.72	addition: structure-oriented loss
+w6_v8	bridge_w6_v8	bridge_w6_v8	42		logs/20261108_223159_bridge_w6_v8	346/400	68.65	2x2 control: 6 m window, 8 cm voxel
+w12_v4	bridge_w12_v4	bridge_w12_v4	42		logs/20261108_223159_bridge_w12_v4	346/400	70.82	2x2 control: 12 m window, 4 cm voxel; held-out counterpart of the released run
+w6_all_s42	bridge_w6_all	bridge_w6	42		logs/20261018_163423_bridge_w6_all	400/400	70.04	6 m recipe on every labelled block, seed 42
+w6_all_s1	bridge_w6_all	bridge_w6	1		logs/20261022_230024_bridge_w6_all	400/400	70.29	6 m recipe on every labelled block, seed 1
+w6_all_s2	bridge_w6_all	bridge_w6	2		logs/20261022_230024_bridge_w6_all-2	400/400	70.39	6 m recipe on every labelled block, seed 2
+w12_v4_all_s42	bridge_w12_v4_all	bridge_w12_v4	42		logs/20261111_215452_bridge_w12_v4_all	400/400	70.80	RELEASED checkpoint: 12 m / 4 cm on every labelled block, seed 42
+w12_v4_all_s1	bridge_w12_v4_all	bridge_w12_v4	1		logs/20261112_083228_bridge_w12_v4_all	400/400	68.83	second seed of the released recipe
