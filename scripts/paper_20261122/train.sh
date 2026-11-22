@@ -10,7 +10,7 @@
 # Budgets on one GPU: 2 m 1 day; 6 m held-out 38 h; 12 m / 8 cm 25 h; 24 m 10 h; 6 m / 8 cm 15 h;
 # 12 m / 4 cm held-out 71 h; 6 m all-blocks 55 h; 12 m / 4 cm all-blocks 96 h. Runs are
 # independent; use CUDA_VISIBLE_DEVICES to spread them over GPUs.
-#   setsid nohup scripts/paper_runs/train.sh w12_v4_all_s42 > /dev/null 2>&1 &
+#   setsid nohup scripts/paper_20261122/train.sh w12_v4_all_s42 > /dev/null 2>&1 &
 #
 # Expected: held-out runs stop at epoch 346 (patience 10 after the cosine anneal), the
 # all-blocks runs complete 400, the 24 m run 800, the 2 m run about 144. Results land

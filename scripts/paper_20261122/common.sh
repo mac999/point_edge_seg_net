@@ -32,8 +32,8 @@ run() {  # run or print a command
 }
 
 code_matches_pin() {  # tracked files outside this directory equal the pinned commit, no local edits
-    git -C "$ROOT" diff --quiet "$ROOT_COMMIT" HEAD -- . ':(exclude)scripts/paper_runs' 2>/dev/null \
-        && git -C "$ROOT" diff --quiet HEAD -- . ':(exclude)scripts/paper_runs' 2>/dev/null
+    git -C "$ROOT" diff --quiet "$ROOT_COMMIT" HEAD -- . ':(exclude)scripts/paper_20261122' 2>/dev/null \
+        && git -C "$ROOT" diff --quiet HEAD -- . ':(exclude)scripts/paper_20261122' 2>/dev/null
 }
 
 check_commit() {

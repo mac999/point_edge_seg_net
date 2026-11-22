@@ -1,4 +1,4 @@
-# Runs behind the reported SemanticBridge numbers
+# Runs behind the SemanticBridge numbers reported on 2026-11-22
 
 A fixed record of the thirteen training runs and their scoring commands, so the figures in
 the release notes and the accompanying study can be regenerated after the code moves on.
@@ -27,10 +27,10 @@ export PESN_ROOT=$(realpath ../pesn_paper)
 
 ```bash
 scripts/get_bridge_data.sh                 # SemanticBridge, 15 train / 5 test scenes
-scripts/paper_runs/check_env.sh            # code, stack, data, checkpoints
-scripts/paper_runs/score.sh all            # result JSONs from the checkpoints (GPU, hours)
-scripts/paper_runs/fuse.sh                 # fusion rows from the probability dumps (CPU)
-scripts/paper_runs/train.sh <key>          # retrain one run, then score.sh <key>
+scripts/paper_20261122/check_env.sh            # code, stack, data, checkpoints
+scripts/paper_20261122/score.sh all            # result JSONs from the checkpoints (GPU, hours)
+scripts/paper_20261122/fuse.sh                 # fusion rows from the probability dumps (CPU)
+scripts/paper_20261122/train.sh <key>          # retrain one run, then score.sh <key>
 ```
 
 `PYTHON` selects the interpreter (default: conda env `pesn`), `CUDA_VISIBLE_DEVICES` the GPU,
