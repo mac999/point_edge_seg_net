@@ -15,7 +15,7 @@ the release notes and the accompanying study can be regenerated after the code m
 | `fuse.sh` | the three two-model fusion rows |
 
 The code is pinned to commit `9a74a9e`. The scripts refuse to run on a checkout whose
-tracked files differ from it (`ALLOW_DRIFT=1` overrides). On a later revision, use a
+tracked files differ from it, documentation aside (`ALLOW_DRIFT=1` overrides). On a later revision, use a
 worktree of the pinned commit instead:
 
 ```bash

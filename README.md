@@ -801,56 +801,16 @@ point_edge_seg_net/
 
 ## Version
 
-- 0.1: 2025/9/21. Draft version.
-- 0.2: 2025/9/24. CLI args, bug fixed.
-- 0.3: 2025/9/26. GPU safety mode was added.
-- 0.4: 2025/9/28. Diagnose was added. Points grid generation using grid hash spatial indexing
-- 0.5: 2025/10/1. Train dataset development (area 1 to 6)
-- 0.6: 2025/10/3. Hyperparameter finetuning (support VRAM 8GB, 24GB) and Dataset augumentation (e.g. on the fly)
-- 0.7: 2025/12/30. Integrate Attention Mechanism, Focal Loss, Area 5 test
-- 0.8: 2026/1/17. Update source code and [model file](https://github.com/mac999/point_edge_seg_net/tree/main/logs/20260113_231712).
-- 0.9: 2026/2/1. Support custom train dataset with classes of points. Please refer to [model_params.json](./model_params.json).
-- 1.0: 2026/7/7. Major accuracy & large-cloud overhaul — S3DIS Area 5: **OA 86.2% / mAcc 69.0% / mIoU 59.6%** ([logs](./logs/20260707_101907)):
-  - **Context-preserving `column` block mode** (overlapping full-height columns) with a leakage-controlled *spatial* train/val split (replaces context-losing grid cells).
-  - **Coverage-guaranteed inference blocking + fixed multi-view voting** — dense/large clouds no longer collapse to a single class (uncovered points were silently labelled `ceiling`; now every point is predicted and voted).
-  - **Lovász-Softmax + Focal loss** (directly optimizes mIoU, not just accuracy) and **per-block coordinate centering** (translation invariance → smaller train/test gap).
-  - **Curvature feature fix** (true local surface-variation edge cue instead of a near-constant legacy channel), wider EdgeConv receptive field (**k=32**), **2-layer bottleneck Transformer**.
-  - New: **mIoU / mAcc metrics**, **TTA (Z-rotation) + model-ensemble inference**, **colored LAS export**, early-stopping aligned to the checkpoint metric.
-- 1.1: 2026/7/15. AMP training bug fix & retrain — S3DIS Area 5: **OA 86.60% / mAcc 69.73% / mIoU 59.99%** ([logs](./logs/20260715_204942)):
-  - **Fixed a GradScaler state-corruption bug**: the "very large gradient → skip batch" branch called `scaler.unscale_()` without a matching `scaler.update()`, so from the first skipped batch onward every optimizer step silently failed (`unscale_() has already been called…`), permanently freezing the weights. The skip branch now resets the scaler state, restoring correct AMP training.
-  - Retrained the v1.0 configuration (column mode, 60 epochs, batch 10, effective batch 60) with the fix — all metrics improved over the 20260707 baseline (OA +0.44, mAcc +0.68, mIoU +0.42); best validation accuracy 93.59%.
-  - Added `scripts/run_train_global.bat` to reproduce the training run.
-- 2.0: 2026/8/21. **Architecture rework (v2) — S3DIS Area 5: OA 87.8% / mAcc 72.6% / mIoU 64.8%** (full-coverage protocol, +4.8 mIoU over v1.1 re-scored identically). Checkpoints are **not** compatible with v1.
-  - **New backbone `models/stencil.py`**: per-layer kNN graph search is removed entirely. Neighbours are looked up on the voxel lattice with a fixed stencil (sorted keys + binary search), local aggregation is a point-wise MLP with a relative-position encoding and a feature-difference term, and down/upsampling use grid pooling with an exact inverse map. U-Net layout, feature gate and bottleneck Transformer are kept.
-  - **Speed / memory**: ~7x faster training epochs and ~3x lower training memory than v1 at equal settings; single-view inference runs in about 4 GB; measured training memory ~12-20 GB steady (see Training below).
-  - **Grid-preserving TTA** for evaluation (8 views: 90-degree rotations x mirror), matching the lattice assumption of the stencil.
-  - Architectures are registered by name in `models/` (`edgeconv` = legacy v1, `stencil` = current); select with `--arch` in `train_model.py` and `evaluate_full.py`. Checkpoints are not interchangeable between the two.
+- 0.1-0.9: 2025/9/21-2026/2/1. Drafts: CLI, GPU safety mode, diagnostics, S3DIS Areas 1-6, VRAM presets and on-the-fly augmentation, attention and Focal loss, custom datasets through `model_params.json`.
+- 1.0: 2026/7/7. Column blocks, coverage-guaranteed voting, Lovász + Focal loss, curvature fix. S3DIS Area 5: mIoU 59.6.
+- 1.1: 2026/7/15. AMP GradScaler fix and retrain. S3DIS Area 5: mIoU 59.99.
+- 2.0: 2026/8/21. Stencil backbone (`models/stencil.py`), no kNN search; about 7x faster and 3x less training memory. S3DIS Area 5: mIoU 64.8. Checkpoints are not compatible with v1.
+- 2.1: 2026/10/7. SemanticBridge pipeline, run recipes in `domains/*.json`, named inference protocols. 6 m / 4 cm checkpoint: mIoU 69.81 single view.
+- 2.2: 2026/10/22. 6 m recipe trained on every labelled block: mIoU 70.04 single view, 70.74 voted.
+- 2.3: 2026/11/16. 12 m / 4 cm recipe on every labelled block: mIoU 70.80 single view, 71.87 voted; `inference.py --domain` for own scans.
 
-- 2.1: 2026/10/7. **SemanticBridge support — a bridge segmentation pipeline on the public TLS/MLS benchmark.** The v2 backbone is unchanged; this release adds the data path, the run tooling and the released checkpoint.
-  - **Released run** `logs/20260929_150153_bridge_w6/` (3.06 M parameters, 11.8 MiB checkpoint) — bridge runs land in the same `logs/` tree as every other domain, the directory name carrying the recipe. On the official 15/5 split, over all 84,153,822 test points: **mIoU 69.81 / OA 91.61** single-view. Published baselines on the same split are UNet3D 70.7, KPConv 70.5, PTv2 63.5, at roughly 4.6x the parameters.
-  - **Reproduction**: `scripts/get_bridge_data.sh|bat` fetches and converts the scans; `scripts/run_domain_eval.sh|bat` scores a checkpoint on the geometry its recipe trained it on. See [bridge_example.md](./bridge_example.md) for the full procedure and the numbers to check against.
-  - **Run recipes as data**: per-model settings live in `domains/*.json` (`--domain`, unknown keys are a hard error) rather than in shell strings, so training and scoring read the same recipe. Augmentation presets move to `aug_presets.json`, class weights are computed by `compute_class_weights.py`.
-  - **Named inference protocols** (`--protocol single | overlap | mirror | overlap_mirror`) so a reported number states how densely the window was swept and how many views were voted.
-  - A study of the context/resolution trade-off, the coverage and scoring defects found along the way, and the ablations behind the shipped recipe are being written up separately; this README states the released configuration only.
+The changes, ablations and comparisons behind each release are in [docs/REVISION.md](./docs/REVISION.md).
 
-- 2.2: 2026/10/22. **SemanticBridge, trained on every labelled block.** The backbone, the block geometry and the voxel lattice are unchanged; what changes is which blocks reach the optimizer.
-  - **New released run** `logs/20261018_163423_bridge_w6_all/` — the 6 m / 4 cm recipe with the held-out validation blocks folded back into training (2954 blocks instead of 2357), at a fixed 400 epochs with early stopping disabled. Over all 84,153,822 test points: **mIoU 70.74 / OA 91.82** voted (`overlap_mirror`), **70.04 / 91.22** single view, against 69.81 single view for the validation-holding run, which stays released as the conservative counterpart.
-  - **Why the two runs differ**: the published baselines were trained without a validation set, so holding a fifth of the blocks back was a protocol difference rather than a property of the model. The per-epoch validation numbers of the new run are in-sample and cannot select a checkpoint, so `final_model.pth` is the reported one and `best_model.pth` is not released for it.
-  - **Its own recipe and scripts**: `domains/bridge_w6_all.json`, `scripts/run_bridge_w6_all.sh|bat` (`--train` to train from scratch, `--fusion` to add the 12 m partner). `--val_in_train` is the one new training flag.
-  - **The two-scale fusion is now a negative result** on the stronger checkpoint: it lifts the validation-holding run from 69.81 to 70.49, but fusing it with the voted all-blocks checkpoint gives 70.50, below that checkpoint's own 70.74. The 12 m model only wins on abutment, so an equal-weight average costs more elsewhere than it gains there.
-  - **How the 70.74 compares.** It clears the 70.5 of KPConv by more than the scoring noise, but against UNet3D's 70.7 it is a tie and not a win: that figure is published to one decimal, so it spans 70.65 to 70.75 and the two cannot be ordered. The claim this run supports is parity with the strongest reference at roughly a fifth to a quarter of the parameters, not a new best.
-  - **The voting gain is the overlapping sweep, not the mirroring.** All four protocols on this checkpoint: `single` 70.04, `mirror` 69.97, `overlap` 70.70, `overlap_mirror` 70.74. Overlapping alone accounts for 0.66 of the 0.69; mirroring alone *costs* 0.07 and adds 0.03 on top of the sweep, both inside the repeat spread. A mirrored window sees the same context as the original; a half-stride sweep classifies each point from several window positions and averages away the context each one is missing.
-  - **Cross-sensor, remeasured on this checkpoint**: TLS 74.83, MLS 62.88, a gap of 11.94 mIoU. Highest on each sensor of the four compared models, and still the largest relative drop --- though the margin over KPConv's 11.4 is only 0.54, so no ordering is claimed against it.
-  - **Reproduction.** An end-to-end run of `scripts/run_bridge_w6_all.sh` from the released checkpoint reproduced both headline figures. The single-view pass came out at 70.0474 against the reported 70.0438, inside the documented 0.01 repeat spread; the lower value is the one reported. The result JSONs every paper table reads are tracked under `logs/`, so the tables regenerate from a checkout without rescoring.
-
-
-- 2.3: 2026/11/16. **SemanticBridge, 12 m window at the 4 cm voxel.** The backbone is unchanged; the released recipe moves from a 6 m to a 12 m column at the same 4 cm voxel.
-  - **Why.** The context sweep scaled the voxel with the window (6 m / 4 cm, 12 m / 8 cm, 24 m / 16 cm) and peaked at 6 m. Two controls that change one variable at a time, `domains/bridge_w6_v8.json` and `domains/bridge_w12_v4.json`, show that the fall after 6 m is the coarser voxel's. Single view, validation fifth held out: 6 m / 4 cm 69.81, 6 m / 8 cm 68.65, 12 m / 8 cm 68.80, **12 m / 4 cm 70.82**. The +1.01 at 4 cm is inside the 12 m seed spread (below), so it is not read as a mean gain; what repeats across seeds is a shift between classes, towards abutment, ground and vegetation and away from pillar and unlabelled.
-  - **New released run** `logs/20261111_215452_bridge_w12_v4_all/` — `domains/bridge_w12_v4_all.json`, every labelled block, 400 epochs fixed in advance, early stopping disabled, seed 42. Over all 84,153,822 test points: **mIoU 70.80 / OA 92.44** single view, **71.87 / 92.75** voted (`overlap_mirror`). Cross-sensor: TLS 75.23, MLS 63.51. The rule for what gets reported was written before either seed started (`logs/W12_V4_ALL.md`). A second seed (`logs/20261112_083228_bridge_w12_v4_all/`) gives 68.83 / 91.79 single view and 70.49 voted: the 12 m recipe spreads 1.97 mIoU over two seeds, against 0.35 over three for the 6 m recipe.
-  - **How it compares.** Single view, this checkpoint is level with UNet3D's 70.7 (published to one decimal) and above KPConv's 70.5 at about a fifth of KPConv's parameters. That is the checkpoint's standing, not the recipe's: the second seed is below both, and the two-seed mean (69.82) is below the 6 m mean (70.24). Returning the validation fifth to training moved the figure by -0.02 here and +0.23 on the 6 m recipe, both inside the seed spread.
-  - **Cost.** A 12 m epoch takes about 2.2x a 6 m one; training peaks at about 44 GB.
-  - **Scripts**: `scripts/run_bridge_w12_v4_all.sh|bat` (`--train` to train from scratch). The 6 m release and its scripts stay in place.
-  - **Own scans**: `inference.py --domain bridge_w12_v4 -m <checkpoint> -i scan.las` predicts an unlabelled `.las/.laz/.ply/.txt` through the same feature, voxel and blocking code as `evaluate_full.py` (shared `predict_cloud`), and writes `<scan>_segmented.las`. On test bridge 19 it matches the benchmark predictions on 99.96% of points.
 Optimization strategy under a fixed per-block memory budget (boundary artifacts, class imbalance, generalization):
 * **Overlapping context-preserving blocks:** `column` mode builds overlapping full-height columns instead of context-losing cubic grid cells, preserving the topology of objects (e.g., columns/doors) bisected by grid boundaries.
 * **Coordinate normalization:** per-block coordinate centering (translation invariance) inside the model, applied identically at train and inference — improves generalization to unseen areas.
